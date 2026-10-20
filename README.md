@@ -29,7 +29,15 @@ supported today.
 
 ## Install
 
-Python 3.10 or newer.
+**Windows:** download `DarkSTL_<version>_x64-setup.exe` from the
+[releases page](https://github.com/DrFlGd/Dark-STL/releases) and run it. It needs no Python
+and installs for your account only. It isn't signed, so SmartScreen asks once: *More info >
+Run anyway*. The `-portable.zip` is the same app in a folder to run from anywhere. Either way
+`darkstl.exe`, the command line, sits beside `Dark STL.exe`, and if the app won't start,
+`%LOCALAPPDATA%\DarkSTL\darkstl.log` says why. The Windows app leaves out the isotropic
+remesher (it would make the app several times the size); install from source for it.
+
+**From source** (any system): Python 3.10 or newer.
 
 ```
 git clone https://github.com/DrFlGd/Dark-STL.git
@@ -58,6 +66,8 @@ encrypted archives directly.
   unpacked game folder; otherwise point to it in *Settings > Oodle* (or `--oodle`).
 
 ## Using the app
+
+Start *Dark STL* from the Start menu, or from a source install:
 
 ```
 darkstl            # or darkstl-gui; darkstl gui --browser opens it in your browser
@@ -118,8 +128,10 @@ To support another game, write an importer (see `src/darkstl/importers/base.py` 
 OBJ importer as a short example) and add it to `IMPORTERS` in `importers/__init__.py`.
 
 Releases publish themselves: once the tests pass on main and the version in
-`pyproject.toml` has no release yet, the Release workflow builds the wheel and source
-archive and releases them as `v<version>`, with `docs/releases/v<version>.md` as the notes.
+`pyproject.toml` has no release yet, the Release workflow builds the Windows app (the
+Windows app workflow, which also runs on pull requests that touch the app), the wheel and
+the source archive, and releases them as `v<version>`, with `docs/releases/v<version>.md` as
+the notes.
 To release, bump the version (in `pyproject.toml` and `src/darkstl/__init__.py`), add the
 notes, and merge.
 
