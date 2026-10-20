@@ -58,7 +58,7 @@ def clusters_to_mesh(dense: TriMesh, labels: np.ndarray) -> TriMesh:
 
 
 def isotropic_remesh(mesh: TriMesh, target_vertices: int, snap_to_surface: bool = True,
-                     progress: ProgressFn | None = None) -> TriMesh:
+                     progress: ProgressFn | None = None, smooth: float = 0.0) -> TriMesh:
     import pyacvd
     import pyvista as pv
 
@@ -67,7 +67,8 @@ def isotropic_remesh(mesh: TriMesh, target_vertices: int, snap_to_surface: bool 
     if progress:
         progress(0.05, "Sampling the surface densely")
     # ACVD needs several samples per cluster; edge midpoint subdivision keeps UVs exact.
-    dense = subdivide_max_edge(mesh, spacing * 0.75, max_vertices=max(target_vertices * 40, 1_000_000))
+    dense = subdivide_max_edge(mesh, spacing * 0.75, max_vertices=max(target_vertices * 40, 1_000_000),
+                               smooth=smooth)
 
     faces_pv = np.hstack([np.full((dense.n_faces, 1), 3, np.int64), dense.faces]).ravel()
     poly = pv.PolyData(dense.vertices, faces_pv)

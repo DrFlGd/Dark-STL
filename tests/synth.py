@@ -363,3 +363,39 @@ def cube_mesh(size: float = 1.0):
             idx += [base, base + 2, base + 1, base, base + 3, base + 2]
     return (np.array(pos, np.float32), np.array(nrm, np.float32), np.array(uv, np.float32),
             np.array(idx, np.int64))
+
+
+def tube_mesh(radius: float = 0.03, length: float = 0.25, segments: int = 16, rings: int = 3, caps: bool = False):
+    """Low-poly cylinder along the game's Y axis with smooth radial normals and a duplicated UV seam column.
+
+    With ``caps`` the ends are closed by flat fans whose normals point along the axis,
+    so the rims are hard edges (split normals), as on a typical game mesh.
+    """
+    pos, nrm, uv, idx = [], [], [], []
+    for j in range(rings + 1):
+        y = length * j / rings
+        for i in range(segments + 1):
+            a = 2 * np.pi * i / segments
+            pos.append((radius * np.cos(a), y, radius * np.sin(a)))
+            nrm.append((np.cos(a), 0, np.sin(a)))
+            uv.append((i / segments, 1 - j / rings))
+    for j in range(rings):
+        for i in range(segments):
+            a = j * (segments + 1) + i
+            b, c, d = a + 1, a + segments + 1, a + segments + 2
+            idx += [a, b, c, b, d, c]
+    if caps:
+        for y, ny in ((0.0, -1.0), (length, 1.0)):
+            centre = len(pos)
+            pos.append((0, y, 0))
+            nrm.append((0, ny, 0))
+            uv.append((0.5, 0.5))
+            for i in range(segments):
+                a = 2 * np.pi * i / segments
+                pos.append((radius * np.cos(a), y, radius * np.sin(a)))
+                nrm.append((0, ny, 0))
+                uv.append((0.5 + 0.5 * np.cos(a), 0.5 + 0.5 * np.sin(a)))
+            for i in range(segments):
+                idx += [centre, centre + 1 + i, centre + 1 + (i + 1) % segments]
+    return (np.array(pos, np.float32), np.array(nrm, np.float32), np.array(uv, np.float32),
+            np.array(idx, np.int64))

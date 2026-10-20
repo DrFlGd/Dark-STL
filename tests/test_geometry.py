@@ -91,6 +91,46 @@ def test_subdivide_uvs_are_exact():
     assert np.allclose(s.corner_uvs[..., 1], corner_pos[..., 1] / 2, atol=1e-6)
 
 
+def tube_trimesh(**kw) -> TriMesh:
+    pos, nrm, uv, idx = synth.tube_mesh(**kw)
+    f = flver.read_flver(synth.build_flver([synth.SynthMesh(pos, nrm, uv, idx)], [("m", "m.mtd", [])]))
+    return flver_to_trimesh(f)
+
+
+def radial(mesh: TriMesh) -> np.ndarray:
+    return np.linalg.norm(mesh.vertices[:, :2], axis=1)  # tube axis is game Y = export Z
+
+
+def test_smooth_subdivision_rounds_a_low_poly_tube():
+    tube = tube_trimesh(radius=0.03, segments=16)
+    flat = subdivide_max_edge(tube, 0.002)
+    assert radial(flat).min() == pytest.approx(0.03 * np.cos(np.pi / 16), rel=1e-3)  # facets kept
+    round_ = subdivide_max_edge(tube, 0.002, smooth=0.5)
+    r = radial(round_)
+    assert np.abs(r / 0.03 - 1).max() < 0.002  # within 0.2 % of a true circle
+    assert round_.corner_normals.shape == (round_.n_faces, 3, 3)
+    assert np.allclose(np.linalg.norm(round_.corner_normals, axis=2), 1, atol=1e-5)
+
+
+def test_smooth_subdivision_keeps_flat_shaded_parts_flat():
+    cube = subdivide_max_edge(cube_trimesh(), 0.1, smooth=0.5)
+    assert np.allclose(np.abs(cube.vertices).max(axis=1), 0.5, atol=1e-9)  # every vertex still on a face
+
+
+def test_smooth_subdivision_curves_hard_rims():
+    tube = tube_trimesh(radius=0.03, segments=12, caps=True)
+    m = subdivide_max_edge(tube, 0.002, smooth=0.5)
+    axial = np.abs(m.face_normals()[:, 2]) > 0.99
+    cap = np.unique(m.faces[axial])
+    side = np.unique(m.faces[~axial])
+    rim = np.intersect1d(cap, side)
+    assert len(rim) > 50
+    assert np.abs(radial(m)[rim] / 0.03 - 1).max() < 0.005  # cap edge follows the round side
+    z = m.vertices[cap, 2]
+    assert np.all((np.abs(z) < 1e-9) | (np.abs(z - 0.25) < 1e-9))  # caps themselves stay flat
+    assert len(m.edges_unique()[0]) * 2 == m.n_faces * 3  # still closed: no cracks along the rim
+
+
 def sphere_trimesh(n=400, seed=0) -> TriMesh:
     from scipy.spatial import ConvexHull
 

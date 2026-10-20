@@ -177,3 +177,21 @@ def test_textures_from_extra_folder(tmp_path):
         dcx.compress_dflt(synth.build_tpf([("m10_wall_n", synth.rgba_dds(np.zeros((4, 4, 4), np.uint8)))])))
     asset = assets.load_model(model / "m10_00_00_00_000100.flver", extra_texture_dirs=(tx,))
     assert "m10_wall_n" in asset.textures
+
+
+def test_cli_commands(tmp_path, weapon_dir, capsys):
+    from darkstl.cli import main
+
+    assert main(["scan", str(weapon_dir)]) == 0
+    out = capsys.readouterr().out
+    assert "Dark Souls III" in out and "Weapons" in out
+    model = str(weapon_dir / "parts" / "wp_a_0300.partsbnd.dcx")
+    assert main(["info", model]) == 0
+    assert "g_BumpmapTexture: WP_A_0300_n" in capsys.readouterr().out
+    assert main(["textures", model, "-o", str(tmp_path / "tex")]) == 0
+    assert (tmp_path / "tex" / "WP_A_0300_n.png").exists()
+    assert main(["export", model, "-o", str(tmp_path / "orig.obj")]) == 0
+    assert main(["enhance", model, "-o", str(tmp_path / "hi.stl"), "-n", "5000",
+                 "--save-heights", str(tmp_path / "h")]) == 0
+    assert (tmp_path / "hi.stl").stat().st_size > 84
+    assert (tmp_path / "h" / "WP_A_0300_n_height.png").exists()

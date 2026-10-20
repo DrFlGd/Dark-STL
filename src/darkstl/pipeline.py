@@ -44,6 +44,7 @@ SOURCE_NONE = "none"
 class EnhanceSettings:
     target_vertices: int = 1_000_000
     method: str = METHOD_SUBDIVIDE
+    smooth: float = 0.5  # bend new vertices onto the curved surface the shading normals describe (0 = flat)
     source: str = SOURCE_NORMAL
     strength: float = 1.0  # multiplier on the relief implied by the normal map
     height_range_mm: float = 1.0  # grayscale maps: displacement for the full 0..1 range
@@ -51,7 +52,7 @@ class EnhanceSettings:
     detail_fraction: float = 1.0 / 16.0  # high-pass radius as a fraction of texture size
     max_displacement_mm: float | None = None
     prefilter: bool = True  # blur textures finer than the vertex spacing
-    texture_overrides: dict[int, str] = field(default_factory=dict)  # material -> texture key
+    texture_overrides: dict[int, str] = field(default_factory=dict)  # material -> texture key ("" = none)
     mesh_options: MeshOptions = field(default_factory=MeshOptions)
 
 
@@ -99,9 +100,9 @@ def build_fields(asset: ModelAsset, source: TriMesh, materials: list[MaterialInf
     for n_done, mat in enumerate(used):
         mat = int(mat)
         info = materials[mat] if mat < len(materials) else None
-        key = settings.texture_overrides.get(mat)
-        if key is None and info is not None:
-            key = info.height if settings.source == SOURCE_HEIGHT else info.normal
+        if settings.texture_overrides.get(mat, None) == "":
+            continue  # displacement switched off for this material
+        key = _material_texture(materials, settings, mat)
         if not key or key not in asset.textures:
             name = info.name if info else f"#{mat}"
             warnings.append(f"Material '{name}' has no {settings.source} map; it will not be displaced")
@@ -171,13 +172,13 @@ def enhance(asset: ModelAsset, settings: EnhanceSettings | None = None,
         method = METHOD_SUBDIVIDE
 
     if method == METHOD_ISOTROPIC:
-        resampled = isotropic_remesh(source, target, progress=sub(0.05, 0.6))
+        resampled = isotropic_remesh(source, target, progress=sub(0.05, 0.6), smooth=settings.smooth)
         samples = VertexSamples.from_vertex_uvs(resampled, resampled.metadata["vertex_material"])
     else:
         if target <= source.n_vertices:
             warnings.append(f"Target ({target:,}) is not above the model's {source.n_vertices:,} vertices; "
                             "adaptive subdivision only adds vertices, so the mesh is unchanged")
-        resampled = subdivide_to_vertex_count(source, target, progress=sub(0.05, 0.6))
+        resampled = subdivide_to_vertex_count(source, target, progress=sub(0.05, 0.6), smooth=settings.smooth)
         samples = VertexSamples.from_corners(resampled) if resampled.corner_uvs is not None else None
 
     fields = build_fields(asset, source, materials, settings, spacing, warnings, sub(0.6, 0.85))

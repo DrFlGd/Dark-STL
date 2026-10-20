@@ -1,8 +1,8 @@
 """Triangle mesh container shared by the whole pipeline.
 
-Per-corner ("wedge") attributes are used for UVs so that a welded vertex can
-sit on a UV seam without splitting the surface: every face keeps its own UVs
-for each of its three corners.
+Per-corner ("wedge") attributes are used for UVs and shading normals so that a
+welded vertex can sit on a UV seam or a hard edge without splitting the
+surface: every face keeps its own UV and normal for each of its three corners.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ class TriMesh:
     face_material: np.ndarray | None = None  # (F,) int32, index into a material list
     face_group: np.ndarray | None = None  # (F,) int32, source sub-mesh index
     metadata: dict = field(default_factory=dict)
+    corner_normals: np.ndarray | None = None  # (F, 3, 3) float32, the model's shading normals
 
     def __post_init__(self):
         self.vertices = np.asarray(self.vertices, np.float64).reshape(-1, 3)
@@ -49,6 +50,7 @@ class TriMesh:
             face_material=self.face_material.copy(),
             face_group=self.face_group.copy(),
             metadata=dict(self.metadata),
+            corner_normals=None if self.corner_normals is None else self.corner_normals.copy(),
         )
 
     def bounds(self) -> tuple[np.ndarray, np.ndarray]:
@@ -114,6 +116,7 @@ class TriMesh:
             self.face_material[face_mask],
             self.face_group[face_mask],
             dict(self.metadata),
+            None if self.corner_normals is None else self.corner_normals[face_mask],
         )
 
     def remove_degenerate(self, area_eps: float = 0.0) -> "TriMesh":
@@ -152,7 +155,8 @@ def weld(mesh: TriMesh, tolerance: float | None = None) -> TriMesh:
     inverse = inverse.reshape(-1)
     vertices = mesh.vertices[first]
     faces = inverse[mesh.faces]
-    out = TriMesh(vertices, faces, mesh.corner_uvs, mesh.face_material, mesh.face_group, dict(mesh.metadata))
+    out = TriMesh(vertices, faces, mesh.corner_uvs, mesh.face_material, mesh.face_group, dict(mesh.metadata),
+                  mesh.corner_normals)
     return out.remove_degenerate()
 
 
@@ -162,6 +166,7 @@ def concatenate(meshes: list[TriMesh]) -> TriMesh:
         return TriMesh(np.zeros((0, 3)), np.zeros((0, 3), np.int64))
     offsets = np.cumsum([0] + [m.n_vertices for m in meshes[:-1]])
     has_uv = all(m.corner_uvs is not None for m in meshes)
+    has_n = all(m.corner_normals is not None for m in meshes)
     return TriMesh(
         np.concatenate([m.vertices for m in meshes]),
         np.concatenate([m.faces + o for m, o in zip(meshes, offsets)]),
@@ -169,4 +174,5 @@ def concatenate(meshes: list[TriMesh]) -> TriMesh:
         np.concatenate([m.face_material for m in meshes]),
         np.concatenate([m.face_group for m in meshes]),
         dict(meshes[0].metadata),
+        np.concatenate([m.corner_normals for m in meshes]) if has_n else None,
     )

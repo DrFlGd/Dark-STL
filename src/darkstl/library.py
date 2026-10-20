@@ -156,6 +156,13 @@ class Library:
         self.entries.sort(key=lambda e: e.sort_key)
         return found
 
+    def merge(self, other: "Library") -> None:
+        """Take over ``other``'s roots, replacing any entries this library already had under them."""
+        for root, game in other.roots.items():
+            self.roots[root] = game
+            self.entries = [e for e in self.entries if not _is_under(e.path, root)]
+        self.entries = sorted(self.entries + other.entries, key=lambda e: e.sort_key)
+
     def grouped(self, include_lod: bool = False) -> dict[str, dict[str, dict[str, list[CatalogEntry]]]]:
         tree: dict[str, dict[str, dict[str, list[CatalogEntry]]]] = {}
         for e in self.entries:

@@ -90,16 +90,17 @@ def flver_to_trimesh(flver: Flver, options: MeshOptions | None = None) -> TriMes
     n = np.concatenate(normals) @ GAME_TO_EXPORT.T
     f = np.concatenate(faces)
     corner_uvs = np.concatenate(uvs).astype(np.float32)
-    mesh = TriMesh(p, f, corner_uvs, np.concatenate(mats), np.concatenate(groups))
+    length = np.linalg.norm(n, axis=1, keepdims=True)
+    n = n / np.where(length > 0, length, 1)  # missing normals stay zero
+    mesh = TriMesh(p, f, corner_uvs, np.concatenate(mats), np.concatenate(groups),
+                   corner_normals=n[f].astype(np.float32))
 
     if options.fix_orientation:
-        corner_n = n[f].sum(axis=1)
-        flip = np.einsum("ij,ij->i", mesh.face_cross(), corner_n) < 0
+        flip = np.einsum("ij,ij->i", mesh.face_cross(), mesh.corner_normals.sum(axis=1)) < 0
         if flip.any():
             mesh.faces[flip] = mesh.faces[flip][:, [0, 2, 1]]
             mesh.corner_uvs[flip] = mesh.corner_uvs[flip][:, [0, 2, 1]]
-    mesh.metadata["vertex_normals"] = n
+            mesh.corner_normals[flip] = mesh.corner_normals[flip][:, [0, 2, 1]]
     if options.weld:
         mesh = weld(mesh)
-        mesh.metadata.pop("vertex_normals", None)
     return mesh
