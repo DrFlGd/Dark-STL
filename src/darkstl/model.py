@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -58,6 +59,7 @@ class Material:
     normal_scale: tuple[float, float] = (1.0, 1.0)  # UV tiling of the normal map
     guessed: bool = False  # roles were matched by texture names rather than read from the file
     details: list[str] = field(default_factory=list)  # shader and texture slots, for display
+    normal_green: str | None = None  # "directx" or "opengl" when the importer knows how its normal maps are made
 
 
 @dataclass
@@ -110,6 +112,9 @@ class SourceModel:
 
 
 CATEGORY_ORDER = ["Weapons", "Armor", "Characters", "Faces & Hair", "Objects", "Map Pieces", "Models", "Other"]
+
+# what a low-detail copy adds to its full model's file stem (wp_a_0300_l, c1100_lod1)
+LOD_SUFFIX = re.compile(r"_l$|_lod\d*$", re.I)
 
 
 @dataclass

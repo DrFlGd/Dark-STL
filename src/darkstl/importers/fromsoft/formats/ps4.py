@@ -5,8 +5,9 @@ compressed surfaces are stored as 8x8-block tiles (32x32 pixels) laid out row
 by row, with the blocks inside each tile in Morton (Z) order. This matches
 the deswizzler in SoulsFormats' Headerizer, generalised to every block size.
 
-This path has only been checked against synthetic data so far; set
-``DARKSTL_PS4_TILING=linear`` to bypass it if real files decode scrambled.
+Checked on Bloodborne's own files (characters, objects, armour; BC1, BC4
+and BC7, square and 1:2 textures from 64 to 2048 pixels). Set
+``DARKSTL_PS4_TILING=linear`` to bypass it if some file decodes scrambled.
 """
 
 from __future__ import annotations

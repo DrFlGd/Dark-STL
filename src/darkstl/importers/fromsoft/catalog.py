@@ -20,7 +20,7 @@ import re
 from pathlib import Path
 from typing import Callable, Iterable
 
-from ...model import CatalogEntry
+from ...model import LOD_SUFFIX, CatalogEntry
 from .files import file_stem, strip_dcx
 from .games import detect_game
 
@@ -41,9 +41,9 @@ MODEL_FILE_RX = re.compile(r"\.(partsbnd|chrbnd|objbnd|geombnd|mapbnd|flver|flv)
 def classify(stem: str) -> tuple[str, str, str, bool]:
     """Return ``(category, group, label, is_lod)`` for a file stem."""
     s = stem.lower()
-    is_lod = bool(re.search(r"_l$|_lod\d*$", s))
+    is_lod = bool(LOD_SUFFIX.search(s))
     if is_lod:
-        s = re.sub(r"_l$|_lod\d*$", "", s)
+        s = LOD_SUFFIX.sub("", s)
     m = _RX_PART.match(s)
     if m:
         kind, sex, pid = m.group("kind"), m.group("sex"), m.group("id")

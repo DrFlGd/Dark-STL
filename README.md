@@ -19,8 +19,9 @@ See [docs/PLAN.md](docs/PLAN.md) for how each step works, the file formats, and 
 ## Status
 
 Early. All readers and all three steps work and are tested against synthetic game files built
-to the published format descriptions. Dark Souls Remastered weapons have been checked on real
-files; the other games come next (Phase 1 of the plan).
+to the published format descriptions. Checked on real files so far: a Dark Souls Remastered
+weapon, and a Bloodborne character, object and armour piece (PS4 textures included). The
+other games come next (Phase 1 of the plan).
 
 Importing is modular: each game family has its own importer, and everything after import
 (the explorer, the three steps, export) is shared. FromSoftware files and Wavefront OBJ are
@@ -48,7 +49,9 @@ encrypted archives directly.
 - **PC games:** unpack them with the usual community unpacker for each game (UXM Selective
   Unpacker, or UDSFM for Dark Souls PTDE). Models end up in `parts/`, `chr/`, `obj/` or
   `asset/`, and `map/` as `.dcx` files, which Dark STL opens as they are.
-- **Bloodborne:** use the extracted `dvdroot_ps4` folder from your own console dump.
+- **Bloodborne:** use the extracted `dvdroot_ps4` folder from your own console dump, or any
+  folder of `.chrbnd.dcx`, `.objbnd.dcx` and `.partsbnd.dcx` files taken from it. The PS4
+  textures are rebuilt into ordinary DDS on the fly.
 - Folders unpacked further with WitchyBND or Yabber (`wp_a_0210-partsbnd-dcx/`) work too.
 - **Sekiro and Elden Ring** compress with Oodle. Dark STL uses the `oo2core_6_win64.dll`
   that ships with the game. It is found automatically when the model files are inside the

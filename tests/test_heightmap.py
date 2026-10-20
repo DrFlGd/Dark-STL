@@ -53,6 +53,17 @@ def test_normal_map_round_trip_and_convention(convention):
     assert np.std(field.height) == pytest.approx(np.std(h), rel=0.15)
 
 
+@pytest.mark.parametrize("convention", ["directx", "opengl"])
+def test_convention_through_texel_noise(convention):
+    # gentle relief under texel-sized noise, as block compression leaves it: the raw curl can't tell
+    rgba = encode_normals(bumps() * 0.15, convention).astype(np.int16)
+    rgba[..., :2] += np.random.default_rng(1).integers(-6, 7, rgba[..., :2].shape)
+    rgba = np.clip(rgba, 0, 255).astype(np.uint8)
+    assert hm.detect_convention(rgba, sigma=0)[1] < 1.3
+    detected, ratio = hm.detect_convention(rgba)
+    assert detected == convention and ratio > 2
+
+
 def test_wrong_convention_is_worse():
     h = bumps()
     rgba = encode_normals(h, "directx")

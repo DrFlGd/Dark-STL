@@ -329,8 +329,8 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
           <select data-material=${i} value=${detailOf(mat, i)} onChange=${(e) => setOver({ ...over, [i]: e.target.value })}>
             <option value="">None</option>${have.map((k) => html`<option key=${k} value=${k}>${m.textures.find((t) => t.key === k).name}</option>`)}</select></label>`)}</div>` : null}
       ${s.source !== "none" ? html`<details class="more-settings"><summary>More settings</summary>
-        ${s.source === "normal" ? html`<label class="field-block" title="Which way the normal maps' green channel points. Auto-detect reads it from the texture."><span>Normal map green</span>
-          <select id="green" value=${s.green} onChange=${(e) => set({ green: e.target.value })}><option value="auto">Auto-detect</option><option value="directx">DirectX (Y−)</option><option value="opengl">OpenGL (Y+)</option></select></label>
+        ${s.source === "normal" ? html`<label class="field-block" title="Which way the normal maps' green channel points. Automatic uses the game's own convention, or reads it from the texture for other models."><span>Normal map green</span>
+          <select id="green" value=${s.green} onChange=${(e) => set({ green: e.target.value })}><option value="auto">Automatic</option><option value="directx">DirectX (Y−)</option><option value="opengl">OpenGL (Y+)</option></select></label>
         <${NumberField} id="detail-radius" label="Detail radius" value=${s.detail_fraction} step=${0.01} min=${0} max=${0.5}
           title="Keeps relief finer than this share of the texture's width. Larger keeps broader shapes; 0 keeps everything (and may bulge)." onChange=${(v) => set({ detail_fraction: v })} />` : null}
         <${NumberField} id="clamp" label="Most displacement" value=${s.max_displacement_mm} step=${0.1} min=${0} max=${100} unit="mm (0: no limit)"

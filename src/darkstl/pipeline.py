@@ -125,7 +125,10 @@ def build_fields(model: SourceModel, source: TriMesh, materials: list[Material],
                 all_uv = source.corner_uvs[np.isin(source.face_material,
                                                    [m for m in used if _material_texture(materials, settings, int(m)) == key])]
                 mask = uv_coverage_mask(all_uv, w, h)
-                hf = height_from_normal_map(img, settings.green, mask, settings.detail_fraction)
+                green = settings.green
+                if green == "auto" and info is not None and info.normal_green:
+                    green = info.normal_green  # the importer knows; detection is for normal maps of unknown origin
+                hf = height_from_normal_map(img, green, mask, settings.detail_fraction)
                 if hf.confidence and hf.confidence < 1.3:
                     warnings.append(f"{model.textures[key].name}: normal map convention unclear "
                                     f"(picked {hf.convention}); try the other one if the relief looks wrong")

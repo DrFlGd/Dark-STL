@@ -73,15 +73,20 @@ def curl_energy(p: np.ndarray, q: np.ndarray, mask: np.ndarray | None = None) ->
     return float(np.mean(np.abs(curl[active])))
 
 
-def detect_convention(rgba: np.ndarray, mask: np.ndarray | None = None) -> tuple[str, float]:
+def detect_convention(rgba: np.ndarray, mask: np.ndarray | None = None,
+                      sigma: float = 1.5) -> tuple[str, float]:
     """Pick the green-channel convention whose slopes are closest to curl-free.
 
     Slopes from a real height field have zero curl. Reading the green channel
     with the wrong sign makes the curl large, so comparing the two is a
-    reliable test. Returns ``(convention, ratio)`` where ratio > 1 means the
-    choice is clear.
+    reliable test. Block compression adds texel-sized noise whose curl can
+    drown that difference (Bloodborne's coat and body maps read as OpenGL
+    without this), so the slopes are blurred by ``sigma`` texels first.
+    Returns ``(convention, ratio)`` where ratio > 1 means the choice is clear.
     """
     p, q_dx = normal_map_slopes(rgba, "directx")
+    if sigma > 0:
+        p, q_dx = ndimage.gaussian_filter(p, sigma), ndimage.gaussian_filter(q_dx, sigma)
     e_dx = curl_energy(p, q_dx, mask)
     e_gl = curl_energy(p, -q_dx, mask)
     if e_dx == e_gl:

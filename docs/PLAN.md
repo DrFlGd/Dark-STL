@@ -30,7 +30,7 @@ importer and registering it in `importers/__init__.py`:
 
 | Importer | Reads | Status |
 | --- | --- | --- |
-| FromSoftware | FLVER2 models in BND/DCX archives, TPF/DDS textures. Per-game differences (markers, compression, PS4 textures, where material data lives) are profiles in `importers/fromsoft/games.py` | Dark Souls Remastered checked on real files; the rest on synthetic files |
+| FromSoftware | FLVER2 models in BND/DCX archives, TPF/DDS textures. Per-game differences (markers, compression, PS4 textures, where material data lives) are profiles in `importers/fromsoft/games.py` | Dark Souls Remastered and Bloodborne checked on real files; the rest on synthetic files |
 | Wavefront OBJ | OBJ + MTL with PNG/JPG/TGA/DDS textures, from any other tool | Done |
 
 An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
@@ -91,8 +91,11 @@ The library groups models by their FromSoftware naming:
 | `oXXXXXX`, `aegXXX_XXX` | Objects | ID range (`o12xxxx`) or asset group (`aeg099`) |
 | `mXX_XX_XX_XX_...` | Map Pieces | map (`m10_00`) |
 
-Low-detail copies (`_l`) are hidden by default, and the game is detected from the folder
-(executable, `dvdroot_ps4`, or the folder name).
+Low-detail copies (`_l`) are hidden by default when the full model is there too; a lone
+low-detail copy is listed. The game is detected from the folder (executable, `dvdroot_ps4`,
+or the folder name), and otherwise from the paths stored inside the archives, which name the
+studio's project (`N:\SPRJ\...` is Bloodborne, `N:\FDP\...` Dark Souls III), so a folder of
+loose extracted files is recognised too.
 
 ### Step 1: even vertex spacing
 
@@ -124,8 +127,10 @@ used, so the side stays straight instead of swelling into a bulge. This is on by
   the model, so strength 1.0 means "the relief the normal map implies". A high-pass then
   removes the very broad shapes the mesh already has (the "Detail radius" setting).
 - **Height / grayscale maps.** Used directly, with a chosen height range in millimetres.
-- **Green channel.** DirectX and OpenGL normal maps flip green. The convention is
-  auto-detected per texture and can be forced.
+- **Green channel.** DirectX and OpenGL normal maps flip green. FromSoftware's games all use
+  DirectX, so their models use that. For other models it is detected per texture (the
+  convention whose slopes integrate without curl, measured after a slight blur so
+  block-compression noise doesn't decide it), and it can always be forced.
 - **Texture detail finer than the vertex spacing** is blurred out first, so it cannot alias
   into noise.
 - **Seams.** The mesh is welded before resampling, so it never tears along UV seams. A height
@@ -194,7 +199,11 @@ differs:
 - [ ] Dark Souls (PTDE and Remastered): armor, character, map piece. `c2509.chrbnd` turned
       out to be an empty placeholder that only carries textures; the app now says so
 - [ ] Dark Souls III: same set
-- [ ] Bloodborne: same set, and confirm the PS4 texture untiling
+- [x] Bloodborne: character (`c1120`, 22 parts), object (`o000612`) and armour
+      (`am_f_9300_l`) load, enhance and export; the PS4 texture untiling is right for BC1, BC4
+      and BC7. Found and fixed on the way: two of the character's normal maps were read with
+      green flipped, a lone low-detail armour file was hidden, and loose files weren't
+      recognised as Bloodborne
 - [ ] Sekiro and Elden Ring: same set with Oodle, and Elden Ring's material lookup
 - [ ] Rigid parts placed by bones match the in-game pose
 - [ ] Compare against the before/after example: same weapon, same look

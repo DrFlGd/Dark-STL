@@ -8,6 +8,7 @@ the games lives in :mod:`.games`.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -43,7 +44,9 @@ def _material(info: materials.MaterialInfo) -> Material:
     shader = info.mtd.replace("\\", "/").rsplit("/", 1)[-1]
     details = [f"shader {shader}"] + [f"{s.type}: {s.texture_name or Path(_basename(s.path)).stem or '-'}"
                                       for s in info.slots]
-    return Material(info.name, info.albedo, info.normal, info.height, info.normal_scale, info.guessed, details)
+    # every FromSoftware game bakes its normal maps with green pointing down the texture (DirectX)
+    return Material(info.name, info.albedo, info.normal, info.height, info.normal_scale, info.guessed, details,
+                    normal_green="directx")
 
 
 def flver_summary(f: flver.Flver) -> list[str]:
@@ -62,6 +65,32 @@ def flver_summary(f: flver.Flver) -> list[str]:
     return lines
 
 
+def _game_from_archives(folder: Path, archives: int = 3, max_files: int = 5000,
+                        max_bytes: int = 64 << 20) -> str | None:
+    """Recognise a folder of loose extracted files by the paths inside the first few of its archives."""
+    seen = opened = 0
+    for dirpath, dirnames, filenames in os.walk(folder):
+        dirnames.sort()
+        for name in sorted(filenames):
+            seen += 1
+            if seen > max_files or opened >= archives:
+                return None
+            path = Path(dirpath) / name
+            if not _OPENABLE.search(name):
+                continue
+            try:
+                if path.stat().st_size > max_bytes:
+                    continue
+                opened += 1
+                names = files.list_models_in_file(path)
+            except Exception:  # noqa: BLE001, S112 - a guess: unreadable files just don't count
+                continue
+            game = next(filter(None, map(profiles.game_from_archive_path, names)), None)
+            if game:
+                return game
+    return None
+
+
 class FromSoftwareImporter(Importer):
     key = "fromsoft"
     name = "FromSoftware (FLVER)"
@@ -69,7 +98,7 @@ class FromSoftwareImporter(Importer):
     games = profiles.GAMES
 
     def detect_game(self, folder: Path) -> str | None:
-        return profiles.detect_game(folder)
+        return profiles.detect_game(folder) or _game_from_archives(folder)
 
     def scan(self, folder: Path, game: str, progress: ScanProgress | None = None) -> list[CatalogEntry]:
         return catalog.scan(folder, game, progress)
@@ -106,7 +135,7 @@ class FromSoftwareImporter(Importer):
             notes.append(f"{asset.name} has no geometry: its model is an empty placeholder "
                          f"({len(f.bones)} bone{'s' if len(f.bones) != 1 else ''}). FromSoftware uses these for "
                          "variants that borrow another model; this file only carries textures.")
-        game = profiles.detect_game(Path(path).parent)
+        game = profiles.game_from_archive_path(asset.inner_name) or profiles.detect_game(Path(path).parent)
 
         def build(options: MeshOptions):
             return flver_to_trimesh(f, FlverMeshOptions(include_meshes=options.parts,

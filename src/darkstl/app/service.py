@@ -375,7 +375,7 @@ class Service:
                     self.library.remove_root(inner)
                 self.library.merge(lib)
                 self._save_folders()
-            count = sum(1 for e in lib.entries if not e.is_lod)  # as the library lists them
+            count = sum(1 for e in lib.entries if not lib.hides(e))  # as the library lists them
             return {"game": game, "path": str(path), "count": count, "notes": lib.notes.get(path, [])}
 
         return self._scan_job(label, run)
