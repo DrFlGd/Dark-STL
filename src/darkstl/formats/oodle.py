@@ -1,9 +1,10 @@
 """Runtime binding to the game's Oodle library for KRAK-compressed DCX files.
 
 Oodle is proprietary and cannot be redistributed, but Sekiro and Elden Ring ship
-``oo2core_6_win64.dll`` next to the game executable. Point Dark STL at it with
-the ``DARKSTL_OODLE`` environment variable, the settings dialog, or by placing
-the DLL next to the files being opened.
+``oo2core_6_win64.dll`` next to the game executable. Dark STL looks for it in
+the folders above any game file it opens, so an unpacked game folder works as
+is; otherwise point at it with ``--oodle``, *File > Set Oodle DLL*, or the
+``DARKSTL_OODLE`` environment variable.
 """
 
 from __future__ import annotations
@@ -23,7 +24,8 @@ _LIBRARY_NAMES = (
     "liboo2corelinux64.so",
 )
 
-_search_dirs: list[Path] = []
+_search_dirs: list[Path] = []  # chosen by the user, searched first
+_hint_dirs: list[Path] = []  # folders above opened game files
 _lib = None
 
 
@@ -38,13 +40,21 @@ def add_search_dir(path: str | os.PathLike) -> None:
         _lib = None
 
 
+def add_hint_path(path: str | os.PathLike, levels: int = 4) -> None:
+    """Also search the folders above a game file, where the game's own DLL usually is."""
+    p = Path(path).resolve()
+    for d in [p, *p.parents][:levels + 1]:
+        if d.is_dir() and d not in _search_dirs and d not in _hint_dirs:
+            _hint_dirs.append(d)
+
+
 def _candidates() -> list[Path]:
     paths: list[Path] = []
     env = os.environ.get("DARKSTL_OODLE")
     if env:
         envp = Path(env)
         paths.extend([envp] if envp.is_file() else [envp / n for n in _LIBRARY_NAMES])
-    for d in _search_dirs:
+    for d in _search_dirs + _hint_dirs:
         paths.extend(d / n for n in _LIBRARY_NAMES)
     return paths
 
@@ -78,7 +88,7 @@ def _load():
     detail = ("; ".join(errors)) if errors else "no oo2core library found"
     raise FormatError(
         "This file uses Oodle (KRAK) compression, used by Sekiro and Elden Ring. "
-        "Point Dark STL at the game's oo2core_6_win64.dll (set DARKSTL_OODLE or use Settings). "
+        "Point Dark STL at the game's oo2core_6_win64.dll (File > Set Oodle DLL, --oodle, or DARKSTL_OODLE). "
         f"Details: {detail}"
     )
 

@@ -40,6 +40,23 @@ def test_dcx_krak_without_oodle_explains(monkeypatch):
         dcx.decompress(bytes(header))
 
 
+
+def test_oodle_found_above_krak_files(tmp_path, monkeypatch):
+    from darkstl import assets
+    from darkstl.formats import oodle
+
+    monkeypatch.setattr(oodle, "_hint_dirs", [])
+    game = tmp_path / "ELDEN RING" / "Game"
+    parts = game / "parts"
+    parts.mkdir(parents=True)
+    (game / "oo2core_6_win64.dll").write_bytes(b"")
+    krak = bytearray(dcx.compress_dflt(b"x" * 10))
+    krak[0x28:0x2C] = b"KRAK"
+    (parts / "wp_a_0100.partsbnd.dcx").write_bytes(bytes(krak))
+    with pytest.raises(FormatError):
+        assets.read_bytes(parts / "wp_a_0100.partsbnd.dcx")  # the empty stand-in DLL cannot load
+    assert (game / "oo2core_6_win64.dll").resolve() in oodle._candidates()
+
 # -- Binders -----------------------------------------------------------------
 
 def test_bnd4_read():

@@ -24,7 +24,7 @@ from typing import Callable
 import numpy as np
 
 from .formats import binder as bnd
-from .formats import dcx, dds, flver, tpf
+from .formats import dcx, dds, flver, oodle, tpf
 from .formats.binary import FormatError
 
 MODEL_EXTENSIONS = (".partsbnd", ".chrbnd", ".objbnd", ".geombnd", ".mapbnd", ".flver", ".flv")
@@ -44,7 +44,10 @@ def file_stem(name: str) -> str:
 
 
 def read_bytes(path: Path) -> bytes:
-    return dcx.maybe_decompress(Path(path).read_bytes())
+    raw = Path(path).read_bytes()
+    if dcx.is_dcx(raw) and b"KRAK" in raw[:0x40]:
+        oodle.add_hint_path(Path(path).parent)  # the game's DLL is usually a few folders up
+    return dcx.maybe_decompress(raw)
 
 
 @dataclass(eq=False)
