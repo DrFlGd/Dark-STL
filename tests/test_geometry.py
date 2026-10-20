@@ -112,6 +112,21 @@ def test_smooth_subdivision_rounds_a_low_poly_tube():
     assert np.allclose(np.linalg.norm(round_.corner_normals, axis=2), 1, atol=1e-5)
 
 
+def test_smooth_subdivision_does_not_swell_a_grip_with_a_smoothed_end():
+    # A long grip whose end cap shares averaged normals with the sides (common on game weapons):
+    # the rim normals lean 45 degrees towards the cap, but the sides below must stay straight.
+    tube = tube_trimesh(radius=0.015, length=0.1, segments=8, rings=1, caps=True)
+    top = np.isclose(tube.vertices[tube.faces][..., 2], 0.1)
+    rim = top & ~np.isclose(np.linalg.norm(tube.vertices[tube.faces][..., :2], axis=2), 0)
+    out = tube.vertices[tube.faces][..., :2] / 0.015
+    lean = np.concatenate([out, np.ones(out.shape[:2] + (1,))], axis=2) / np.sqrt(2)
+    tube.corner_normals[rim] = lean[rim]
+    m = subdivide_max_edge(tube, 0.002, smooth=0.5)
+    middle = (m.vertices[:, 2] > 0.02) & (m.vertices[:, 2] < 0.08)
+    assert radial(m)[middle].max() < 0.015 * 1.05  # was 1.43: a barrel-shaped bulge below the end
+    assert radial(m)[middle].min() > 0.015 * 0.99  # the sides are still rounded
+
+
 def test_smooth_subdivision_keeps_flat_shaded_parts_flat():
     cube = subdivide_max_edge(cube_trimesh(), 0.1, smooth=0.5)
     assert np.allclose(np.abs(cube.vertices).max(axis=1), 0.5, atol=1e-9)  # every vertex still on a face

@@ -31,7 +31,35 @@ def _rotate(arr: np.ndarray, r: np.ndarray) -> np.ndarray:
     return np.take_along_axis(arr, np.broadcast_to(idx, (arr.shape[0], 3) + arr.shape[2:]), axis=1)
 
 
-def _curve_offsets(mesh: TriMesh, face_edge: np.ndarray, split: np.ndarray, weight: float) -> np.ndarray:
+# How far one end's normal may lean along an edge beyond what the other end's normal leans.
+TILT_RATIO = 1.0
+TILT_SLACK = 0.02  # ~1 degree, so nearly straight edges keep their small natural curvature
+
+
+def _match_tilts(na: np.ndarray, nb: np.ndarray, u: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Limit each end's tilt along the edge direction ``u`` to what the other end shows.
+
+    Game models often share one averaged normal between a long side and a
+    small end cap, so the rim normals lean 20-45 degrees along the side while
+    the far end of the same edge leans not at all. Phong curving reads that
+    one-sided lean as a strong bend and swells the side into a barrel (the
+    bulge at the end of a sword grip). A real curve leans both ends, so only
+    the lean the two ends share is kept; lean around the edge (what makes a
+    cylinder round) is untouched.
+    """
+    ta = np.einsum("ij,ij->i", na, u)
+    tb = np.einsum("ij,ij->i", nb, u)
+    ta2 = np.sign(ta) * np.minimum(np.abs(ta), TILT_RATIO * np.abs(tb) + TILT_SLACK)
+    tb2 = np.sign(tb) * np.minimum(np.abs(tb), TILT_RATIO * np.abs(ta) + TILT_SLACK)
+    na = na - (ta - ta2)[:, None] * u
+    nb = nb - (tb - tb2)[:, None] * u
+    na /= np.maximum(np.linalg.norm(na, axis=1, keepdims=True), 1e-30)
+    nb /= np.maximum(np.linalg.norm(nb, axis=1, keepdims=True), 1e-30)
+    return na, nb
+
+
+def _curve_offsets(mesh: TriMesh, face_edge: np.ndarray, split: np.ndarray, weight: float
+                   ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Offsets that move the midpoints of the ``split`` edges onto the surface the shading normals describe.
 
     This is Phong tessellation evaluated at an edge midpoint: the average of the
@@ -40,7 +68,12 @@ def _curve_offsets(mesh: TriMesh, face_edge: np.ndarray, split: np.ndarray, weig
     so repeated splitting converges on the round shape the game shades rather
     than the flat facets it stores. Where the two faces of an edge disagree
     (a hard edge), the larger offset wins so the crease line still curves.
-    Returns one row per split edge, in edge order.
+    The end normals are first passed through :func:`_match_tilts`.
+
+    Returns the offsets (one row per split edge, in edge order), the face and
+    corner index of every split face edge, and the shading normal each of those
+    midpoints should carry, built from the matched normals so a removed lean
+    does not come back at the next level.
     """
     fi, k = np.nonzero(split[face_edge])
     k1 = (k + 1) % 3
@@ -49,13 +82,14 @@ def _curve_offsets(mesh: TriMesh, face_edge: np.ndarray, split: np.ndarray, weig
     d = mesh.vertices[f[fi, k1]] - pa
     na = mesh.corner_normals[fi, k].astype(np.float64)
     nb = mesh.corner_normals[fi, k1].astype(np.float64)
+    na, nb = _match_tilts(na, nb, d / np.maximum(np.linalg.norm(d, axis=1), 1e-30)[:, None])
     off = (0.25 * weight) * (np.einsum("ij,ij->i", d, nb)[:, None] * nb - np.einsum("ij,ij->i", d, na)[:, None] * na)
     edge = face_edge[fi, k]
     order = np.lexsort((-np.einsum("ij,ij->i", off, off), edge))
     first = np.ones(len(order), bool)
     first[1:] = edge[order[1:]] != edge[order[:-1]]
     pick = order[first]  # one corner per split edge, sorted by edge id
-    return off[pick]
+    return off[pick], fi, k, 0.5 * (na + nb)
 
 
 def split_long_edges(mesh: TriMesh, max_edge: float, smooth: float = 0.0, max_splits: int | None = None,
@@ -87,8 +121,10 @@ def split_long_edges(mesh: TriMesh, max_edge: float, smooth: float = 0.0, max_sp
     new_index = np.full(len(edges), -1, np.int64)
     new_index[split] = mesh.n_vertices + np.arange(n_split)
     midpoints = 0.5 * (v[edges[split, 0]] + v[edges[split, 1]])
+    curve = None
     if smooth > 0 and mesh.corner_normals is not None:
-        midpoints += _curve_offsets(mesh, face_edge, split, smooth)
+        curve = _curve_offsets(mesh, face_edge, split, smooth)
+        midpoints += curve[0]
     vertices = np.concatenate([v, midpoints])
 
     faces = mesh.faces
@@ -101,6 +137,9 @@ def split_long_edges(mesh: TriMesh, max_edge: float, smooth: float = 0.0, max_sp
     attr = np.concatenate(parts, axis=2).astype(np.float32)  # (F, 3, 2 or 5)
     mid = new_index[face_edge]  # (F, 3): vertex on edge (k, k+1) or -1
     mid_attr = 0.5 * (attr + np.roll(attr, -1, axis=1))
+    if curve is not None:
+        _, fi, k, mid_normals = curve
+        mid_attr[fi, k, 2:5] = mid_normals
     mask = mid >= 0
     count = mask.sum(axis=1)
     mat = mesh.face_material

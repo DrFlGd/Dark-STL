@@ -83,7 +83,9 @@ Two methods, both in the app and the command line:
 Both methods can **round off curved surfaces**: each new midpoint is bent onto the curve that
 the model's own shading normals describe (Phong tessellation at edge midpoints). A
 16-sided grip comes out round instead of keeping 16 flat facets, flat-shaded parts stay flat,
-and hard edges stay closed. This is on by default.
+and hard edges stay closed. Where a long side shares averaged normals with a small end cap
+(common at the end of grips and scabbards), only the lean both ends of an edge agree on is
+used, so the side stays straight instead of swelling into a bulge. This is on by default.
 
 ### Step 2: displacement from textures
 
