@@ -36,10 +36,8 @@ def clusters_to_mesh(dense: TriMesh, labels: np.ndarray) -> TriMesh:
     sample triangle whose corners fall in three different clusters."""
     n_clusters = int(labels.max()) + 1
     # area-weighted cluster centroids
-    w = np.zeros(dense.n_vertices)
-    areas = dense.face_areas() / 3.0
-    for k in range(3):
-        np.add.at(w, dense.faces[:, k], areas)
+    w = np.bincount(dense.faces.reshape(-1), weights=np.repeat(dense.face_areas() / 3.0, 3),
+                    minlength=dense.n_vertices)
     wsum = np.bincount(labels, weights=w, minlength=n_clusters)
     centroids = np.stack([np.bincount(labels, weights=w * dense.vertices[:, i], minlength=n_clusters)
                           for i in range(3)], axis=1) / np.maximum(wsum, 1e-30)[:, None]
@@ -102,4 +100,7 @@ def isotropic_remesh(mesh: TriMesh, target_vertices: int, snap_to_surface: bool 
     remeshed.face_group = vgrp[remeshed.faces[:, 0]]
     remeshed.metadata["vertex_material"] = vmat
     remeshed.metadata["spacing"] = spacing
+    # Where each new vertex sits on the dense, UV-exact surface, so per-vertex data can be carried over
+    remeshed.metadata["dense"] = dense
+    remeshed.metadata["projection"] = (hits.face, hits.bary)
     return remeshed

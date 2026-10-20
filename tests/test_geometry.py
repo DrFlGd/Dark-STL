@@ -140,12 +140,12 @@ def sphere_trimesh(n=400, seed=0) -> TriMesh:
 
 
 def test_subdivide_to_vertex_count_hits_target():
-    # Irregular meshes (like game models) give a smooth count/length relation;
-    # perfectly regular grids jump in steps, so their count is approximate.
-    m = sphere_trimesh()
-    for target in (5_000, 50_000):
-        s = subdivide_to_vertex_count(m, target)
-        assert abs(s.n_vertices - target) / target < 0.2
+    for m in (sphere_trimesh(), cube_trimesh(), tube_trimesh()):
+        for target in (5_000, 50_000):
+            s = subdivide_to_vertex_count(m, target, smooth=0.5)
+            assert s.n_vertices == target
+            lengths = s.edge_lengths()
+            assert lengths.max() < 2.5 * np.median(lengths)  # evenly spaced, not dense in patches
 
 
 def test_subdivision_evens_out_density():

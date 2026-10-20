@@ -17,10 +17,11 @@ import numpy as np
 from scipy import ndimage
 
 from .assets import ModelAsset
-from .geometry.displace import VertexSamples, displace, vertex_heights
+from .geometry.displace import corner_heights, displace
 from .geometry.mesh import TriMesh
 from .geometry.model_mesh import MeshOptions, flver_to_trimesh
 from .geometry.remesh import acvd_available, isotropic_remesh
+from .geometry.seams import seam_consistent_heights
 from .geometry.subdivide import edge_length_for_vertex_count, subdivide_to_vertex_count
 from .materials import MaterialInfo, resolve_materials
 from .textures.heightmap import (
@@ -173,22 +174,28 @@ def enhance(asset: ModelAsset, settings: EnhanceSettings | None = None,
 
     if method == METHOD_ISOTROPIC:
         resampled = isotropic_remesh(source, target, progress=sub(0.05, 0.6), smooth=settings.smooth)
-        samples = VertexSamples.from_vertex_uvs(resampled, resampled.metadata["vertex_material"])
+        carrier = resampled.metadata.pop("dense")  # heights are worked out here, where UVs are exact
+        projection = resampled.metadata.pop("projection")
     else:
         if target <= source.n_vertices:
             warnings.append(f"Target ({target:,}) is not above the model's {source.n_vertices:,} vertices; "
                             "adaptive subdivision only adds vertices, so the mesh is unchanged")
         resampled = subdivide_to_vertex_count(source, target, progress=sub(0.05, 0.6), smooth=settings.smooth)
-        samples = VertexSamples.from_corners(resampled) if resampled.corner_uvs is not None else None
+        carrier, projection = resampled, None
 
     fields = build_fields(asset, source, materials, settings, spacing, warnings, sub(0.6, 0.85))
-    _report(progress, 0.88, "Displacing vertices")
-    if fields and samples is not None:
-        heights = vertex_heights(resampled.n_vertices, samples, {m: f.world for m, f in fields.items()},
-                                 {m: materials[m].normal_scale for m in fields if m < len(materials)
-                                  and settings.source == SOURCE_NORMAL})
-    else:
-        heights = np.zeros(resampled.n_vertices)
+    heights = np.zeros(resampled.n_vertices)
+    if fields and carrier.corner_uvs is not None:
+        _report(progress, 0.86, "Matching heights across UV seams")
+        scales = {m: materials[m].normal_scale for m in fields
+                  if m < len(materials) and settings.source == SOURCE_NORMAL}
+        per_corner = corner_heights(carrier, {m: f.world for m, f in fields.items()}, scales)
+        undisplaced = set(np.unique(carrier.face_material).tolist()) - set(fields)
+        heights = seam_consistent_heights(carrier, per_corner, undisplaced)
+        if projection is not None:
+            face, bary = projection
+            heights = np.einsum("ij,ij->i", bary, heights[carrier.faces[face]])
+    _report(progress, 0.92, "Displacing vertices")
     max_disp = settings.max_displacement_mm / 1000.0 if settings.max_displacement_mm else None
     displaced = displace(resampled, heights, max_disp)
     _report(progress, 1.0, "Done")

@@ -31,8 +31,8 @@ def _rotate(arr: np.ndarray, r: np.ndarray) -> np.ndarray:
     return np.take_along_axis(arr, np.broadcast_to(idx, (arr.shape[0], 3) + arr.shape[2:]), axis=1)
 
 
-def _curve_offsets(mesh: TriMesh, face_edge: np.ndarray, n_edges: int, weight: float) -> np.ndarray:
-    """Per-edge offset that moves a midpoint onto the curved surface the shading normals describe.
+def _curve_offsets(mesh: TriMesh, face_edge: np.ndarray, split: np.ndarray, weight: float) -> np.ndarray:
+    """Offsets that move the midpoints of the ``split`` edges onto the surface the shading normals describe.
 
     This is Phong tessellation evaluated at an edge midpoint: the average of the
     midpoint projected onto the tangent planes at both ends. With ``weight``
@@ -40,43 +40,55 @@ def _curve_offsets(mesh: TriMesh, face_edge: np.ndarray, n_edges: int, weight: f
     so repeated splitting converges on the round shape the game shades rather
     than the flat facets it stores. Where the two faces of an edge disagree
     (a hard edge), the larger offset wins so the crease line still curves.
+    Returns one row per split edge, in edge order.
     """
+    fi, k = np.nonzero(split[face_edge])
+    k1 = (k + 1) % 3
     f = mesh.faces
-    pa = mesh.vertices[f]
-    d = np.roll(pa, -1, axis=1) - pa  # (F, 3, 3): edge (k, k+1)
-    na = mesh.corner_normals.astype(np.float64)
-    nb = np.roll(na, -1, axis=1)
-    off = (np.einsum("fkc,fkc->fk", d, nb)[..., None] * nb - np.einsum("fkc,fkc->fk", d, na)[..., None] * na)
-    off = (0.25 * weight) * off.reshape(-1, 3)
-    edge = face_edge.reshape(-1)
-    size = np.einsum("ij,ij->i", off, off)
-    order = np.lexsort((-size, edge))
-    _, first = np.unique(edge[order], return_index=True)
-    out = np.zeros((n_edges, 3))
-    out[edge[order[first]]] = off[order[first]]
-    return out
+    pa = mesh.vertices[f[fi, k]]
+    d = mesh.vertices[f[fi, k1]] - pa
+    na = mesh.corner_normals[fi, k].astype(np.float64)
+    nb = mesh.corner_normals[fi, k1].astype(np.float64)
+    off = (0.25 * weight) * (np.einsum("ij,ij->i", d, nb)[:, None] * nb - np.einsum("ij,ij->i", d, na)[:, None] * na)
+    edge = face_edge[fi, k]
+    order = np.lexsort((-np.einsum("ij,ij->i", off, off), edge))
+    first = np.ones(len(order), bool)
+    first[1:] = edge[order[1:]] != edge[order[:-1]]
+    pick = order[first]  # one corner per split edge, sorted by edge id
+    return off[pick]
 
 
-def split_long_edges(mesh: TriMesh, max_edge: float, smooth: float = 0.0) -> tuple[TriMesh, int]:
+def split_long_edges(mesh: TriMesh, max_edge: float, smooth: float = 0.0, max_splits: int | None = None,
+                     limit: int | None = None) -> tuple[TriMesh | None, int]:
     """One refinement pass. Returns the new mesh and the number of edges split.
 
     ``smooth`` > 0 bends new midpoints towards the surface implied by the
     per-corner shading normals (see :func:`_curve_offsets`); 0 keeps them on
-    the flat triangles.
+    the flat triangles. ``max_splits`` splits only that many of the longest
+    qualifying edges (each split adds exactly one vertex). If more than
+    ``limit`` edges qualify, nothing is built and ``(None, count)`` is returned.
     """
     edges, face_edge = mesh.edges_unique()
     v = mesh.vertices
     lengths = np.linalg.norm(v[edges[:, 0]] - v[edges[:, 1]], axis=1)
     split = lengths > max_edge
     n_split = int(split.sum())
+    if max_splits is not None and n_split > max_splits:
+        idx = np.nonzero(split)[0]
+        split[:] = False
+        if max_splits > 0:
+            split[idx[np.argpartition(-lengths[idx], max_splits - 1)[:max_splits]]] = True
+        n_split = max(max_splits, 0)
     if n_split == 0:
         return mesh, 0
+    if limit is not None and n_split > limit:
+        return None, n_split
 
     new_index = np.full(len(edges), -1, np.int64)
     new_index[split] = mesh.n_vertices + np.arange(n_split)
     midpoints = 0.5 * (v[edges[split, 0]] + v[edges[split, 1]])
     if smooth > 0 and mesh.corner_normals is not None:
-        midpoints += _curve_offsets(mesh, face_edge, len(edges), smooth)[split]
+        midpoints += _curve_offsets(mesh, face_edge, split, smooth)
     vertices = np.concatenate([v, midpoints])
 
     faces = mesh.faces
@@ -178,21 +190,77 @@ def split_long_edges(mesh: TriMesh, max_edge: float, smooth: float = 0.0) -> tup
     return out, n_split
 
 
+def _faces_where(mesh: TriMesh, mask: np.ndarray) -> TriMesh:
+    """The selected faces over the same vertex array (indices unchanged)."""
+    return TriMesh(
+        mesh.vertices,
+        mesh.faces[mask],
+        None if mesh.corner_uvs is None else mesh.corner_uvs[mask],
+        mesh.face_material[mask],
+        mesh.face_group[mask],
+        dict(mesh.metadata),
+        None if mesh.corner_normals is None else mesh.corner_normals[mask],
+    )
+
+
+def _join_faces(parts: list[TriMesh], vertices: np.ndarray) -> TriMesh:
+    """Recombine face sets that all index into (a prefix of) ``vertices``."""
+    has_uv = all(p.corner_uvs is not None for p in parts)
+    has_n = all(p.corner_normals is not None for p in parts)
+    return TriMesh(
+        vertices,
+        np.concatenate([p.faces for p in parts]),
+        np.concatenate([p.corner_uvs for p in parts]) if has_uv else None,
+        np.concatenate([p.face_material for p in parts]),
+        np.concatenate([p.face_group for p in parts]),
+        dict(parts[-1].metadata),
+        np.concatenate([p.corner_normals for p in parts]) if has_n else None,
+    )
+
+
+def _refine(mesh: TriMesh, max_edge: float, smooth: float, budget: int | None = None,
+            progress: ProgressFn | None = None) -> tuple[TriMesh, bool]:
+    """Split edges until none is longer than ``max_edge``; ``(mesh, False)`` if ``budget`` vertices ran out first.
+
+    A face whose edges are all short enough can never be touched again (only
+    long edges are split, and those are never shared with it), so it is set
+    aside and each pass only works on the faces that still need splitting.
+    """
+    finished: list[TriMesh] = []
+    current = mesh
+    complete = True
+    for it in range(64):
+        tri = current.vertices[current.faces]
+        active = (np.linalg.norm(tri - np.roll(tri, -1, axis=1), axis=2) > max_edge).any(axis=1)
+        if not active.all():
+            finished.append(_faces_where(current, ~active))
+            current = _faces_where(current, active)
+        if not active.any():
+            break
+        nxt, _ = split_long_edges(current, max_edge, smooth,
+                                  limit=None if budget is None else budget - current.n_vertices)
+        if nxt is None:
+            complete = False
+            break
+        current = nxt
+        if progress:
+            progress(min(0.95, 0.15 * (it + 1)), f"Subdividing: {current.n_vertices:,} vertices")
+    if current.n_faces:
+        finished.append(current)
+    if len(finished) == 1 and finished[0] is mesh:
+        return mesh, complete
+    return _join_faces(finished, current.vertices), complete
+
+
 def subdivide_max_edge(mesh: TriMesh, max_edge: float, max_vertices: int | None = None,
                        progress: ProgressFn | None = None, smooth: float = 0.0) -> TriMesh:
     """Split edges until none is longer than ``max_edge``."""
     if max_edge <= 0:
         raise ValueError("max_edge must be positive")
-    current = mesh
-    for it in range(64):
-        current, n = split_long_edges(current, max_edge, smooth)
-        if progress:
-            progress(min(0.95, 0.15 * (it + 1)), f"Subdividing: {current.n_vertices:,} vertices")
-        if n == 0:
-            break
-        if max_vertices is not None and current.n_vertices > max_vertices:
-            raise MemoryError(f"Subdivision exceeded the vertex limit ({max_vertices:,})")
-    return current
+    result, complete = _refine(mesh, max_edge, smooth, max_vertices, progress)
+    if not complete:
+        raise MemoryError(f"Subdivision would exceed the vertex limit ({max_vertices:,})")
+    return result
 
 
 def edge_length_for_vertex_count(area: float, vertices: int) -> float:
@@ -200,33 +268,31 @@ def edge_length_for_vertex_count(area: float, vertices: int) -> float:
     return math.sqrt(2.0 * area / (math.sqrt(3.0) * max(vertices, 1)))
 
 
-def subdivide_to_vertex_count(mesh: TriMesh, target: int, tolerance: float = 0.1,
-                              progress: ProgressFn | None = None, smooth: float = 0.0) -> TriMesh:
-    """Adaptive subdivision whose result has roughly ``target`` vertices.
+def subdivide_to_vertex_count(mesh: TriMesh, target: int, progress: ProgressFn | None = None,
+                              smooth: float = 0.0) -> TriMesh:
+    """Adaptive subdivision to exactly ``target`` vertices.
 
-    The vertex count behaves like ``V(L) ~ V0 + c / L**2`` for max edge length
-    ``L``, so one cheap calibration run at a coarser length is enough to pick L.
+    The edge limit is lowered by a factor of sqrt(2) at a time, each level
+    continuing from the last, for as long as a whole level fits in the vertex
+    budget. Then the longest remaining edges are split, longest first, until
+    the count is reached. Every split adds exactly one vertex, so the count is
+    exact, and the longest-first order keeps the spacing as even as possible.
     """
-    v0 = mesh.n_vertices
-    if target <= v0:
+    if target <= mesh.n_vertices or mesh.n_faces == 0:
         return mesh
-    area = mesh.surface_area()
-    if area <= 0:
-        return mesh
-    guess = edge_length_for_vertex_count(area, target) / 0.7
-    calib_len = guess * 2.0
-    calib = subdivide_max_edge(mesh, calib_len)
-    c = max((calib.n_vertices - v0) * calib_len ** 2, 1e-30)
-    length = math.sqrt(c / max(target - v0, 1))
-    result = None
-    for attempt in range(3):
+    level = float(mesh.edge_lengths().max())
+    current = mesh
+    while current.n_vertices < target:
+        level /= math.sqrt(2.0)
         if progress:
-            progress(0.1 + 0.3 * attempt, f"Subdividing to max edge {length * 1000:.3f} mm")
-        result = subdivide_max_edge(mesh, length, max_vertices=int(target * 4 + v0), smooth=smooth)
-        err = (result.n_vertices - target) / target
-        if abs(err) <= tolerance:
+            frac = math.log(max(current.n_vertices, 2)) / math.log(max(target, 3))
+            progress(min(0.9, frac), f"Subdividing: {current.n_vertices:,} of {target:,} vertices")
+        current, complete = _refine(current, level, smooth, budget=target)
+        if not complete:
             break
-        c = max((result.n_vertices - v0) * length ** 2, 1e-30)
-        length = math.sqrt(c / max(target - v0, 1))
-    result.metadata["max_edge"] = length
-    return result
+    while current.n_vertices < target:
+        current, n = split_long_edges(current, 0.0, smooth, max_splits=target - current.n_vertices)
+        if n == 0:
+            break
+    current.metadata["max_edge"] = float(current.edge_lengths().max())
+    return current

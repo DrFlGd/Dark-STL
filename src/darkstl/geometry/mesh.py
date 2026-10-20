@@ -83,9 +83,9 @@ class TriMesh:
     def vertex_normals(self) -> np.ndarray:
         """Area-weighted smooth vertex normals."""
         c = self.face_cross()
-        vn = np.zeros_like(self.vertices)
-        for k in range(3):
-            np.add.at(vn, self.faces[:, k], c)
+        corners = self.faces.reshape(-1)
+        vn = np.stack([np.bincount(corners, weights=np.repeat(c[:, i], 3), minlength=self.n_vertices)
+                       for i in range(3)], axis=1)
         n = np.linalg.norm(vn, axis=1, keepdims=True)
         return vn / np.where(n > 0, n, 1)
 
@@ -132,11 +132,10 @@ class TriMesh:
         """One UV per vertex (averaged over its corners); seams get blended values."""
         if self.corner_uvs is None:
             return None
-        acc = np.zeros((self.n_vertices, 2))
-        cnt = np.zeros(self.n_vertices)
-        for k in range(3):
-            np.add.at(acc, self.faces[:, k], self.corner_uvs[:, k])
-            np.add.at(cnt, self.faces[:, k], 1)
+        corners = self.faces.reshape(-1)
+        uv = self.corner_uvs.reshape(-1, 2).astype(np.float64)
+        acc = np.stack([np.bincount(corners, weights=uv[:, i], minlength=self.n_vertices) for i in range(2)], axis=1)
+        cnt = np.bincount(corners, minlength=self.n_vertices)
         return acc / np.maximum(cnt, 1)[:, None]
 
 

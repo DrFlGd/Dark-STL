@@ -2,57 +2,27 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 
 from ..textures.heightmap import sample_bilinear
 from .mesh import TriMesh
 
 
-@dataclass
-class VertexSamples:
-    """Texture lookups contributing to each vertex's height (several per vertex on seams)."""
-
-    vertex: np.ndarray  # (n,) vertex index
-    material: np.ndarray  # (n,) material index
-    uv: np.ndarray  # (n, 2)
-
-    @classmethod
-    def from_corners(cls, mesh: TriMesh) -> "VertexSamples":
-        if mesh.corner_uvs is None:
-            raise ValueError("Mesh has no UVs to sample textures with")
-        return cls(
-            mesh.faces.reshape(-1),
-            np.repeat(mesh.face_material, 3),
-            mesh.corner_uvs.reshape(-1, 2),
-        )
-
-    @classmethod
-    def from_vertex_uvs(cls, mesh: TriMesh, vertex_material: np.ndarray) -> "VertexSamples":
-        """One sample per vertex, for meshes whose UVs came from projection."""
-        uv = np.zeros((mesh.n_vertices, 2))
-        if mesh.corner_uvs is not None:
-            uv[mesh.faces.reshape(-1)] = mesh.corner_uvs.reshape(-1, 2)
-        return cls(np.arange(mesh.n_vertices), vertex_material, uv)
-
-
-def vertex_heights(n_vertices: int, samples: VertexSamples, fields: dict[int, np.ndarray],
+def corner_heights(mesh: TriMesh, fields: dict[int, np.ndarray],
                    uv_scales: dict[int, tuple[float, float]] | None = None) -> np.ndarray:
-    """Average sampled height for every vertex (0 where no field applies)."""
-    total = np.zeros(n_vertices)
-    count = np.zeros(n_vertices)
+    """Height sampled at every face corner's UV from its material's field; 0 where none applies."""
+    out = np.zeros((mesh.n_faces, 3))
+    if mesh.corner_uvs is None:
+        return out
     for mat, field in fields.items():
-        sel = samples.material == mat
+        sel = mesh.face_material == mat
         if not sel.any():
             continue
-        uv = samples.uv[sel]
+        uv = mesh.corner_uvs[sel].reshape(-1, 2).astype(np.float64)
         if uv_scales and mat in uv_scales:
             uv = uv * np.asarray(uv_scales[mat])
-        vals = sample_bilinear(field, uv)
-        np.add.at(total, samples.vertex[sel], vals)
-        np.add.at(count, samples.vertex[sel], 1)
-    return np.where(count > 0, total / np.maximum(count, 1), 0.0)
+        out[sel] = sample_bilinear(field, uv).reshape(-1, 3)
+    return out
 
 
 def displace(mesh: TriMesh, heights: np.ndarray, max_displacement: float | None = None,
