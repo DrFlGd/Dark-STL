@@ -3,8 +3,9 @@ import struct
 import numpy as np
 import pytest
 
-from darkstl.formats import binder, dcx, dds, flver, ps4, tpf
-from darkstl.formats.binary import FormatError
+from darkstl.errors import FormatError
+from darkstl.importers.fromsoft.formats import binder, dcx, flver, ps4, tpf
+from darkstl.textures import dds
 
 import synth
 
@@ -42,8 +43,8 @@ def test_dcx_krak_without_oodle_explains(monkeypatch):
 
 
 def test_oodle_found_above_krak_files(tmp_path, monkeypatch):
-    from darkstl import assets
-    from darkstl.formats import oodle
+    from darkstl.importers.fromsoft import files
+    from darkstl.importers.fromsoft.formats import oodle
 
     monkeypatch.setattr(oodle, "_hint_dirs", [])
     game = tmp_path / "ELDEN RING" / "Game"
@@ -54,7 +55,7 @@ def test_oodle_found_above_krak_files(tmp_path, monkeypatch):
     krak[0x28:0x2C] = b"KRAK"
     (parts / "wp_a_0100.partsbnd.dcx").write_bytes(bytes(krak))
     with pytest.raises(FormatError):
-        assets.read_bytes(parts / "wp_a_0100.partsbnd.dcx")  # the empty stand-in DLL cannot load
+        files.read_bytes(parts / "wp_a_0100.partsbnd.dcx")  # the empty stand-in DLL cannot load
     assert (game / "oo2core_6_win64.dll").resolve() in oodle._candidates()
 
 # -- Binders -----------------------------------------------------------------

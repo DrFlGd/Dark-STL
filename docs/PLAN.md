@@ -1,8 +1,9 @@
 # Dark STL: plan
 
-Dark STL is a desktop tool that reads models and textures extracted from FromSoftware games
-(Dark Souls, Bloodborne, Sekiro, Elden Ring), lets you browse them grouped by type, and turns
-them into high-fidelity meshes for 3D printing and rendering. It does that in three steps:
+Dark STL is a desktop tool that reads models and textures extracted from games, starting with
+the FromSoftware games (Dark Souls, Bloodborne, Sekiro, Elden Ring), lets you browse them
+grouped by type, and turns them into high-fidelity meshes for 3D printing and rendering. It
+does that in three steps:
 
 1. **Even out the vertices.** Resample the model to a user-chosen vertex count, with the
    vertices spread evenly over the surface.
@@ -17,7 +18,25 @@ step 1 every area has the same vertex spacing, so the texture detail comes throu
 
 ## How each step works
 
-### Reading the game files
+### Importers: one per game family, everything after is shared
+
+Reading a game's files is the only part that depends on the game. Each importer turns its
+files into one common model (`SourceModel` in `model.py`): a triangle mesh in metres, Z up,
+with per-corner UVs and shading normals; its parts; its materials, saying which texture is
+the albedo, normal or height map; the textures as images; and any switches the importer
+needs (for example "place rigid parts using their bones"). The explorer, the three steps and
+the exporters only ever see that model, so supporting another game means writing one
+importer and registering it in `importers/__init__.py`:
+
+| Importer | Reads | Status |
+| --- | --- | --- |
+| FromSoftware | FLVER2 models in BND/DCX archives, TPF/DDS textures. Per-game differences (markers, compression, PS4 textures, where material data lives) are profiles in `importers/fromsoft/games.py` | Dark Souls Remastered checked on real files; the rest on synthetic files |
+| Wavefront OBJ | OBJ + MTL with PNG/JPG/TGA/DDS textures, from any other tool | Done |
+
+An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
+folder), `detect_game`, `variants` (files holding several models) and `describe`.
+
+### Reading FromSoftware files
 
 | Layer | Formats | Notes |
 | --- | --- | --- |
@@ -52,9 +71,10 @@ Low-detail copies (`_l`) are hidden by default, and the game is detected from th
 Two methods, both in the app and the command line:
 
 - **Adaptive subdivision** (default). Every edge longer than a limit is split at its midpoint,
-  repeatedly, until none is longer. The limit is chosen so the result lands near the target
-  vertex count (within about 10 %). New vertices sit on the original triangles, so UVs are
-  interpolated exactly and there is no texture drift, and hard edges stay sharp.
+  with the limit lowered step by step; the last step splits the longest remaining edges one
+  at a time, so the result has exactly the target vertex count and even spacing. New
+  vertices sit on the original triangles, so UVs are interpolated exactly and there is no
+  texture drift, and hard edges stay sharp.
 - **Isotropic remesh.** Hits the target count closely and gives near-equilateral triangles of
   one size everywhere (ACVD clustering, then every new vertex is projected back onto the
   original surface to recover exact UVs). Useful when the triangle shape matters, for example
@@ -78,8 +98,11 @@ and hard edges stay closed. This is on by default.
   auto-detected per texture and can be forced.
 - **Texture detail finer than the vertex spacing** is blurred out first, so it cannot alias
   into noise.
-- **Seams.** The mesh is welded before resampling, and every vertex averages the height of
-  all the UV islands it touches, so the surface never tears along UV seams.
+- **Seams.** The mesh is welded before resampling, so it never tears along UV seams. A height
+  integrated from a normal map is only known up to a constant on each UV island, so the two
+  sides of a seam disagree. Each island is shifted so the islands agree along their seams as
+  well as possible, and what still differs is faded smoothly into each island over a few
+  vertex spacings, so no ridge or groove is left along the seam.
 
 ### Step 3: export
 
@@ -96,13 +119,17 @@ Units can be mm, cm, m or inches; the game's own scale is metres.
 
 ```
 src/darkstl/
-  formats/      binary reader, DCX (+ Oodle), BND3/BND4/BXF, TPF, DDS (+ BC decoders), PS4 untiling, FLVER2
-  geometry/     TriMesh, FLVER -> mesh (bones, axes, welding), subdivision, isotropic remesh,
-                closest-point queries, displacement
-  textures/     normal map -> height, grayscale height, UV coverage, texel size
-  assets.py     finds a model and all of its textures on disk
-  materials.py  works out which texture is the albedo / normal / height map for each material
-  library.py    scans game folders and classifies models
+  model.py      SourceModel: what every importer produces and everything else uses
+  importers/    base.py (the Importer interface) and the registry
+    fromsoft/   formats/ (binary reader, DCX + Oodle, BND3/BND4/BXF, TPF, PS4 untiling, FLVER2),
+                games.py (per-game profiles), files.py (finds a model and its textures on disk),
+                materials.py (albedo / normal / height per material), mesh.py (FLVER -> mesh),
+                catalog.py (classifies models by FromSoftware naming)
+    wavefront.py  OBJ + MTL
+  geometry/     TriMesh, subdivision, isotropic remesh, UV seam matching, closest-point queries,
+                displacement
+  textures/     DDS decoding, normal map -> height, grayscale height, UV coverage, texel size
+  library.py    the explorer's catalogue: folders scanned by every importer
   pipeline.py   the three steps with their settings
   export.py     STL, OBJ, PLY, GLB writers
   cli.py        command line
@@ -128,7 +155,10 @@ Everything so far is tested against files built to the published format descript
 against files from the games. This phase loads real samples from each game and fixes what
 differs:
 
-- [ ] Dark Souls (PTDE and Remastered): weapon, armor, character, map piece
+- [x] Dark Souls Remastered weapon: the katana (`WP_A_0402`, blade and scabbard) loads,
+      enhances and exports
+- [ ] Dark Souls (PTDE and Remastered): armor, character, map piece. `c2509.chrbnd` turned
+      out to be an empty placeholder that only carries textures; the app now says so
 - [ ] Dark Souls III: same set
 - [ ] Bloodborne: same set, and confirm the PS4 texture untiling
 - [ ] Sekiro and Elden Ring: same set with Oodle, and Elden Ring's material lookup
@@ -152,6 +182,7 @@ differs:
 - [ ] Batch queue: enhance and export a whole group with one set of settings
 - [ ] Read Elden Ring MATBIN files for exact material maps
 - [ ] Dark Souls II (FLVER2 with its own texture layout)
+- [ ] Importers for other game families, added as they are needed
 
 ### Phase 4: distribution
 
@@ -160,7 +191,7 @@ differs:
 
 ## Known limits today
 
-- Real game files have not been loaded yet (Phase 1).
+- Of the real game files, only Dark Souls Remastered weapons have been loaded so far (Phase 1).
 - Output is not guaranteed watertight; most slicers repair it, but Phase 2 adds a proper fix.
 - Skinned meshes (characters, armor) are shown in their bind pose, which is a T or A pose.
 - Isotropic remeshing needs the optional `pyacvd` package; the app falls back to subdivision

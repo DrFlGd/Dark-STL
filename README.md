@@ -1,7 +1,7 @@
 # Dark STL
 
-Browse the models of Dark Souls, Bloodborne, Sekiro and Elden Ring, add the surface detail
-their textures describe, and export print-ready meshes.
+Browse the models of Dark Souls, Bloodborne, Sekiro and Elden Ring (or any OBJ file), add the
+surface detail their textures describe, and export print-ready meshes.
 
 ![Explorer with an enhanced model](docs/images/explorer-enhanced.png)
 
@@ -19,8 +19,12 @@ See [docs/PLAN.md](docs/PLAN.md) for how each step works, the file formats, and 
 ## Status
 
 Early. All readers and all three steps work and are tested against synthetic game files built
-to the published format descriptions. They have not yet been run on files from the games, so
-expect fixes once real samples are tried (Phase 1 of the plan).
+to the published format descriptions. Dark Souls Remastered weapons have been checked on real
+files; the other games come next (Phase 1 of the plan).
+
+Importing is modular: each game family has its own importer, and everything after import
+(the explorer, the three steps, export) is shared. FromSoftware files and Wavefront OBJ are
+supported today.
 
 ## Install
 
@@ -58,7 +62,9 @@ darkstl            # or darkstl-gui, or python -m darkstl
 1. *File > Add game folder* and pick the extracted game folder. Models appear grouped by game,
    type (weapons, armor, characters, objects, map pieces) and ID range. Type in the search box
    to filter.
-2. Click a model to preview it. *Textures* shows the maps that were found and which one each
+   *File > Open model file* opens a single file, including `.obj`.
+2. Click a model to preview it. If the file holds several models (a weapon and its sheath),
+   pick one at the top of the *Model* tab. *Textures* shows the maps that were found and which one each
    material will use for detail; you can change it there.
 3. On *Enhance*, set the target vertex count and click *Enhance model*. The tab shows the
    vertex spacing that count gives on this model, so you can match it to your printer.
@@ -70,7 +76,7 @@ darkstl            # or darkstl-gui, or python -m darkstl
 
 ```
 darkstl scan "D:/Games/DARK SOULS III/Game"              # list models by game and type
-darkstl info parts/wp_a_0210.partsbnd.dcx                # meshes, materials, textures
+darkstl info parts/wp_a_0210.partsbnd.dcx                # models, parts, materials, textures
 darkstl textures parts/wp_a_0210.partsbnd.dcx -o tex/    # save every texture as PNG
 darkstl export parts/wp_a_0210.partsbnd.dcx -o grip.obj  # original model with textures
 darkstl enhance parts/wp_a_0210.partsbnd.dcx -o grip.stl -n 2000000
@@ -80,7 +86,8 @@ darkstl enhance chr/c2010.chrbnd.dcx -o c2010.stl -n 4000000 --strength 1.5 --sa
 Useful `enhance` options: `--method isotropic` for an exact count of uniform triangles,
 `--source height` to use a grayscale height map, `--flat` to skip rounding, `--green
 opengl|directx` if the relief comes out inverted, `--max-mm` to clamp displacement, and
-`--meshes 0,2` to keep only some sub-meshes (see `info`). Run `darkstl <command> -h` for all.
+`--parts 0,2` to keep only some parts, and `--variant WP_A_0402_1.flver` to pick a model in a
+file that holds several (see `info`). Run `darkstl <command> -h` for all.
 
 ## Development
 
@@ -91,6 +98,9 @@ pytest
 
 The tests build game files byte by byte (`tests/synth.py`), so no game data is needed or
 stored in the repository.
+
+To support another game, write an importer (see `src/darkstl/importers/base.py` and the
+OBJ importer as a short example) and add it to `IMPORTERS` in `importers/__init__.py`.
 
 ## Credits
 

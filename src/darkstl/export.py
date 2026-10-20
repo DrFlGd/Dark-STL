@@ -38,6 +38,7 @@ class ExportOptions:
 
 def export_mesh(mesh: TriMesh, path: str | Path, options: ExportOptions | None = None) -> Path:
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     options = options or ExportOptions()
     ext = path.suffix.lower()
     if ext == ".stl":
@@ -136,7 +137,7 @@ def write_obj(mesh: TriMesh, path: Path, options: ExportOptions) -> None:
     has_uv = mesh.corner_uvs is not None
     mtl_path = path.with_suffix(".mtl")
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write("# Dark STL export\n")
+        fh.write(f"# Dark STL export, {options.scale:g} units per metre\n")
         fh.write(f"mtllib {mtl_path.name}\n")
         np.savetxt(fh, v, fmt="v %.6f %.6f %.6f")
         if options.write_normals:

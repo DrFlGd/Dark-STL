@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .assets import ModelAsset
+from .files import ModelAsset
 
 ROLE_ALBEDO = "albedo"
 ROLE_NORMAL = "normal"

@@ -14,8 +14,7 @@ from typing import Iterator
 import numpy as np
 
 
-class FormatError(ValueError):
-    """Raised when a file does not match the format being parsed."""
+from ....errors import FormatError  # noqa: F401 - re-exported for the format modules
 
 
 class BinaryReader:

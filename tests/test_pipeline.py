@@ -4,8 +4,10 @@ import struct
 import numpy as np
 import pytest
 
-from darkstl import assets, export, library, materials, pipeline
-from darkstl.formats import dcx
+from darkstl import export, library, pipeline
+from darkstl.importers import open_model
+from darkstl.importers.fromsoft import catalog, files, materials
+from darkstl.importers.fromsoft.formats import dcx
 from darkstl.geometry.remesh import acvd_available
 
 import synth
@@ -67,16 +69,16 @@ def test_library_scan_groups_models(weapon_dir):
 
 
 def test_classify_names():
-    assert library.classify("wp_a_1405")[0] == "Weapons"
-    assert library.classify("BD_F_5000")[:2] == ("Armor", "Body")
-    assert library.classify("c0000")[1] == "Player"
-    assert library.classify("aeg099_001")[0] == "Objects"
-    assert library.classify("m10_00_00_00_000100")[0] == "Map Pieces"
-    assert library.classify("fc_m_0100")[0] == "Faces & Hair"
+    assert catalog.classify("wp_a_1405")[0] == "Weapons"
+    assert catalog.classify("BD_F_5000")[:2] == ("Armor", "Body")
+    assert catalog.classify("c0000")[1] == "Player"
+    assert catalog.classify("aeg099_001")[0] == "Objects"
+    assert catalog.classify("m10_00_00_00_000100")[0] == "Map Pieces"
+    assert catalog.classify("fc_m_0100")[0] == "Faces & Hair"
 
 
 def test_load_model_and_materials(weapon_dir):
-    asset = assets.load_model(weapon_dir / "parts" / "wp_a_0300.partsbnd.dcx")
+    asset = files.load_model(weapon_dir / "parts" / "wp_a_0300.partsbnd.dcx")
     assert asset.name.lower() == "wp_a_0300"
     assert set(asset.textures) == {"wp_a_0300_a", "wp_a_0300_n"}
     info = materials.resolve_materials(asset)[0]
@@ -84,18 +86,18 @@ def test_load_model_and_materials(weapon_dir):
 
 
 def test_character_textures_from_sibling_texbnd(weapon_dir):
-    asset = assets.load_model(weapon_dir / "chr" / "c1100.chrbnd.dcx")
+    asset = files.load_model(weapon_dir / "chr" / "c1100.chrbnd.dcx")
     assert "wp_a_0300_n" in asset.textures
 
 
 def test_unpacked_folder_model(weapon_dir):
-    asset = assets.load_model(weapon_dir / "parts" / "wp_a_0400-partsbnd-dcx" / "WP_A_0400.flver")
+    asset = files.load_model(weapon_dir / "parts" / "wp_a_0400-partsbnd-dcx" / "WP_A_0400.flver")
     assert asset.name.lower() == "wp_a_0400"
     assert "wp_a_0300_n" in asset.textures
 
 
 def test_material_fallback_by_name(weapon_dir):
-    asset = assets.load_model(weapon_dir / "parts" / "wp_a_0300.partsbnd.dcx")
+    asset = files.load_model(weapon_dir / "parts" / "wp_a_0300.partsbnd.dcx")
     for t in asset.flver.materials[0].textures:
         t.path = ""  # Elden Ring style: no paths in the FLVER
     info = materials.resolve_materials(asset)[0]
@@ -106,9 +108,9 @@ def test_material_fallback_by_name(weapon_dir):
 def test_enhance_end_to_end(weapon_dir, method):
     if method == "isotropic" and not acvd_available():
         pytest.skip("pyacvd not installed")
-    asset = assets.load_model(weapon_dir / "parts" / "wp_a_0300.partsbnd.dcx")
+    model = open_model(weapon_dir / "parts" / "wp_a_0300.partsbnd.dcx")
     settings = pipeline.EnhanceSettings(target_vertices=40_000, method=method, detail_fraction=0)
-    result = pipeline.enhance(asset, settings)
+    result = pipeline.enhance(model, settings)
     assert not [w for w in result.warnings if "no normal map" in w]
     assert abs(result.displaced.n_vertices - 40_000) / 40_000 < 0.25
     field = result.fields[0]
@@ -124,18 +126,18 @@ def test_enhance_end_to_end(weapon_dir, method):
 
 
 def test_enhance_without_textures_still_resamples(weapon_dir):
-    asset = assets.load_model(weapon_dir / "parts" / "wp_a_0300.partsbnd.dcx")
-    asset.textures.clear()
-    result = pipeline.enhance(asset, pipeline.EnhanceSettings(target_vertices=5_000))
+    model = open_model(weapon_dir / "parts" / "wp_a_0300.partsbnd.dcx")
+    model.textures.clear()
+    result = pipeline.enhance(model, pipeline.EnhanceSettings(target_vertices=5_000))
     assert result.displaced.n_vertices > 1_000
     assert any("no normal map" in w for w in result.warnings)
 
 
 def test_exports(tmp_path, weapon_dir):
-    asset = assets.load_model(weapon_dir / "parts" / "wp_a_0300.partsbnd.dcx")
-    result = pipeline.enhance(asset, pipeline.EnhanceSettings(target_vertices=3_000))
+    model = open_model(weapon_dir / "parts" / "wp_a_0300.partsbnd.dcx")
+    result = pipeline.enhance(model, pipeline.EnhanceSettings(target_vertices=3_000))
     mesh = result.displaced
-    opts = export.ExportOptions(textures={0: asset.textures["wp_a_0300_a"].decode()}, material_names=["Blade"])
+    opts = export.ExportOptions(textures={0: model.textures["wp_a_0300_a"].decode()}, material_names=["Blade"])
 
     stl = export.export_mesh(mesh, tmp_path / "out.stl", opts)
     tris = export.read_stl(stl)
@@ -175,7 +177,7 @@ def test_textures_from_extra_folder(tmp_path):
     tx.mkdir()
     (tx / "m10_wall_n.tpf.dcx").write_bytes(
         dcx.compress_dflt(synth.build_tpf([("m10_wall_n", synth.rgba_dds(np.zeros((4, 4, 4), np.uint8)))])))
-    asset = assets.load_model(model / "m10_00_00_00_000100.flver", extra_texture_dirs=(tx,))
+    asset = files.load_model(model / "m10_00_00_00_000100.flver", extra_texture_dirs=(tx,))
     assert "m10_wall_n" in asset.textures
 
 

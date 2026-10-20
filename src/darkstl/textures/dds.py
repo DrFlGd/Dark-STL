@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .binary import FormatError
+from ..errors import FormatError
 
 DDSD_MIPMAPCOUNT = 0x20000
 DDPF_ALPHAPIXELS = 0x1

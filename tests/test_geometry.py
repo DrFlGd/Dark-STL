@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from darkstl.formats import flver
+from darkstl.importers.fromsoft.formats import flver
+from darkstl.importers.fromsoft.mesh import FlverMeshOptions, flver_to_trimesh
 from darkstl.geometry.mesh import TriMesh, weld
-from darkstl.geometry.model_mesh import MeshOptions, flver_to_trimesh
 from darkstl.geometry.proximity import SurfaceLocator, closest_point_on_triangles
 from darkstl.geometry.remesh import acvd_available, isotropic_remesh
 from darkstl.geometry.subdivide import subdivide_max_edge, subdivide_to_vertex_count
@@ -46,7 +46,7 @@ def test_static_mesh_bone_transform():
     mesh = synth.SynthMesh(pos, nrm, uv, idx, bone_indices=np.tile([1, 0, 0, 0], (len(pos), 1)), mesh_bones=[0, 1])
     f = flver.read_flver(synth.build_flver([mesh], [("m", "m.mtd", [])], bones=bones))
     moved = flver_to_trimesh(f)
-    still = flver_to_trimesh(f, MeshOptions(apply_bone_transforms=False))
+    still = flver_to_trimesh(f, FlverMeshOptions(apply_bone_transforms=False))
     assert np.allclose(moved.vertices[:, 2], 5)  # game +Y 5 -> export +Z 5
     assert np.allclose(still.vertices[:, 2], 0)
 
@@ -56,7 +56,7 @@ def test_include_meshes_filter():
     meshes = [synth.SynthMesh(pos, nrm, uv, idx), synth.SynthMesh(pos + [0, 0, 3], nrm, uv, idx)]
     f = flver.read_flver(synth.build_flver(meshes, [("m", "m.mtd", [])]))
     assert flver_to_trimesh(f).n_faces == 4
-    only = flver_to_trimesh(f, MeshOptions(include_meshes={1}))
+    only = flver_to_trimesh(f, FlverMeshOptions(include_meshes={1}))
     assert only.n_faces == 2 and set(only.face_group) == {1}
 
 
@@ -192,3 +192,25 @@ def test_isotropic_remesh_cube():
     lengths = r.edge_lengths()
     assert lengths.std() / lengths.mean() < 0.35  # evenly spaced
     assert r.corner_uvs is not None and r.corner_uvs.shape == (r.n_faces, 3, 2)
+
+
+def test_seam_heights_have_no_steps():
+    from darkstl.geometry.seams import seam_consistent_heights
+
+    cube = subdivide_to_vertex_count(cube_trimesh(), 6_000)  # 6 UV islands, one per side
+    rng = np.random.default_rng(1)
+    p = cube.vertices[cube.faces]  # (F, 3, 3) corner positions
+    smooth = 0.01 * np.sin(4 * p[..., 0]) * np.cos(3 * p[..., 1])
+    side = np.argmax(np.abs(cube.face_normals()), axis=1) * 2 + (cube.face_normals().max(axis=1) > 0.5)
+    cube.corner_uvs[..., 0] = (0.8 * cube.corner_uvs[..., 0] + 0.1 + side[:, None]) / 6  # separate islands
+    offsets = rng.uniform(-0.05, 0.05, 6)  # each island integrated with its own unknown constant
+    corner = smooth + offsets[side][:, None]
+
+    naive = np.bincount(cube.faces.ravel(), weights=corner.ravel()) / np.bincount(cube.faces.ravel())
+    fixed = seam_consistent_heights(cube, corner)
+    edges, _ = cube.edges_unique()
+    step = lambda h: np.abs(h[edges[:, 0]] - h[edges[:, 1]]).max()
+    true_h = np.zeros(cube.n_vertices)
+    true_h[cube.faces.ravel()] = smooth.ravel()
+    assert step(naive) > 0.02  # averaging alone leaves steps along the cube edges
+    assert step(fixed) < 2 * step(true_h) + 1e-3

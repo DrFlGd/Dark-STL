@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import dcx, dds
+from ....textures import dds
+from . import dcx
 from .binary import BinaryReader, FormatError
 
 PLATFORM_PC = 0

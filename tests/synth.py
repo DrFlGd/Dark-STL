@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from darkstl.formats import flver as F
-from darkstl.formats.binary import reverse_bits
+from darkstl.importers.fromsoft.formats import flver as F
+from darkstl.importers.fromsoft.formats.binary import reverse_bits
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +129,7 @@ def build_flver(meshes: list[SynthMesh], materials: list[tuple[str, str, list[tu
             data.append(0)
 
     out = bytearray()
-    all_pos = np.concatenate([m.positions for m in meshes])
+    all_pos = np.concatenate([m.positions for m in meshes]) if meshes else np.zeros((1, 3))
     out += b"FLVER\0" + (b"B\0" if big_endian else b"L\0")
     out += struct.pack(e + "iiiiiiii", version, data_offset, len(data), 0, len(materials), len(bones),
                        len(meshes), len(meshes))
@@ -296,7 +296,7 @@ def build_tpf_ps4(name: str, fmt: int, width: int, height: int, payload: bytes, 
 
 
 def rgba_dds(img: np.ndarray) -> bytes:
-    from darkstl.formats.dds import build_dds
+    from darkstl.textures.dds import build_dds
 
     h, w = img.shape[:2]
     return build_dds("R8G8B8A8", w, h, np.ascontiguousarray(img, np.uint8).tobytes())

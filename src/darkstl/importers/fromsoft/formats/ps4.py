@@ -15,7 +15,7 @@ import os
 
 import numpy as np
 
-from . import dds
+from ....textures import dds
 from .binary import FormatError
 
 TILE_BLOCKS = 8  # tiles are 8x8 blocks (32x32 pixels)

@@ -9,7 +9,7 @@ pytest.importorskip("PySide6")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ["DARKSTL_NO_3D"] = "1"
 
-from PySide6.QtCore import QModelIndex, QSettings, QThreadPool  # noqa: E402
+from PySide6.QtCore import QModelIndex, QSettings, Qt, QThreadPool  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from darkstl import export  # noqa: E402
@@ -64,7 +64,7 @@ def test_window_scan_open_enhance_export(window, weapon_dir, tmp_path):  # noqa:
 
     leaf = next(i for i in leaves(window.tree.model()) if i.data().endswith("wp_a_0300"))
     window._on_tree_activated(leaf)
-    wait_for(lambda: window.asset is not None)
+    wait_for(lambda: window.model is not None)
     assert window.source_mesh.n_faces == 32
     assert window.texture_list.count() == 2
 
@@ -79,3 +79,33 @@ def test_window_scan_open_enhance_export(window, weapon_dir, tmp_path):  # noqa:
     wait_for(lambda: out.exists() and out.stat().st_size > 84)
     QThreadPool.globalInstance().waitForDone(10_000)
     assert export.read_stl(out).shape[0] == window.result.displaced.n_faces
+
+
+def test_window_variants_and_placeholders(window, tmp_path):
+    import synth
+    from darkstl.importers.fromsoft.formats import dcx
+
+    pos, nrm, uv, idx = synth.grid_plane(1)
+    sword = synth.build_flver([synth.SynthMesh(pos, nrm, uv, idx)], [("m", "m.mtd", [])])
+    sheath = synth.build_flver([synth.SynthMesh(pos * 2, nrm, uv, idx)] * 2, [("m", "m.mtd", [])])
+    pair = tmp_path / "wp_a_0402.partsbnd.dcx"
+    pair.write_bytes(dcx.compress_dflt(synth.build_bnd3([(200, "WP_A_0402.flver", sword),
+                                                         (201, "WP_A_0402_1.flver", sheath)])))
+    window.load(pair, None)
+    wait_for(lambda: window.model is not None)
+    assert not window.variant_row.isHidden() and window.variant.count() == 2
+    assert window.mesh_table.rowCount() == 1 and list(window.option_boxes) == ["bones"]
+    window.variant.setCurrentIndex(1)
+    window._on_variant_chosen(1)
+    wait_for(lambda: window.model.variant == "WP_A_0402_1.flver")
+    assert window.mesh_table.rowCount() == 2 and window.source_mesh.n_faces == 4
+    window.mesh_table.item(0, 0).setCheckState(Qt.Unchecked)
+    assert window.source_mesh.n_faces == 2
+
+    empty = tmp_path / "c2509.chrbnd.dcx"
+    empty.write_bytes(dcx.compress_dflt(synth.build_bnd3([(200, "c2509.flver", synth.build_flver([], []))])))
+    window.load(empty, None)
+    wait_for(lambda: window.model.name == "c2509")
+    assert window.variant_row.isHidden()
+    assert "no geometry" in window.model_notes.text() and not window.model_notes.isHidden()
+    assert not window.run_button.isEnabled() and not window.export_button.isEnabled()

@@ -23,8 +23,9 @@ from typing import Callable
 
 import numpy as np
 
+from ...textures import dds
 from .formats import binder as bnd
-from .formats import dcx, dds, flver, oodle, tpf
+from .formats import dcx, flver, oodle, tpf
 from .formats.binary import FormatError
 
 MODEL_EXTENSIONS = (".partsbnd", ".chrbnd", ".objbnd", ".geombnd", ".mapbnd", ".flver", ".flv")
@@ -79,6 +80,7 @@ class ModelAsset:
     flver: flver.Flver
     textures: dict[str, TextureRef] = field(default_factory=dict)  # lower-case name -> ref
     notes: list[str] = field(default_factory=list)
+    variants: list[str] = field(default_factory=list)  # every model in the file, when it holds several
 
     def texture(self, name: str) -> TextureRef | None:
         return self.textures.get(name.lower())
@@ -198,6 +200,7 @@ def load_model(path: str | os.PathLike, inner_name: str | None = None,
     data = read_bytes(path)
     textures: dict[str, TextureRef] = {}
     notes: list[str] = []
+    variants: list[str] = []
     stem = file_stem(path.name)
 
     if flver.is_flver(data):
@@ -216,8 +219,10 @@ def load_model(path: str | os.PathLike, inner_name: str | None = None,
             if not match:
                 raise FormatError(f"{inner_name} not found in {path.name}")
             chosen = match[0]
-        if len(candidates) > 1 and inner_name is None:
-            notes.append(f"{path.name} holds {len(candidates)} models; showing {chosen.basename}")
+        if len(candidates) > 1:
+            variants = [f.basename for f in candidates]
+            if inner_name is None:
+                notes.append(f"{path.name} holds {len(candidates)} models; showing {chosen.basename}")
         model = flver.read_flver(chosen.data)
         inner = chosen.name
         stem = file_stem(chosen.basename) or stem
@@ -245,7 +250,7 @@ def load_model(path: str | os.PathLike, inner_name: str | None = None,
             for d in extra_texture_dirs:
                 _add_from_texture_dir(textures, Path(d), missing)
 
-    return ModelAsset(stem, path, inner, model, textures, notes)
+    return ModelAsset(stem, path, inner, model, textures, notes, variants)
 
 
 def _add_from_texture_dir(textures: dict[str, TextureRef], directory: Path, wanted: set[str]) -> None:

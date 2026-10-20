@@ -38,13 +38,12 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__
-from ..assets import ModelAsset, load_model
 from ..export import FORMATS, ExportOptions, export_mesh
 from ..geometry.mesh import TriMesh
-from ..geometry.model_mesh import MeshOptions, flver_to_trimesh
 from ..geometry.remesh import acvd_available
-from ..library import GAMES, CatalogEntry, Library
-from ..materials import MaterialInfo, resolve_materials
+from ..importers import IMPORTERS, open_file_filter, open_model
+from ..library import Library, detect_game
+from ..model import CatalogEntry, Material, MeshOptions, SourceModel
 from ..pipeline import EnhanceResult, EnhanceSettings, enhance
 from . import workers
 from .viewport import Viewport
@@ -71,9 +70,10 @@ class MainWindow(QMainWindow):
         self.resize(1500, 900)
         self.settings = QSettings("DarkSTL", "DarkSTL")
         self.library = Library()
-        self.asset: ModelAsset | None = None
+        self.model: SourceModel | None = None
         self.entry: CatalogEntry | None = None
-        self.materials: list[MaterialInfo] = []
+        self.materials: list[Material] = []
+        self.option_boxes: dict[str, QCheckBox] = {}
         self.source_mesh: TriMesh | None = None
         self.result: EnhanceResult | None = None
         self._jobs = []
@@ -155,19 +155,31 @@ class MainWindow(QMainWindow):
         self.model_info.setWordWrap(True)
         self.model_info.setTextInteractionFlags(Qt.TextSelectableByMouse)
         v.addWidget(self.model_info)
-        box = QGroupBox("Meshes (untick to leave out of preview and export)")
+        self.variant_row = QWidget()
+        rv = QHBoxLayout(self.variant_row)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.addWidget(QLabel("Model in this file:"))
+        self.variant = QComboBox()
+        self.variant.setToolTip("This file holds several models (for example a weapon and its sheath).")
+        self.variant.activated.connect(self._on_variant_chosen)
+        rv.addWidget(self.variant, 1)
+        self.variant_row.hide()
+        v.addWidget(self.variant_row)
+        self.model_notes = QLabel()
+        self.model_notes.setWordWrap(True)
+        self.model_notes.setStyleSheet("color: #d9a441;")
+        self.model_notes.hide()
+        v.addWidget(self.model_notes)
+        box = QGroupBox("Parts (untick to leave out of preview and export)")
         bv = QVBoxLayout(box)
         self.mesh_table = QTableWidget(0, 4)
-        self.mesh_table.setHorizontalHeaderLabels(["Mesh", "Material", "Vertices", "Triangles"])
+        self.mesh_table.setHorizontalHeaderLabels(["Part", "Material", "Vertices", "Triangles"])
         self.mesh_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.mesh_table.verticalHeader().hide()
         self.mesh_table.itemChanged.connect(self._on_mesh_toggled)
         bv.addWidget(self.mesh_table)
-        self.bone_toggle = QCheckBox("Place rigid parts using their bones")
-        self.bone_toggle.setChecked(True)
-        self.bone_toggle.setToolTip("Non-skinned meshes are stored relative to a bone; untick if parts look misplaced.")
-        self.bone_toggle.toggled.connect(lambda _: self.rebuild_source_mesh())
-        bv.addWidget(self.bone_toggle)
+        self.options_layout = QVBoxLayout()  # the importer's own switches (bones, units...)
+        bv.addLayout(self.options_layout)
         v.addWidget(box)
         view = QGroupBox("View")
         fv = QFormLayout(view)
@@ -346,7 +358,7 @@ class MainWindow(QMainWindow):
         games = self.settings.value("root_games", [], type=list) or []
         oodle_path = self.settings.value("oodle", "", type=str)
         if oodle_path:
-            from ..formats import oodle
+            from ..importers.fromsoft.formats import oodle
 
             oodle.add_search_dir(oodle_path)
         for root, game in zip(roots, games + [None] * len(roots)):
@@ -366,10 +378,8 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Folder with extracted game files")
         if not folder:
             return
-        from ..library import detect_game
-
         guess = detect_game(folder)
-        options = list(GAMES)
+        options = [g for imp in IMPORTERS for g in imp.games] + ["Other models"]
         idx = options.index(guess) if guess in options else 0
         game, ok = QInputDialog.getItem(self, "Which game?", "These files are from:", options, idx, True)
         if ok:
@@ -441,27 +451,24 @@ class MainWindow(QMainWindow):
             self.load(entry.path, entry)
 
     def open_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open model", "",
-                                              "Models (*.partsbnd *.chrbnd *.objbnd *.geombnd *.mapbnd *.flver *.dcx)"
-                                              ";;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open model", "", open_file_filter())
         if path:
             self.load(Path(path), None)
 
     # ----------------------------------------------------------------- loading
 
-    def load(self, path: Path, entry: CatalogEntry | None) -> None:
+    def load(self, path: Path, entry: CatalogEntry | None, variant: str | None = None) -> None:
         dirs = self.texture_dirs()
 
         def job(progress):
             progress(0.1, f"Reading {path.name}")
-            asset = load_model(path, extra_texture_dirs=dirs)
+            model = open_model(path, variant, dirs)
             progress(0.6, "Building mesh")
-            mesh = flver_to_trimesh(asset.flver, MeshOptions())
-            mats = resolve_materials(asset)
-            return asset, mesh, mats
+            return model, model.build_mesh(MeshOptions())
 
         def done(res):
-            self.asset, self.source_mesh, self.materials = res
+            self.model, self.source_mesh = res
+            self.materials = self.model.materials
             self.entry = entry
             self.result = None
             self.view_which.setCurrentIndex(0)
@@ -469,65 +476,94 @@ class MainWindow(QMainWindow):
             self._populate_model_tab()
             self._populate_textures_tab()
             self._update_spacing_label()
-            self.run_button.setEnabled(True)
-            self.export_button.setEnabled(True)
+            has_geometry = self.source_mesh.n_faces > 0
+            self.run_button.setEnabled(has_geometry)
+            self.export_button.setEnabled(has_geometry)
             self.enhance_log.clear()
-            for note in self.asset.notes:
+            for note in self.model.notes:
                 self.enhance_log.append(note)
             self.refresh_view(reset_camera=True)
-            self.statusBar().showMessage(f"Loaded {self.asset.name}: {self.source_mesh.n_vertices:,} vertices, "
-                                         f"{self.source_mesh.n_faces:,} triangles, {len(self.asset.textures)} textures")
+            name = self.model.variant or self.model.name
+            self.statusBar().showMessage(f"Loaded {name}: {self.source_mesh.n_vertices:,} vertices, "
+                                         f"{self.source_mesh.n_faces:,} triangles, {len(self.model.textures)} textures")
 
         self._run(job, done, busy=f"Loading {path.name}")
 
+    def _on_variant_chosen(self, index: int) -> None:
+        name = self.variant.itemData(index)
+        if self.model is not None and name and name != self.model.variant:
+            self.load(self.model.path, self.entry, name)
+
     def _populate_model_tab(self) -> None:
-        a = self.asset
-        f = a.flver
-        self.model_info.setText(
-            f"<b>{a.name}</b><br>{a.path}<br>FLVER 0x{f.version:X} ({f.game_hint})<br>"
-            f"{len(f.meshes)} meshes, {len(f.materials)} materials, {len(f.bones)} bones, "
-            f"{len(a.textures)} textures found")
+        m = self.model
+        title = m.variant if m.variant and len(m.variants) > 1 else m.name
+        lines = [f"<b>{title}</b>", str(m.path)] + m.info[:2] + [f"{len(m.textures)} textures found"]
+        self.model_info.setText("<br>".join(lines))
+        self.variant.clear()
+        for name in m.variants:
+            self.variant.addItem(name, name)
+        if m.variants:
+            self.variant.setCurrentIndex(max(self.variant.findData(m.variant), 0))
+        self.variant_row.setVisible(len(m.variants) > 1)
+        self.model_notes.setText("<br>".join(m.notes))
+        self.model_notes.setVisible(bool(m.notes))
+
         self.mesh_table.blockSignals(True)
-        self.mesh_table.setRowCount(len(f.meshes))
-        for i, m in enumerate(f.meshes):
-            chk = QTableWidgetItem(str(i))
+        self.mesh_table.setRowCount(len(m.parts))
+        for i, part in enumerate(m.parts):
+            chk = QTableWidgetItem(part.name)
             chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
             chk.setCheckState(Qt.Checked)
-            mat = f.materials[m.material_index].name if m.material_index < len(f.materials) else "?"
+            mat = m.materials[part.material].name if part.material < len(m.materials) else "?"
             self.mesh_table.setItem(i, 0, chk)
             self.mesh_table.setItem(i, 1, QTableWidgetItem(mat))
-            self.mesh_table.setItem(i, 2, QTableWidgetItem(f"{m.vertices.count:,}"))
-            self.mesh_table.setItem(i, 3, QTableWidgetItem(f"{len(m.triangles()):,}"))
+            self.mesh_table.setItem(i, 2, QTableWidgetItem(f"{part.vertices:,}"))
+            self.mesh_table.setItem(i, 3, QTableWidgetItem(f"{part.triangles:,}"))
         self.mesh_table.blockSignals(False)
+
+        for box in self.option_boxes.values():
+            self.options_layout.removeWidget(box)
+            box.deleteLater()
+        self.option_boxes = {}
+        for opt in m.options:
+            box = QCheckBox(opt.label)
+            box.setChecked(opt.default)
+            box.setToolTip(opt.tooltip)
+            box.toggled.connect(lambda _: self.rebuild_source_mesh())
+            self.options_layout.addWidget(box)
+            self.option_boxes[opt.key] = box
 
     def _populate_textures_tab(self) -> None:
         while self.material_form.rowCount():
             self.material_form.removeRow(0)
         self.normal_choices: dict[int, QComboBox] = {}
-        keys = sorted(self.asset.textures)
-        for info in self.materials:
+        textures = self.model.textures
+        keys = sorted(textures)
+        for index, info in enumerate(self.materials):
             combo = QComboBox()
             combo.addItem("(none)", None)
             for k in keys:
-                combo.addItem(self.asset.textures[k].name, k)
+                combo.addItem(textures[k].name, k)
             combo.setToolTip("Texture used for displacement (normal map, or height map if chosen as source)")
-            self.normal_choices[info.index] = combo
+            self.normal_choices[index] = combo
             label = f"{info.name}" + (" *" if info.guessed else "")
             self.material_form.addRow(label, combo)
+            if info.details:
+                self.material_form.labelForField(combo).setToolTip("\n".join(info.details))
         self._sync_detail_choices()
         self.texture_list.clear()
         for k in keys:
-            ref = self.asset.textures[k]
-            item = QListWidgetItem(ref.name)
+            tex = textures[k]
+            item = QListWidgetItem(tex.name)
             item.setData(Qt.UserRole, k)
-            item.setToolTip(ref.source)
+            item.setToolTip(tex.source)
             self.texture_list.addItem(item)
         self.texture_preview.clear()
         self.texture_meta.clear()
         if keys:
             self.texture_list.setCurrentRow(0)
 
-    def _default_detail(self, info: MaterialInfo) -> str | None:
+    def _default_detail(self, info: Material) -> str | None:
         return info.height if self.source.currentData() == "height" else info.normal
 
     def _sync_detail_choices(self) -> None:
@@ -537,14 +573,12 @@ class MainWindow(QMainWindow):
             combo.setCurrentIndex(max(i, 0))
 
     def _on_texture_selected(self, item, _prev=None) -> None:
-        if item is None or self.asset is None:
+        if item is None or self.model is None:
             return
-        ref = self.asset.textures[item.data(Qt.UserRole)]
+        tex = self.model.textures[item.data(Qt.UserRole)]
         try:
-            img = ref.decode()
-            info = ref.info()
-            self.texture_preview.setPixmap(numpy_to_pixmap(img))
-            self.texture_meta.setText(f"{info.width}x{info.height} {info.codec}  -  {ref.source}")
+            self.texture_preview.setPixmap(numpy_to_pixmap(tex.decode()))
+            self.texture_meta.setText(f"{tex.describe()}  -  {tex.source}")
         except Exception as exc:  # noqa: BLE001
             self.texture_preview.setText(f"Could not decode: {exc}")
 
@@ -552,12 +586,12 @@ class MainWindow(QMainWindow):
         item = self.texture_list.currentItem()
         if item is None:
             return
-        ref = self.asset.textures[item.data(Qt.UserRole)]
-        path, _ = QFileDialog.getSaveFileName(self, "Save texture", f"{ref.name}.png", "PNG (*.png)")
+        tex = self.model.textures[item.data(Qt.UserRole)]
+        path, _ = QFileDialog.getSaveFileName(self, "Save texture", f"{Path(tex.name).stem}.png", "PNG (*.png)")
         if path:
             from ..export import write_png
 
-            write_png(ref.decode(), Path(path))
+            write_png(tex.decode(), Path(path))
 
     def add_texture_dir(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Folder with extra textures (e.g. map textures)")
@@ -566,21 +600,21 @@ class MainWindow(QMainWindow):
             if folder not in dirs:
                 dirs.append(folder)
             self.settings.setValue("texture_dirs", dirs)
-            if self.asset is not None:
-                self.load(self.asset.path, self.entry)
+            if self.model is not None:
+                self.load(self.model.path, self.entry, self.model.variant)
 
     def choose_oodle(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Locate oo2core_6_win64.dll (in the Sekiro / Elden Ring folder)",
                                               "", "Oodle (oo2core*.dll liboo2core*);;All files (*)")
         if path:
-            from ..formats import oodle
+            from ..importers.fromsoft.formats import oodle
 
             oodle.add_search_dir(path)
             self.settings.setValue("oodle", path)
 
     # ------------------------------------------------------------------- mesh
 
-    def included_meshes(self) -> set[int]:
+    def included_parts(self) -> set[int]:
         return {i for i in range(self.mesh_table.rowCount())
                 if self.mesh_table.item(i, 0).checkState() == Qt.Checked}
 
@@ -589,12 +623,13 @@ class MainWindow(QMainWindow):
             self.rebuild_source_mesh()
 
     def mesh_options(self) -> MeshOptions:
-        return MeshOptions(include_meshes=self.included_meshes(), apply_bone_transforms=self.bone_toggle.isChecked())
+        return MeshOptions(parts=self.included_parts(),
+                           flags={key: box.isChecked() for key, box in self.option_boxes.items()})
 
     def rebuild_source_mesh(self) -> None:
-        if self.asset is None:
+        if self.model is None:
             return
-        self.source_mesh = flver_to_trimesh(self.asset.flver, self.mesh_options())
+        self.source_mesh = self.model.build_mesh(self.mesh_options())
         self.result = None
         self.view_which.setCurrentIndex(0)
         self.view_which.setEnabled(False)
@@ -616,7 +651,7 @@ class MainWindow(QMainWindow):
             m = int(m)
             if m < len(self.materials) and self.materials[m].albedo:
                 try:
-                    out[m] = self.asset.textures[self.materials[m].albedo].decode()
+                    out[m] = self.model.textures[self.materials[m].albedo].decode()
                 except Exception:  # noqa: BLE001 - preview falls back to clay
                     pass
         return out
@@ -629,6 +664,9 @@ class MainWindow(QMainWindow):
     def refresh_view(self, reset_camera: bool = False) -> None:
         mesh = self.current_mesh()
         if mesh is None:
+            return
+        if mesh.n_faces == 0:
+            self.viewport.clear()
             return
         mode = self.view_mode.currentText().lower()
         textures = self.albedo_textures(mesh) if mode == "textured" else None
@@ -657,16 +695,16 @@ class MainWindow(QMainWindow):
         )
 
     def run_enhance(self) -> None:
-        if self.asset is None:
+        if self.model is None:
             return
         settings = self.enhance_settings()
-        asset = self.asset
+        model = self.model
         self.run_button.setEnabled(False)
         self.enhance_log.append(f"Enhancing to {settings.target_vertices:,} vertices ({settings.method})...")
 
         def done(result: EnhanceResult):
             self.run_button.setEnabled(True)
-            if asset is not self.asset:  # another model was opened while this one was running
+            if model is not self.model:  # another model was opened while this one was running
                 return
             self.result = result
             st = result.stats()
@@ -674,7 +712,7 @@ class MainWindow(QMainWindow):
                 f"Done: {st['vertices']:,} vertices, {st['faces']:,} triangles; "
                 f"largest displacement {st['max_displacement_mm']:.3f} mm")
             for mat, f in result.fields.items():
-                self.enhance_log.append(f"  {self.materials[mat].name}: {asset.textures[f.texture].name}, "
+                self.enhance_log.append(f"  {self.materials[mat].name}: {model.textures[f.texture].name}, "
                                         f"green {f.field.convention or 'n/a'}, texel {f.texel_size * 1000:.3f} mm")
             for w in result.warnings:
                 self.enhance_log.append(f"  warning: {w}")
@@ -687,12 +725,12 @@ class MainWindow(QMainWindow):
             self.run_button.setEnabled(True)
             self.enhance_log.append(f"Failed: {msg}")
 
-        self._run(lambda progress: enhance(asset, settings, progress), done, failed, busy="Enhancing")
+        self._run(lambda progress: enhance(model, settings, progress), done, failed, busy="Enhancing")
 
     # ----------------------------------------------------------------- export
 
     def export_current(self) -> None:
-        if self.asset is None:
+        if self.model is None:
             return
         use_enhanced = self.export_which.currentIndex() == 0 and self.result is not None
         if self.export_which.currentIndex() == 0 and self.result is None:
@@ -701,7 +739,7 @@ class MainWindow(QMainWindow):
         mesh = self.result.displaced if use_enhanced else self.source_mesh
         ext = self.export_format.currentData()
         start = Path(self.settings.value("export_dir", str(Path.home()), type=str)) / (
-            f"{self.asset.name}{'_enhanced' if use_enhanced else ''}{ext}")
+            f"{Path(self.model.variant or self.model.name).stem}{'_enhanced' if use_enhanced else ''}{ext}")
         path, _ = QFileDialog.getSaveFileName(self, "Export model", str(start), f"{FORMATS[ext]} (*{ext})")
         if not path:
             return
@@ -731,9 +769,10 @@ class MainWindow(QMainWindow):
 
     def about(self) -> None:
         QMessageBox.about(self, "Dark STL",
-                          f"Dark STL {__version__}\n\nBrowse FromSoftware models, add texture detail by "
-                          "displacement and export print-ready meshes.\n\nFile formats follow the community "
-                          "documentation behind SoulsFormats and Soulstruct.")
+                          f"Dark STL {__version__}\n\nBrowse game models, add texture detail by displacement "
+                          "and export print-ready meshes.\n\nReads FromSoftware games (Dark Souls, Bloodborne, "
+                          "Dark Souls III, Sekiro, Elden Ring) and Wavefront OBJ. The FromSoftware formats follow "
+                          "the community documentation behind SoulsFormats and Soulstruct.")
 
     def _run(self, fn, on_done, on_error=None, busy: str = "") -> None:
         self.progress.setValue(0)

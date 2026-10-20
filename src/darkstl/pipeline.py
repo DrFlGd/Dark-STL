@@ -1,6 +1,9 @@
 """The enhancement pipeline: even remesh -> texture displacement -> export.
 
-1. Convert the FLVER to one welded triangle mesh (export frame, metres).
+It works on :class:`~darkstl.model.SourceModel`, so it is the same for every
+game; only the importer that produced the model differs.
+
+1. Build the model's welded triangle mesh (export frame, metres).
 2. Re-sample the surface to the requested number of evenly spaced vertices,
    either by adaptive subdivision (exact UVs, keeps every original edge) or by
    isotropic ACVD remeshing (exact vertex count, uniform triangles).
@@ -16,14 +19,12 @@ from typing import Callable
 import numpy as np
 from scipy import ndimage
 
-from .assets import ModelAsset
 from .geometry.displace import corner_heights, displace
 from .geometry.mesh import TriMesh
-from .geometry.model_mesh import MeshOptions, flver_to_trimesh
 from .geometry.remesh import acvd_available, isotropic_remesh
 from .geometry.seams import seam_consistent_heights
 from .geometry.subdivide import edge_length_for_vertex_count, subdivide_to_vertex_count
-from .materials import MaterialInfo, resolve_materials
+from .model import Material, MeshOptions, SourceModel
 from .textures.heightmap import (
     HeightField,
     height_from_grayscale,
@@ -72,7 +73,7 @@ class EnhanceResult:
     resampled: TriMesh
     displaced: TriMesh
     fields: dict[int, MaterialField]
-    materials: list[MaterialInfo]
+    materials: list[Material]
     warnings: list[str] = field(default_factory=list)
 
     def stats(self) -> dict:
@@ -91,7 +92,7 @@ def _report(progress: ProgressFn | None, frac: float, msg: str) -> None:
         progress(frac, msg)
 
 
-def build_fields(asset: ModelAsset, source: TriMesh, materials: list[MaterialInfo], settings: EnhanceSettings,
+def build_fields(model: SourceModel, source: TriMesh, materials: list[Material], settings: EnhanceSettings,
                  spacing: float, warnings: list[str], progress: ProgressFn | None = None) -> dict[int, MaterialField]:
     fields: dict[int, MaterialField] = {}
     if settings.source == SOURCE_NONE or source.corner_uvs is None:
@@ -104,12 +105,12 @@ def build_fields(asset: ModelAsset, source: TriMesh, materials: list[MaterialInf
         if settings.texture_overrides.get(mat, None) == "":
             continue  # displacement switched off for this material
         key = _material_texture(materials, settings, mat)
-        if not key or key not in asset.textures:
+        if not key or key not in model.textures:
             name = info.name if info else f"#{mat}"
             warnings.append(f"Material '{name}' has no {settings.source} map; it will not be displaced")
             continue
-        _report(progress, n_done / max(len(used), 1), f"Building height field from {asset.textures[key].name}")
-        img = asset.textures[key].decode()
+        _report(progress, n_done / max(len(used), 1), f"Building height field from {model.textures[key].name}")
+        img = model.textures[key].decode()
         h, w = img.shape[:2]
         sel = source.face_material == mat
         uvs = source.corner_uvs[sel]
@@ -126,7 +127,7 @@ def build_fields(asset: ModelAsset, source: TriMesh, materials: list[MaterialInf
                 mask = uv_coverage_mask(all_uv, w, h)
                 hf = height_from_normal_map(img, settings.green, mask, settings.detail_fraction)
                 if hf.confidence and hf.confidence < 1.3:
-                    warnings.append(f"{asset.textures[key].name}: normal map convention unclear "
+                    warnings.append(f"{model.textures[key].name}: normal map convention unclear "
                                     f"(picked {hf.convention}); try the other one if the relief looks wrong")
             cache[cache_key] = (hf, img)
         if hf.units == "texels":
@@ -141,7 +142,7 @@ def build_fields(asset: ModelAsset, source: TriMesh, materials: list[MaterialInf
     return fields
 
 
-def _material_texture(materials: list[MaterialInfo], settings: EnhanceSettings, mat: int) -> str | None:
+def _material_texture(materials: list[Material], settings: EnhanceSettings, mat: int) -> str | None:
     if mat in settings.texture_overrides:
         return settings.texture_overrides[mat]
     if mat >= len(materials):
@@ -149,15 +150,16 @@ def _material_texture(materials: list[MaterialInfo], settings: EnhanceSettings, 
     return materials[mat].height if settings.source == SOURCE_HEIGHT else materials[mat].normal
 
 
-def enhance(asset: ModelAsset, settings: EnhanceSettings | None = None,
+def enhance(model: SourceModel, settings: EnhanceSettings | None = None,
             progress: ProgressFn | None = None) -> EnhanceResult:
     settings = settings or EnhanceSettings()
     warnings: list[str] = []
     _report(progress, 0.02, "Building mesh")
-    source = flver_to_trimesh(asset.flver, settings.mesh_options)
+    source = model.build_mesh(settings.mesh_options)
     if source.n_faces == 0:
-        raise ValueError("The selected meshes have no triangles")
-    materials = resolve_materials(asset)
+        raise ValueError(f"{model.name} has no triangles to work on" if not model.parts
+                         else "The selected parts have no triangles")
+    materials = model.materials
     area = source.surface_area()
     target = max(int(settings.target_vertices), 4)
     spacing = edge_length_for_vertex_count(area, target)
@@ -183,7 +185,7 @@ def enhance(asset: ModelAsset, settings: EnhanceSettings | None = None,
         resampled = subdivide_to_vertex_count(source, target, progress=sub(0.05, 0.6), smooth=settings.smooth)
         carrier, projection = resampled, None
 
-    fields = build_fields(asset, source, materials, settings, spacing, warnings, sub(0.6, 0.85))
+    fields = build_fields(model, source, materials, settings, spacing, warnings, sub(0.6, 0.85))
     heights = np.zeros(resampled.n_vertices)
     if fields and carrier.corner_uvs is not None:
         _report(progress, 0.86, "Matching heights across UV seams")

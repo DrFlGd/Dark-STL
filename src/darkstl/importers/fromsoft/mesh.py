@@ -14,14 +14,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..formats.flver import Flver
-from .mesh import TriMesh, weld
+from ...geometry.mesh import TriMesh, weld
+from .formats.flver import Flver
 
 GAME_TO_EXPORT = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]])
 
 
 @dataclass
-class MeshOptions:
+class FlverMeshOptions:
     include_meshes: set[int] | None = None  # FLVER mesh indices to keep (None = all)
     apply_bone_transforms: bool = True  # move rigid (non-skinned) meshes into model space
     uv_channel: int = 0
@@ -47,8 +47,8 @@ def _static_vertex_bones(flver: Flver, mesh) -> np.ndarray | None:
     return idx
 
 
-def flver_to_trimesh(flver: Flver, options: MeshOptions | None = None) -> TriMesh:
-    options = options or MeshOptions()
+def flver_to_trimesh(flver: Flver, options: FlverMeshOptions | None = None) -> TriMesh:
+    options = options or FlverMeshOptions()
     world = flver.bone_world_matrices() if (options.apply_bone_transforms and flver.bones) else None
 
     positions, normals, faces, uvs, mats, groups = [], [], [], [], [], []
