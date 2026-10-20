@@ -230,13 +230,15 @@ differs:
 
 ### Phase 4: distribution
 
-- [ ] Windows build (single folder, no Python install needed)
+- [x] Windows build (single folder, no Python install needed): an installer and a portable zip on
+      each release, built and smoke-tested on GitHub's Windows machines (`packaging/windows/`)
 - [ ] User guide with extraction steps for each game
 
 ## Known limits today
 
-- Of the real game files, only Dark Souls Remastered weapons have been loaded so far (Phase 1).
+- Of the real game files, Dark Souls Remastered weapons and Bloodborne characters, objects and
+  armour have been loaded so far (Phase 1).
 - Output is not guaranteed watertight; most slicers repair it, but Phase 2 adds a proper fix.
 - Skinned meshes (characters, armor) are shown in their bind pose, which is a T or A pose.
 - Isotropic remeshing needs the optional `pyacvd` package; the app falls back to subdivision
-  without it.
+  without it. The Windows app leaves it out (VTK would make the app several times the size).

@@ -1,9 +1,10 @@
 name: Release
 
 # Publishes a release once the tests pass on main, like Model Library's: when main's package
-# version (pyproject.toml) has no release yet, the wheel and source archive are built and
-# released as v<version>, with docs/releases/v<version>.md as the notes when that file
-# exists. So releasing is: bump the version in a PR, merge it. Run workflow re-tries it.
+# version (pyproject.toml) has no release yet, the Windows app is built (windows-app.yml)
+# and released as v<version> together with the wheel and source archive, with
+# docs/releases/v<version>.md as the notes when that file exists. So releasing is: bump the
+# version in a PR, merge it. Run workflow re-tries it.
 on:
   workflow_run:
     workflows: [tests]
@@ -19,13 +20,49 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  check:
+    name: Version to release
     if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.check.outputs.sha }}
+      version: ${{ steps.check.outputs.version }}
+      todo: ${{ steps.check.outputs.todo }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" > /dev/null 2>&1; then
+            echo "::notice title=Nothing to release::v$version is already released; bump the version to release again"
+            echo "todo=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "todo=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  windows:
+    name: Windows app
+    needs: check
+    if: needs.check.outputs.todo == 'true'
+    uses: ./.github/workflows/windows-app.yml
+    with:
+      ref: ${{ needs.check.outputs.sha }}
+
+  release:
+    name: Release
+    needs: [check, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -33,19 +70,19 @@ jobs:
         run: |
           python -m pip install build
           python -m build
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-app
+          path: dist
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          SHA: ${{ needs.check.outputs.sha }}
+          VERSION: ${{ needs.check.outputs.version }}
         run: |
-          wheel=$(ls dist/*.whl)
-          version=$(basename "$wheel" | cut -d- -f2)
-          tag="v$version"
-          if gh release view "$tag" > /dev/null 2>&1; then
-            echo "::notice title=Nothing to release::$tag is already released; bump the version to release again"
-            exit 0
-          fi
+          ls -la dist
+          tag="v$VERSION"
           notes="docs/releases/$tag.md"
           if [ -f "$notes" ]; then how=(--notes-file "$notes"); else how=(--generate-notes); fi
-          gh release create "$tag" dist/* --target "$SHA" --title "Dark STL $version" --latest "${how[@]}"
-          echo "::notice title=Released::Dark STL $version"
+          gh release create "$tag" dist/* --target "$SHA" --title "Dark STL $VERSION" --latest "${how[@]}"
+          echo "::notice title=Released::Dark STL $VERSION"

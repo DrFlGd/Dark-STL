@@ -225,7 +225,9 @@ class Service:
             "methods": [{"id": "subdivide", "label": "Adaptive subdivision (exact UVs, keeps sharp edges)",
                          "available": True},
                         {"id": "isotropic", "label": "Isotropic remesh (exact count, uniform triangles)",
-                         "available": acvd_available()}],
+                         "available": acvd_available(),
+                         # the Windows app leaves the remesher out: it would make the app several times the size
+                         "missing": "not in the Windows app" if getattr(sys, "frozen", False) else "needs pyacvd"}],
             "open_patterns": _dialog_patterns(),
             "first_run": not self.config.game_folders,
             "dialogs": bool(self.host.dialogs),

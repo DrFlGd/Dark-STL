@@ -63,12 +63,12 @@ def run(folders: list[str] | None = None, browser: bool = False, port: int = 0) 
             service.host = WebviewHost(window)
             try:
                 webview.start()
-                return 0
-            except Exception as exc:  # noqa: BLE001 - no usable web view here: use the browser
+            except Exception as exc:  # noqa: BLE001 - no usable web view here: the same server, in the browser
                 print(f"Dark STL: no app window ({exc}); opening your browser instead.", file=sys.stderr)
-            finally:
+                service.host = Host()
+            else:
                 server.shutdown()
-            service, server = start([], port)
+                return 0
     print(f"Dark STL is running at {server.url}  (Ctrl+C to stop)")
     threading.Timer(0.3, lambda: webbrowser.open(server.url)).start()
     try:

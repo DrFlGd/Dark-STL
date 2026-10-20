@@ -235,3 +235,36 @@ def test_server_answers_only_its_own_page(home):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_without_a_web_view_the_page_opens_in_the_browser(home, monkeypatch):
+    import socket
+    import sys
+    import types
+
+    from darkstl.app import desktop
+
+    def no_web_view():
+        raise RuntimeError("no web view here")
+
+    monkeypatch.setitem(sys.modules, "webview",
+                        types.SimpleNamespace(create_window=lambda *a, **k: object(), start=no_web_view))
+    opened, served = [], []
+    monkeypatch.setattr(desktop.webbrowser, "open", opened.append)
+    real_sleep = time.sleep
+
+    def sleep(_):  # the wait for Ctrl+C: check the page the browser was sent to, then stop
+        while not opened:
+            real_sleep(0.02)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        conn.request("GET", "/", headers={"Host": f"127.0.0.1:{port}"})
+        served.append((opened[0], conn.getresponse().status))
+        conn.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(desktop.time, "sleep", sleep)
+    with socket.socket() as s:  # a fixed port, as --port gives
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    assert desktop.run(port=port) == 0
+    assert served == [(f"http://127.0.0.1:{port}/", 200)]
