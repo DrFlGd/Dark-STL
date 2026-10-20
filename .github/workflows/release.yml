@@ -1,0 +1,32 @@
+name: Release
+
+# Pushing a version tag (v0.1.0) builds the wheel and source archive and publishes them as a
+# GitHub release, with docs/releases/<tag>.md as the notes when that file exists.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: |
+          python -m pip install build
+          python -m build
+      - name: Check the package version matches the tag
+        run: test -f "dist/dark_stl-${GITHUB_REF_NAME#v}-py3-none-any.whl"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ -f "$notes" ]; then how=(--notes-file "$notes"); else how=(--generate-notes); fi
+          gh release create "$GITHUB_REF_NAME" dist/* --title "Dark STL ${GITHUB_REF_NAME#v}" "${how[@]}"
