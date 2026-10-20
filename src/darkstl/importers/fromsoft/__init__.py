@@ -23,6 +23,8 @@ from .formats import binder, flver, tpf
 from .mesh import FlverMeshOptions, flver_to_trimesh
 
 _OPENABLE = re.compile(r"\.(partsbnd|chrbnd|objbnd|geombnd|mapbnd|flver|flv)(\.dcx)?$", re.I)
+# The big archives a game ships its files in until they are unpacked (UXM, UDSFM).
+_PACKED = re.compile(r"^(data\d*|dlc\d*|dvdbnd\d*|gamedata\w*|sd)\.bdt$", re.I)
 
 
 def _basename(name: str) -> str:
@@ -71,6 +73,20 @@ class FromSoftwareImporter(Importer):
 
     def scan(self, folder: Path, game: str, progress: ScanProgress | None = None) -> list[CatalogEntry]:
         return catalog.scan(folder, game, progress)
+
+    def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
+        packed = []
+        for d in (folder, folder / "sd"):
+            try:
+                packed += sorted(p.name for p in d.iterdir() if _PACKED.match(p.name))
+            except OSError:
+                pass
+        if not packed or len(found) >= 50:
+            return []
+        names = ", ".join(packed[:4]) + (" ..." if len(packed) > 4 else "")
+        return [f"Most of this game is still packed in its archives ({names}), so only {len(found)} models "
+                "were found. Unpack the game first (UXM Selective Unpacker for Dark Souls II, Dark Souls III, "
+                "Sekiro and Elden Ring; UDSFM for Dark Souls: Prepare to Die Edition), then rescan this folder."]
 
     def can_open(self, path: Path) -> bool:
         return bool(_OPENABLE.search(path.name))

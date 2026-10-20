@@ -1,0 +1,3 @@
+Preact 10.27.2 (https://github.com/preactjs/preact @ 0dbe6367842c055637ba67814b37f488a9ad7211), MIT, src/ and hooks/src/ as ES modules
+htm (https://github.com/developit/htm @ d62dcfdc721e47bc1923a2cb7a01ebd594ab0c25), Apache-2.0, src/index.mjs, build.mjs, constants.mjs
+Copied from Model Library (its tools/vendor_preact.py): unchanged except '.js' added to relative imports.

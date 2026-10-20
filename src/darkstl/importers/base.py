@@ -31,6 +31,10 @@ class Importer:
         """Every model this importer can open under ``folder``."""
         return []
 
+    def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
+        """Things to tell the user about a folder they added (for example that its files are still packed)."""
+        return []
+
     def can_open(self, path: Path) -> bool:
         raise NotImplementedError
 

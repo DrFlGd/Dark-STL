@@ -207,9 +207,9 @@ def cmd_enhance(args) -> int:
 
 
 def cmd_gui(args) -> int:
-    from .ui.app import main as gui_main
+    from .app.desktop import run
 
-    return gui_main(args.folders)
+    return run(args.folders, browser=getattr(args, "browser", False), port=getattr(args, "port", 0))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -269,8 +269,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--save-heights", help="folder to save the generated height maps")
     s.set_defaults(func=cmd_enhance)
 
-    s = sub.add_parser("gui", help="open the explorer")
-    s.add_argument("folders", nargs="*")
+    s = sub.add_parser("gui", help="open the explorer (the default with no command)")
+    s.add_argument("folders", nargs="*", help="game folders to add to the library")
+    s.add_argument("--browser", action="store_true", help="open in the web browser instead of an app window")
+    s.add_argument("--port", type=int, default=0, help="port for the local server (default: any free port)")
     s.set_defaults(func=cmd_gui)
     return p
 

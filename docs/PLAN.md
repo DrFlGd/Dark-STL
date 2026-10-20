@@ -36,6 +36,34 @@ importer and registering it in `importers/__init__.py`:
 An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
 folder), `detect_game`, `variants` (files holding several models) and `describe`.
 
+### The app: a game library on Model Library's interface
+
+The app is a small local web server (`app/server.py`) and a page (`web/`) shown in the
+system's own web view through pywebview, or in the browser with `--browser`. The page is the
+interface of Model Library and SCAD Workshop (Preact + htm, no build step, the same skins,
+themes, command bar, inspector rails, menus and three.js viewer), so the three apps look and
+work alike. Everything the page does goes through one command table (`app/service.py`), which
+the tests call directly.
+
+- **Game folders.** *Add game folder…* takes a game's install folder (unpacked) or any folder
+  of extracted files. The game is recognised from its files (or chosen, or named freely), and
+  the folder is scanned in the background. Folders are kept in the app's settings file and
+  scanned again at start-up; each can be rescanned, moved to another game or removed. A folder
+  inside one already added is refused; adding a parent folder takes in the ones inside it. A
+  game still packed in its archives gets a note saying how to unpack it.
+- **One library per game.** The menu lists each game with its model count. A game's page shows
+  its kinds of model (weapons, armour, characters...) as tiles; a kind shows its groups as chips
+  and its models as cards or rows, searchable, with the selected model's details beside them.
+- **Previews.** Each card's picture is drawn by the engine the first time it scrolls into view
+  (`thumbnails.py`: the model from the 3D view's angle, coloured from its albedo texture, long
+  weapons laid corner to corner) and cached by file date, a few at a time so browsing stays quick.
+- **The model page.** The 3D view with the game's textures (or clay, or wireframe), and the
+  inspector's Model (parts, importer options, size, file), Textures, Enhance and Export tabs.
+  Meshes travel to the page in a packed binary form (`app/meshpack.py`) split at UV seams and
+  grouped by material.
+- **Safety.** The server listens on 127.0.0.1 only, checks the Host header (against DNS
+  rebinding) and needs a token written into the page, so other web pages can't use it.
+
 ### Reading FromSoftware files
 
 | Layer | Formats | Notes |
@@ -131,11 +159,15 @@ src/darkstl/
   geometry/     TriMesh, subdivision, isotropic remesh, UV seam matching, closest-point queries,
                 displacement
   textures/     DDS decoding, normal map -> height, grayscale height, UV coverage, texel size
-  library.py    the explorer's catalogue: folders scanned by every importer
+  library.py    the library: game folders scanned by every importer, by game, kind and group
+  thumbnails.py preview pictures for the library's cards, cached on disk
   pipeline.py   the three steps with their settings
   export.py     STL, OBJ, PLY, GLB writers
   cli.py        command line
-  ui/           explorer window (PySide6 + VTK viewport)
+  app/          the desktop app: service.py (the page's commands), server.py (local web
+                server), meshpack.py (meshes for the 3D view), config.py, desktop.py (window)
+  web/          the page: Model Library's interface (styles.css, ui/ layout, inspector,
+                menus) with Dark STL's pages: home.js, browser.js, modelpage.js, settings.js
 tests/          synthetic game files built byte by byte (no game data in the repo)
 ```
 
@@ -179,8 +211,9 @@ differs:
 
 ### Phase 3: explorer polish
 
+- [x] A library per game: game folders added, rescanned and removed in the app, kinds of
+      model as tiles, groups, search, previews (on Model Library's interface)
 - [ ] In-game names (weapon, armor and enemy names from the game's text and param files)
-- [ ] Thumbnails in the library
 - [ ] Batch queue: enhance and export a whole group with one set of settings
 - [ ] Read Elden Ring MATBIN files for exact material maps
 - [ ] Dark Souls II (FLVER2 with its own texture layout)

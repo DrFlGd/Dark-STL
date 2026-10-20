@@ -3,7 +3,7 @@
 Oodle is proprietary and cannot be redistributed, but Sekiro and Elden Ring ship
 ``oo2core_6_win64.dll`` next to the game executable. Dark STL looks for it in
 the folders above any game file it opens, so an unpacked game folder works as
-is; otherwise point at it with ``--oodle``, *File > Set Oodle DLL*, or the
+is; otherwise point at it with ``--oodle``, the app's Settings page, or the
 ``DARKSTL_OODLE`` environment variable.
 """
 
@@ -59,6 +59,11 @@ def _candidates() -> list[Path]:
     return paths
 
 
+def located() -> Path | None:
+    """The Oodle library that would be used, if one is in a folder searched."""
+    return next((p for p in _candidates() if p.is_file()), None)
+
+
 def _load():
     global _lib
     if _lib is not None:
@@ -88,7 +93,7 @@ def _load():
     detail = ("; ".join(errors)) if errors else "no oo2core library found"
     raise FormatError(
         "This file uses Oodle (KRAK) compression, used by Sekiro and Elden Ring. "
-        "Point Dark STL at the game's oo2core_6_win64.dll (File > Set Oodle DLL, --oodle, or DARKSTL_OODLE). "
+        "Point Dark STL at the game's oo2core_6_win64.dll (Settings > Oodle, --oodle, or DARKSTL_OODLE). "
         f"Details: {detail}"
     )
 

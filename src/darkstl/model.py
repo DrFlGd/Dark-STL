@@ -10,6 +10,8 @@ game means writing an importer and nothing else.
 
 from __future__ import annotations
 
+import hashlib
+import os
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -125,6 +127,15 @@ class CatalogEntry:
     packed: bool = True
 
     @property
+    def id(self) -> str:
+        """A short stable id for the file, used by the app's pages and its preview cache."""
+        return path_id(self.path)
+
+    @property
     def sort_key(self) -> tuple:
         cat = CATEGORY_ORDER.index(self.category) if self.category in CATEGORY_ORDER else len(CATEGORY_ORDER)
         return (self.game, cat, self.group, self.stem)
+
+
+def path_id(path: str | os.PathLike) -> str:
+    return hashlib.sha1(os.path.normcase(os.path.abspath(path)).encode("utf-8")).hexdigest()[:16]

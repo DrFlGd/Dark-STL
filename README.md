@@ -3,7 +3,7 @@
 Browse the models of Dark Souls, Bloodborne, Sekiro and Elden Ring (or any OBJ file), add the
 surface detail their textures describe, and export print-ready meshes.
 
-![Explorer with an enhanced model](docs/images/explorer-enhanced.png)
+![A model enhanced in Dark STL](docs/images/model-page.png)
 
 The game models are low-poly: most of their detail lives in normal maps. Dark STL turns that
 detail into real geometry in three steps:
@@ -36,8 +36,9 @@ cd Dark-STL
 pip install -e ".[gui,remesh]"
 ```
 
-`gui` adds the explorer window (PySide6 and VTK); `remesh` adds the optional isotropic
-remesher. The command line works with neither.
+`gui` adds pywebview, so the app opens in a window of its own; without it the app opens in
+your web browser. `remesh` adds the optional isotropic remesher. The command line needs
+neither.
 
 ## Getting the game files
 
@@ -51,26 +52,31 @@ encrypted archives directly.
 - Folders unpacked further with WitchyBND or Yabber (`wp_a_0210-partsbnd-dcx/`) work too.
 - **Sekiro and Elden Ring** compress with Oodle. Dark STL uses the `oo2core_6_win64.dll`
   that ships with the game. It is found automatically when the model files are inside the
-  unpacked game folder; otherwise point to it with *File > Set Oodle DLL* (or `--oodle`).
+  unpacked game folder; otherwise point to it in *Settings > Oodle* (or `--oodle`).
 
-## Using the explorer
+## Using the app
 
 ```
-darkstl            # or darkstl-gui, or python -m darkstl
+darkstl            # or darkstl-gui; darkstl gui --browser opens it in your browser
 ```
 
-1. *File > Add game folder* and pick the extracted game folder. Models appear grouped by game,
-   type (weapons, armor, characters, objects, map pieces) and ID range. Type in the search box
-   to filter.
-   *File > Open model file* opens a single file, including `.obj`.
-2. Click a model to preview it. If the file holds several models (a weapon and its sheath),
-   pick one at the top of the *Model* tab. *Textures* shows the maps that were found and which one each
-   material will use for detail; you can change it there.
-3. On *Enhance*, set the target vertex count and click *Enhance model*. The tab shows the
-   vertex spacing that count gives on this model, so you can match it to your printer.
-4. On *Export*, pick the format and units.
+1. **Add your games.** *Add game folder…* takes a game's folder (once unpacked) or any folder
+   of extracted model files. Dark STL recognises the game from its files and lists it in the
+   menu. Add as many games and folders as you like; *Settings* lists them, with Rescan,
+   Change game and Remove. Nothing in your folders is ever changed.
+2. **Browse a game.** Each game has its own library: its kinds of model (weapons, armour,
+   characters, objects, map pieces) as tiles, then each kind's models with a preview, in
+   groups. Search with the box at the top (or press /). *Open a model file…* under ⋯ on
+   Home opens a single file, including `.obj`.
+3. **Open a model** (double-click or Enter). It's shown with the game's textures; *Model*
+   lists its parts and options, *Textures* every texture found. A file that holds several
+   models (a weapon and its sheath) has a switch at the top.
+4. **Enhance** sets the vertex count (it shows the spacing that gives on this model) and where
+   the detail comes from, then makes the detailed model. Show *Original* or *Enhanced* under
+   the view.
+5. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default.
 
-![Explorer with the original model](docs/images/explorer-original.png)
+![A game's library](docs/images/library.png)
 
 ## Command line
 
@@ -97,7 +103,13 @@ pytest
 ```
 
 The tests build game files byte by byte (`tests/synth.py`), so no game data is needed or
-stored in the repository.
+stored in the repository. `tests/test_page.py` also drives the page in Chromium when
+Playwright is installed (`pip install playwright && python -m playwright install chromium`).
+
+The page (`src/darkstl/web/`) needs no build step. Its interface comes from
+[Model Library](https://github.com/DrFlGd/Model-Library): `styles.css`, `lib/`, and the
+layout, inspector, menu and icon modules in `ui/` are shared with it, so changes there are
+best made in both.
 
 To support another game, write an importer (see `src/darkstl/importers/base.py` and the
 OBJ importer as a short example) and add it to `IMPORTERS` in `importers/__init__.py`.
@@ -108,3 +120,7 @@ The file format knowledge comes from the FromSoftware modding community, in part
 [SoulsFormats](https://github.com/JKAnderson/SoulsFormats) by TKGP and
 [Soulstruct](https://github.com/Grimrukh/soulstruct) by Grimrukh. Dark STL is an independent
 reimplementation and contains no code or data from the games; you need your own copies.
+
+The page bundles [Preact](https://preactjs.com) (MIT), [htm](https://github.com/developit/htm)
+(Apache 2.0) and [three.js](https://threejs.org) r186 (MIT), unmodified apart from import
+paths; their licences are in `src/darkstl/web/vendor/`.
