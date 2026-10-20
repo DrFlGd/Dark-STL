@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="darkstl-token" content="TOKEN">
+  <title>Dark STL</title>
+  <meta name="description" content="Browse the models of your games by game and type, add texture detail and export print-ready meshes.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,400..800&family=Overpass:wght@400..800&family=Overpass+Mono:wght@400..700&family=Sofia+Sans:wght@400..800&family=Sofia+Sans+Condensed:wght@400..700&family=Sofia+Sans+Extra+Condensed:wght@600..800&family=Atkinson+Hyperlegible:wght@400;700&family=M+PLUS+Rounded+1c:wght@800&display=swap">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="darkstl.css">
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three/three.module.js" } }
+  </script>
+</head>
+<body>
+  <div class="app">
+    <div id="sidebar-root" class="sidebar-root"></div>
+    <div id="main-root" class="app-main"></div>
+  </div>
+  <footer id="statusbar" class="statusbar"></footer>
+  <div id="dialog-root"></div>
+  <div id="menu-root"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <noscript><p>Dark STL needs JavaScript.</p></noscript>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

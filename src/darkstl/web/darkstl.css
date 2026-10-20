@@ -1,0 +1,114 @@
+/* Dark STL's own pieces, on top of the interface shared with Model Library
+   (styles.css, unchanged): game badges, previews being drawn, the model page's
+   tabs and the settings' folder list. Colours come from the skin's tokens. */
+
+/* a game's initials in a small plate */
+.game-badge { --badge: 16px; display: inline-grid; place-items: center; flex: none; min-width: calc(var(--badge) * 1.55); height: var(--badge); padding: 0 3px;
+  border-radius: var(--radius-xs); background: var(--ink); color: var(--white); font-size: calc(var(--badge) * .56); font-weight: 800; letter-spacing: .02em; line-height: 1; }
+.nav-link[aria-current="page"] .game-badge, .nav-link.active .game-badge { background: var(--tool); color: var(--tool-ink); }
+.nav-icon:has(> .game-badge) { width: 28px; }
+.sidebar.collapsed .nav-icon:has(> .game-badge) { width: auto; }
+.cat-panel-head .cat-panel-title span.game-badge { flex: none; overflow: visible; }
+.panel-strip-icon .game-badge { --badge: 15px; }
+
+/* previews: a soft pulse while the engine draws one */
+.thumb-wait svg { animation: thumb-pulse 1.4s ease-in-out infinite; }
+@keyframes thumb-pulse { 50% { opacity: .2; } }
+@media (prefers-reduced-motion: reduce) { .thumb-wait svg { animation: none; } }
+.thumb[data-thumb="none"] .thumb-none svg { opacity: .35; }
+.subcat-pics .thumb { aspect-ratio: auto; height: 100%; border-radius: 0; }
+.subcat-pics-1 .thumb { height: 100%; }
+
+/* Home */
+.game-tiles { --card: 250px; margin-top: 4px; }
+.game-tile .subcat-name { font-size: 15px; }
+.game-tile.scanning { opacity: .75; }
+.home-notes { display: grid; gap: 8px; }
+.folder-note p { margin: 0; }
+.folder-note p + p { margin-top: 4px; }
+.note-path { font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
+.kind-games { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.kind-games a { text-decoration: none; display: inline-flex; }
+.how-list { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 14px; }
+.first-tips { padding: 16px; background: var(--white); border: 1px solid var(--steel-2); border-radius: var(--radius-m); display: grid; gap: 8px; }
+.first-tips h2 { margin: 0; font-size: 16px; }
+.first-tips p { margin: 0; }
+
+/* a game's library */
+.card-file { display: block; min-width: 0; font-family: var(--font-mono); font-size: 11px; color: var(--graphite); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-chips { flex-wrap: wrap; overflow: visible; }
+a.chip-btn { color: var(--ink); text-decoration: none; display: inline-flex; gap: 5px; align-items: baseline; }
+a.chip-btn:hover { border-color: var(--graphite); }
+a.chip-btn.on { background: var(--sel); }
+.place-summary { padding: 12px 14px; display: grid; gap: 14px; align-content: start; }
+.place-summary .insp-section p { margin: 0 0 4px; font-size: 13.5px; }
+.model-summary .insp-thumb { cursor: pointer; }
+.model-summary .insp-thumb .thumb { width: 100%; height: 100%; border-radius: 0; }
+.game-folder { display: grid; gap: 4px; padding: 8px 0; border-top: 1px solid var(--steel-2); }
+.game-folder:first-of-type { border-top: 0; padding-top: 0; }
+.game-folder p { margin: 0; }
+#game-add-folder { justify-self: start; margin-top: 4px; }
+.browse-scroll > .folder-note { margin-bottom: 12px; }
+
+/* the model page */
+.model-page .workspace-viewing-area { padding: 12px 14px; }
+.stage-3d { flex: 1 1 auto; min-height: 0; }
+.stage-canvas canvas { cursor: grab; }
+.stage-canvas canvas:active { cursor: grabbing; }
+.stage-tools .seg button:disabled { opacity: .45; cursor: not-allowed; }
+.stage-tools .seg button { padding: 5px 8px; font-size: 12.5px; }
+.stage-note .warn-note { max-width: 520px; pointer-events: auto; }
+.variant-pick select { width: auto; max-width: 220px; }
+.tab-pad { padding: 12px 14px 24px; display: grid; gap: 16px; align-content: start; min-width: 0; }
+.tab-pad .insp-section { display: grid; gap: 8px; min-width: 0; }
+.tab-pad .insp-section h3 { margin: 0; }
+.tab-pad .field-block { gap: 4px; }
+.tab-pad .field-block > span { font-size: 13px; }
+.tab-pad select, .tab-pad input[type="text"], .tab-pad input[type="number"] { width: 100%; min-width: 0; }
+.tab-pad .field-row input[type="number"] { width: auto; flex: 1 1 100px; }
+.tab-pad .unit { font-size: 12.5px; white-space: nowrap; }
+.check-row small, .part-name small { display: block; font-size: 12px; font-weight: 400; line-height: 1.35; }
+.check-row { align-items: flex-start; }
+.check-row > input { margin-top: 3px; }
+.part-list { display: grid; gap: 6px; }
+.part-row .part-name { min-width: 0; overflow-wrap: anywhere; }
+.insp-note { margin: 0; padding: 8px 10px; border-radius: var(--radius-s); background: var(--panel); border: 1px solid var(--steel-2); overflow-wrap: anywhere; }
+.file-info summary { cursor: pointer; font-size: 13px; color: var(--graphite); }
+.file-info pre { margin: 6px 0 0; padding: 8px; max-height: 260px; overflow: auto; font-size: 11.5px; line-height: 1.4; background: var(--panel); border-radius: var(--radius-s); white-space: pre-wrap; overflow-wrap: anywhere; }
+.tex-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 8px; }
+.tex-tile { display: grid; gap: 4px; padding: 4px; border: 1px solid var(--steel-2); border-radius: var(--radius-s); background: var(--white); color: var(--ink); font-size: 11.5px; font-weight: 600; text-align: left; min-width: 0; }
+.tex-tile img { width: 100%; aspect-ratio: 1; object-fit: cover; background: var(--thumb-bg); border-radius: var(--radius-xs); display: block; }
+.tex-tile span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tex-tile[aria-selected="true"] { border-color: var(--tool); box-shadow: 0 0 0 2px var(--tool); background: var(--sel); }
+.tex-big { display: block; background: var(--thumb-bg); border-radius: var(--radius-s); overflow: hidden; }
+.tex-big img { display: block; width: 100%; max-height: 320px; object-fit: contain; }
+.material { display: grid; gap: 4px; padding: 6px 0; border-top: 1px solid var(--steel-2); }
+.material:first-of-type { border-top: 0; }
+.material-name { margin: 0; font-weight: 700; font-size: 13.5px; overflow-wrap: anywhere; }
+.mat-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 8px; align-items: center; font-size: 13px; }
+.mat-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.more-settings { display: grid; gap: 8px; }
+.more-settings > summary { cursor: pointer; font-size: 13px; color: var(--graphite); margin-bottom: 6px; }
+.more-settings[open] > summary { margin-bottom: 8px; }
+.more-settings > * + * { margin-top: 8px; }
+.enhance-go .primary { min-width: 140px; }
+.job-progress { display: grid; gap: 4px; }
+.job-progress progress { width: 100%; height: 8px; accent-color: var(--tool); }
+.field-list li > span { display: grid; }
+.field-list small { font-size: 11.5px; }
+.export-done { display: grid; gap: 6px; padding: 10px 12px; border-radius: var(--radius-s); background: var(--panel); border: 1px solid var(--steel-2); }
+.export-done p { margin: 0; overflow-wrap: anywhere; }
+.export-note { font-size: 12.5px; margin: 0; }
+#export-which { align-self: start; }
+
+/* Settings */
+.folder-list { gap: 0; }
+.folder-list li { align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--steel-2); flex-wrap: wrap; }
+.folder-list li:first-child { border-top: 0; }
+.folder-what { display: grid; gap: 3px; flex: 1 1 320px; }
+.folder-game { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; }
+.folder-actions { display: flex; flex-wrap: wrap; gap: 6px; flex: none; }
+.path-form input { font-family: var(--font-mono); font-size: 13px; }
+#oodle-status { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.credits li { align-items: flex-start; }
+.about-page .how-list { font-size: 14px; }
