@@ -117,6 +117,12 @@ best made in both.
 To support another game, write an importer (see `src/darkstl/importers/base.py` and the
 OBJ importer as a short example) and add it to `IMPORTERS` in `importers/__init__.py`.
 
+Releases publish themselves: once the tests pass on main and the version in
+`pyproject.toml` has no release yet, the Release workflow builds the wheel and source
+archive and releases them as `v<version>`, with `docs/releases/v<version>.md` as the notes.
+To release, bump the version (in `pyproject.toml` and `src/darkstl/__init__.py`), add the
+notes, and merge.
+
 ## Credits
 
 The file format knowledge comes from the FromSoftware modding community, in particular

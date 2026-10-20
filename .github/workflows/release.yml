@@ -1,19 +1,31 @@
 name: Release
 
-# Pushing a version tag (v0.1.0) builds the wheel and source archive and publishes them as a
-# GitHub release, with docs/releases/<tag>.md as the notes when that file exists.
+# Publishes a release once the tests pass on main, like Model Library's: when main's package
+# version (pyproject.toml) has no release yet, the wheel and source archive are built and
+# released as v<version>, with docs/releases/v<version>.md as the notes when that file
+# exists. So releasing is: bump the version in a PR, merge it. Run workflow re-tries it.
 on:
-  push:
-    tags: ["v*"]
+  workflow_run:
+    workflows: [tests]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -21,12 +33,19 @@ jobs:
         run: |
           python -m pip install build
           python -m build
-      - name: Check the package version matches the tag
-        run: test -f "dist/dark_stl-${GITHUB_REF_NAME#v}-py3-none-any.whl"
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
-          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          wheel=$(ls dist/*.whl)
+          version=$(basename "$wheel" | cut -d- -f2)
+          tag="v$version"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "::notice title=Nothing to release::$tag is already released; bump the version to release again"
+            exit 0
+          fi
+          notes="docs/releases/$tag.md"
           if [ -f "$notes" ]; then how=(--notes-file "$notes"); else how=(--generate-notes); fi
-          gh release create "$GITHUB_REF_NAME" dist/* --title "Dark STL ${GITHUB_REF_NAME#v}" "${how[@]}"
+          gh release create "$tag" dist/* --target "$SHA" --title "Dark STL $version" --latest "${how[@]}"
+          echo "::notice title=Released::Dark STL $version"
