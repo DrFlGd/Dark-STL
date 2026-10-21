@@ -81,10 +81,27 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path):  #
     page.click("#rail-enhance")
     page.fill("#target-vertices", "3000")
     page.press("#target-vertices", "Tab")
+    assert page.text_content("#rail-enhance").strip() == "Generate"
+    assert page.text_content("#enhance-run") == "Generate"
     page.click("#enhance-run")
     page.wait_for_selector("#enhance-result", timeout=60000)
+    assert page.text_content("#enhance-run") == "Generate again"
     page.wait_for_selector('#show-which [data-value="enhanced"][aria-pressed="true"]')
     page.wait_for_selector("#stage-canvas:not([data-loading])")
+    # the original and the enhanced model in turn: both are kept, nothing is fetched or made again
+    meshes = []
+    page.on("request", lambda r: "model_mesh" in r.url and meshes.append(r.url))
+    triangles = "window.__viewer.mesh.geometry.index.count / 3"
+    enhanced = page.evaluate(triangles)
+    for which in ("original", "enhanced", "original", "enhanced"):
+        page.click(f'#show-which [data-value="{which}"]')
+        page.wait_for_selector(f'#show-which [data-value="{which}"][aria-pressed="true"]')
+        page.wait_for_selector("#stage-canvas:not([data-loading])")
+        assert (page.evaluate(triangles) == enhanced) == (which == "enhanced")
+    # generating again with the same settings gives the kept model at once
+    page.click("#enhance-run")
+    page.wait_for_selector("text=Already generated with these settings")
+    assert meshes == []
     page.click('#shading [data-value="clay"]')
     # the same mesh drawn again stays where it was (on the floor, centred)
     page.wait_for_selector("#stage-canvas:not([data-loading])")
@@ -103,8 +120,7 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path):  #
     if os.environ.get("DARKSTL_SCREENSHOTS"):
         page.locator("#enhance-tab").screenshot(path=os.path.join(os.environ["DARKSTL_SCREENSHOTS"], "enhance-settings.png"))
     page.click("#enhance-run")
-    page.wait_for_function("document.querySelector('#enhance-result .field-list')?.textContent.includes('albedo detail')",
-                           timeout=60000)
+    page.wait_for_selector("#enhance-result .field-list :text('albedo detail')", timeout=60000)
 
     page.click("#rail-export")
     page.fill("#export-folder", str(tmp_path / "out"))
@@ -127,8 +143,9 @@ SHOW_TWICE = """() => {
   new Float32Array(buf, 12 + head.length, 9).set([10, 10, 0, 20, 10, 0, 15, 20, 5]);
   new Float32Array(buf, 12 + head.length + 36, 9).set([0, 0, 1, 0, 0, 1, 0, 0, 1]);
   new Uint32Array(buf, 12 + head.length + 72, 3).set([0, 1, 2]);
+  const built = window.__viewer.build(buf);
   return [1, 2].map(() => {
-    window.__viewer.show(buf, { keepView: true });
+    window.__viewer.show(built, { keepView: true });
     const b = window.__viewer.mesh.geometry.boundingBox;
     return [b.min.x, b.max.x, b.min.z];
   });

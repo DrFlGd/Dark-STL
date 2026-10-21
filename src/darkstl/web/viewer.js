@@ -8,6 +8,7 @@ import { OrbitControls } from "./vendor/three/OrbitControls.js";
 const STEP = 10; // mm
 export const GRAY = "#a3a9ae";
 const MAGIC = "DSTLMESH";
+const EDGES_UP_TO = 400000; // triangles: more would take long to work out, and be a solid mass of lines
 
 /** Read a packed mesh: { header, positions, normals, uvs, index }. */
 export function unpackMesh(buf) {
@@ -52,7 +53,8 @@ export class Viewer {
     this.edgeMaterial = new THREE.LineBasicMaterial({ color: 0x18222d, transparent: true, opacity: 0.55 });
     this.mesh = null;
     this.edges = null;
-    this.textures = [];
+    this.shown = null; // the built mesh on show
+    this.textures = new Map(); // by URL, kept for the meshes shown next
     this.gridGroup = new THREE.Group();
     this.scene.add(this.gridGroup);
     this.showEdges = false;
@@ -92,7 +94,17 @@ export class Viewer {
   setEdges(on) {
     this.showEdges = on;
     if (this.edges) this.edges.visible = on;
+    else this._addEdges();
     this.redraw();
+  }
+
+  /** The sharp edges of the mesh on show, worked out the first time they're wanted (not for huge meshes). */
+  _addEdges() {
+    const b = this.shown;
+    if (this.edges || !this.showEdges || !b || b.header.triangles >= EDGES_UP_TO) return;
+    b.edges ||= new THREE.EdgesGeometry(b.geom, 30);
+    this.edges = new THREE.LineSegments(b.edges, this.edgeMaterial);
+    this.scene.add(this.edges);
   }
 
   setTheme(dark) {
@@ -102,44 +114,43 @@ export class Viewer {
     this.redraw();
   }
 
-  /** Show a packed mesh. `textures`: { material index: image URL } (textured view), or null for clay.
-   *  `keepView`: leave the camera where it is (the same model, drawn again). */
-  show(buf, { textures = null, wireframe = false, keepView = false } = {}) {
+  /** Make a packed mesh ready to show: its geometry, resting on the floor, centred. The page keeps
+   *  what this returns to show it again at once, and frees it with its dispose(). */
+  build(buf) {
     const { header, positions, normals, uvs, index } = unpackMesh(buf);
     const geom = new THREE.BufferGeometry();
-    // a copy: the page may show the same buffer again (another shading), and translate() moves it in place
-    geom.setAttribute("position", new THREE.BufferAttribute(positions.slice(), 3));
+    geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     geom.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
     if (uvs) geom.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
     geom.setIndex(new THREE.BufferAttribute(index, 1));
     const [x0, y0, z0] = header.min, [x1, y1] = header.max;
-    // rest it on the floor, centred
     geom.translate(-(x0 + x1) / 2, -(y0 + y1) / 2, -z0);
     geom.computeBoundingBox();
-    this.clear();
-    const materials = [];
-    const slot = new Map();
+    const slots = []; // the materials in the order of the mesh's material slots
     for (const g of header.groups) {
-      if (!slot.has(g.material)) {
-        slot.set(g.material, materials.length);
-        materials.push(this._material(textures?.[g.material], wireframe));
-      }
-      geom.addGroup(g.start, g.count, slot.get(g.material));
+      if (!slots.includes(g.material)) slots.push(g.material);
+      geom.addGroup(g.start, g.count, slots.indexOf(g.material));
     }
+    return { header, geom, slots, edges: null, dispose() { geom.dispose(); this.edges?.dispose(); } };
+  }
+
+  /** Show a mesh from build(). `textures`: { material index: image URL } (textured view), or null for clay.
+   *  `keepView`: leave the camera where it is (the same model, drawn again). */
+  show(built, { textures = null, wireframe = false, keepView = false } = {}) {
+    const { header, geom, slots } = built;
+    this.clear();
+    const materials = slots.map((mat) => this._material(textures?.[mat], wireframe));
     if (!materials.length) materials.push(this._material(null, wireframe));
     this.mesh = new THREE.Mesh(geom, materials);
     this.scene.add(this.mesh);
-    if (header.triangles < 400000) {
-      this.edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 30), this.edgeMaterial);
-      this.edges.visible = this.showEdges;
-      this.scene.add(this.edges);
-    }
+    this.shown = built;
+    this._addEdges();
     this.bbox = geom.boundingBox.clone();
     this._buildGrid(this.bbox);
     if (!keepView) this.view("iso");
     this.redraw();
     const size = this.bbox.getSize(new THREE.Vector3());
-    return { x: size.x, y: size.y, z: size.z, triangles: header.triangles, vertices: header.vertices, edges: !!this.edges };
+    return { x: size.x, y: size.y, z: size.z, triangles: header.triangles, vertices: header.vertices, edges: header.triangles < EDGES_UP_TO };
   }
 
   _material(url, wireframe) {
@@ -148,26 +159,27 @@ export class Viewer {
       m.wireframe = wireframe;
       return m;
     }
-    const tex = new THREE.TextureLoader().load(url, () => this.redraw());
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.flipY = false; // Dark STL's UVs run down the image
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.anisotropy = 4;
-    this.textures.push(tex);
+    let tex = this.textures.get(url);
+    if (!tex) {
+      tex = new THREE.TextureLoader().load(url, () => this.redraw());
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.flipY = false; // Dark STL's UVs run down the image
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.anisotropy = 4;
+      this.textures.set(url, tex);
+    }
     return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.7, metalness: 0.0, side: THREE.DoubleSide, wireframe });
   }
 
+  /** Take the mesh off show. Its geometry belongs to whoever built it; the textures stay for the next. */
   clear() {
     for (const o of [this.mesh, this.edges]) {
       if (o) {
         this.scene.remove(o);
-        o.geometry.dispose();
         for (const m of [].concat(o.material)) if (m !== this.edgeMaterial) m.dispose();
       }
     }
-    for (const t of this.textures) t.dispose();
-    this.textures = [];
-    this.mesh = this.edges = null;
+    this.mesh = this.edges = this.shown = null;
     this.redraw();
   }
 
@@ -187,6 +199,8 @@ export class Viewer {
     this._observer.disconnect();
     window.removeEventListener("resize", this._onWindowResize);
     this.clear();
+    for (const t of this.textures.values()) t.dispose();
+    this.textures.clear();
     this.controls.dispose();
     this.renderer.dispose();
   }
