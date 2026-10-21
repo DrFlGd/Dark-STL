@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -16,9 +17,12 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 
 class Engine:
     def __init__(self, home, *folders):
-        env = dict(os.environ, DARKSTL_HOME=str(home), PYTHONPATH=str(SRC))
-        self.proc = subprocess.Popen([sys.executable, "-m", "darkstl", "engine", *map(str, folders)], env=env,
-                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # the log goes to a file (a pipe nobody reads fills up), with where each thread is every 20 s
+        env = dict(os.environ, DARKSTL_HOME=str(home), PYTHONPATH=str(SRC), DARKSTL_ENGINE_TRACE="20")
+        self.log = Path(home).parent / "engine.log"
+        with open(self.log, "wb") as log:
+            self.proc = subprocess.Popen([sys.executable, "-m", "darkstl", "engine", *map(str, folders)], env=env,
+                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
         self.next = 0
 
     def send(self, cmd, args=None, binary=False):
@@ -29,8 +33,18 @@ class Engine:
         return self.next
 
     def read(self):
-        header = json.loads(self.proc.stdout.readline())
-        body = self.proc.stdout.read(header["size"]) if "size" in header else None
+        # an engine that doesn't answer is stopped, so the test fails (with its log) instead of hanging
+        watchdog = threading.Timer(60, self.proc.kill)
+        watchdog.start()
+        try:
+            line = self.proc.stdout.readline()
+            body = None
+            if line:
+                header = json.loads(line)
+                body = self.proc.stdout.read(header["size"]) if "size" in header else None
+        finally:
+            watchdog.cancel()
+        assert line, "the engine didn't answer:\n" + self.log.read_text("utf-8", "replace")
         return header, body
 
     def call(self, cmd, args=None, binary=False):
@@ -42,8 +56,7 @@ class Engine:
     def close(self):
         self.proc.stdin.close()
         code = self.proc.wait(30)
-        log = self.proc.stderr.read().decode("utf-8", "replace")
-        return code, log
+        return code, self.log.read_text("utf-8", "replace")
 
 
 @pytest.fixture

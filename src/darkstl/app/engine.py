@@ -12,6 +12,7 @@ The app's window shows the open dialogs itself, so here they only need to be sai
 
 from __future__ import annotations
 
+import faulthandler
 import json
 import os
 import sys
@@ -72,11 +73,20 @@ def serve(service: Service, inp: BinaryIO, out: BinaryIO, workers: int = 8) -> N
 
 
 def main(folders: list[str] | None = None) -> int:
+    # The requests get stdin to themselves, and stdin becomes NUL. On Windows, while this thread
+    # waits on the pipe, anything else that asks about it waits too: libgfortran (scipy, loaded
+    # on the first remesher import in a worker) stats stdin as it loads, which stalled the engine.
+    inp = os.fdopen(os.dup(0), "rb")
+    null = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null, 0)  # also the process's standard input handle, on Windows
+    os.close(null)
     # the answers get stdout to themselves: anything else printed goes to stderr (the app's log)
     out = os.fdopen(os.dup(sys.stdout.fileno()), "wb")
     sys.stdout.flush()
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     sys.stdout = sys.stderr
+    if trace := os.environ.get("DARKSTL_ENGINE_TRACE"):  # every n seconds, where each thread is
+        faulthandler.dump_traceback_later(float(trace), repeat=True)
     service = Service(Config.load(), cache_dir(), WindowHost())
     service.load_folders()
     for folder in folders or []:
@@ -85,5 +95,5 @@ def main(folders: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001 - reported, the engine still starts
             print(f"Dark STL: can't add {folder}: {exc}", file=sys.stderr)
     print(f"Dark STL engine {os.getpid()} ready", file=sys.stderr, flush=True)
-    serve(service, sys.stdin.buffer, out)
+    serve(service, inp, out)
     return 0  # jobs still running (an export, say) end with the window: their threads are daemons

@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -63,14 +64,22 @@ def run(cmd: list[str], env: dict) -> str:
 def check_engine(cli: Path, game: Path, env: dict) -> None:
     """The app's side of the pipe: requests in, answers (JSON, or a header and bytes) out."""
     print(f"$ {cli.name} engine {game}", flush=True)
-    proc = subprocess.Popen([str(cli), "engine", str(game)], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    # where each of the engine's threads is goes to the log every 30 s, and an engine that stops
+    # answering is stopped, so a stall shows up here rather than as a job that runs out of time
+    proc = subprocess.Popen([str(cli), "engine", str(game)], env=dict(env, DARKSTL_ENGINE_TRACE="30"),
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    watchdog = threading.Timer(300, proc.kill)
+    watchdog.start()
     ids = iter(range(1, 1000))
 
     def call(cmd, args=None, binary=False):
         rid = next(ids)
         proc.stdin.write(json.dumps({"id": rid, "cmd": cmd, "args": args or {}, "bin": binary}).encode() + b"\n")
         proc.stdin.flush()
-        header = json.loads(proc.stdout.readline())
+        line = proc.stdout.readline()
+        if not line:
+            raise SystemExit(f"{cmd}: the engine stopped answering")
+        header = json.loads(line)
         body = proc.stdout.read(header["size"]) if "size" in header else None
         if header.get("id") != rid or "error" in header:
             raise SystemExit(f"{cmd}: {header}")
@@ -97,6 +106,7 @@ def check_engine(cli: Path, game: Path, env: dict) -> None:
     finally:
         proc.stdin.close()
         code = proc.wait(60)
+        watchdog.cancel()
     if code:
         raise SystemExit(f"the engine ended with exit code {code}")
 
