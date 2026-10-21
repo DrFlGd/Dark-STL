@@ -29,7 +29,7 @@ from ..geometry.mesh import TriMesh
 from ..library import Library, detect_game, folder_relation, known_games
 from ..model import CatalogEntry, MeshOptions, SourceModel, path_id
 from ..thumbnails import ThumbnailCache
-from .config import Config
+from .config import Config, models_dir
 from .meshpack import pack_mesh
 
 UNITS = {"mm": 1000.0, "m": 1.0, "cm": 100.0, "in": 39.3701}
@@ -174,6 +174,7 @@ def model_json(m: SourceModel, mesh: TriMesh) -> dict:
                   for p in m.parts],
         "options": [{"key": o.key, "label": o.label, "default": o.default, "tooltip": o.tooltip} for o in m.options],
         "materials": [{"name": x.name, "albedo": x.albedo, "normal": x.normal, "height": x.height,
+                       "specular": x.specular, "detail_normal": x.detail_normal,
                        "guessed": x.guessed, "details": x.details} for x in m.materials],
         "textures": [{"key": k, "name": t.name, "source": t.source} for k, t in sorted(m.textures.items())],
         "info": m.info, "notes": m.notes, "stats": mesh_stats(mesh),
@@ -277,6 +278,26 @@ class Service:
     def cmd_pick_file(self, args: dict) -> dict:
         return {"path": self.host.pick_file(args.get("title") or "Choose a file", list(args.get("patterns") or []),
                                             args.get("start"))}
+
+    def cmd_ai_models(self, args: dict) -> dict:
+        """The AI models the user has put in the models folder (made on first ask, so it can be opened)."""
+        from ..textures import upscale
+
+        folder = models_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        return {"folder": str(folder), "models": upscale.list_models(folder), "available": upscale.available()}
+
+    def cmd_ai_model_add(self, args: dict) -> dict:
+        """Copy a picked .onnx model into the models folder."""
+        import shutil
+
+        src = Path(str(args.get("path") or ""))
+        if src.suffix.lower() != ".onnx" or not src.is_file():
+            raise AppError("Choose an .onnx model file (convert .pth models with chaiNNer first).")
+        folder = models_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, folder / src.name)
+        return self.cmd_ai_models({})
 
     def cmd_open_path(self, args: dict) -> dict:
         path = str(args.get("path") or "")
@@ -555,6 +576,7 @@ class Service:
         session = self._session(args)
         options = mesh_options(args)
         s = args.get("settings") or {}
+        defaults = EnhanceSettings()
         settings = EnhanceSettings(
             target_vertices=int(s.get("target_vertices", 1_000_000)),
             method=str(s.get("method", "subdivide")),
@@ -567,6 +589,19 @@ class Service:
             max_displacement_mm=float(s["max_displacement_mm"]) if s.get("max_displacement_mm") else None,
             texture_overrides={int(k): str(v or "") for k, v in (s.get("texture_overrides") or {}).items()},
             mesh_options=options,
+            integration=str(s.get("integration", defaults.integration)),
+            edge_keeping=min(max(float(s.get("edge_keeping", defaults.edge_keeping)), 0.0), 1.0),
+            deblock=str(s.get("deblock", defaults.deblock)),
+            upsample=str(s.get("upsample", defaults.upsample)),
+            ai_model=str(s.get("ai_model") or ""),
+            deblock_model=str(s.get("deblock_model") or ""),
+            models_dir=models_dir(),
+            material_strength={int(k): float(v) for k, v in (s.get("material_strength") or {}).items()
+                               if v is not None and v != ""},
+            edge_hints=bool(s.get("edge_hints", defaults.edge_hints)),
+            albedo_detail_mm=float(s.get("albedo_detail_mm") or 0.0),
+            detail_normals=bool(s.get("detail_normals", defaults.detail_normals)),
+            detail_strength=float(s.get("detail_strength", defaults.detail_strength)),
         )
         if settings.target_vertices < 1000:
             raise AppError("Choose at least 1,000 vertices.")
@@ -586,7 +621,7 @@ class Service:
         return {"stats": st, "size_mm": ((r.displaced.bounds()[1] - r.displaced.bounds()[0]) * 1000).round(2).tolist(),
                 "fields": [{"material": model.materials[m].name if m < len(model.materials) else str(m),
                             "texture": model.textures[f.texture].name if f.texture in model.textures else f.texture,
-                            "convention": f.field.convention, "texel_mm": f.texel_size * 1000}
+                            "convention": f.field.convention, "texel_mm": f.texel_size * 1000, "steps": f.steps}
                            for m, f in r.fields.items()],
                 "warnings": list(r.warnings)}
 

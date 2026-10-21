@@ -73,3 +73,9 @@ export async function pickFolder(title, start) {
   if (!info().dialogs) return null;
   try { return (await api("pick_folder", { title, start })).path || null; } catch (e) { toast(String(e.message || e)); return null; }
 }
+
+/** A file from the system's dialog, or null. `patterns` are "Name (*.a;*.b)" filters. */
+export async function pickFile(title, patterns, start) {
+  if (!info().dialogs) return null;
+  try { return (await api("pick_file", { title, patterns, start })).path || null; } catch (e) { toast(String(e.message || e)); return null; }
+}

@@ -121,11 +121,31 @@ used, so the side stays straight instead of swelling into a bulge. This is on by
 ### Step 2: displacement from textures
 
 - **Normal maps (default).** FromSoftware models carry detail mostly in normal maps, so the
-  normal map is turned into a height map. The slopes it encodes are integrated with a
-  Poisson solve, limited to the parts of the texture the UVs actually use. The height comes
-  out in texel units and is converted to model units with the measured size of one texel on
-  the model, so strength 1.0 means "the relief the normal map implies". A high-pass then
-  removes the very broad shapes the mesh already has (the "Detail radius" setting).
+  normal map is turned into height. Every edge of the resampled mesh gets a target height
+  difference: the slope the normal map gives at the edge's middle (read bicubically) times
+  the edge's extent in texels, times the measured size of one texel on the model, so
+  strength 1.0 means "the relief the normal map implies". One sparse least-squares solve
+  over the welded mesh (`geometry/integrate.py`, multigrid through pyamg when installed)
+  finds the vertex heights that match them best. UV seams are ordinary edges, so the
+  surface is continuous without any seam fix-up, and a light screening term (heights pulled
+  weakly to zero over the "Detail radius") stands in for a high-pass. The older route,
+  integrating each texture on its own and matching islands at the seams, is still there
+  ("Turn slopes into height: on each texture").
+- **Flat-normal bias.** 8-bit and BC1 normal maps cannot store "flat" exactly, which leaves
+  a constant slope that integrates into a tilt across the part. The median slope of the
+  near-flat texels is subtracted first.
+- **Options** (Enhance > More settings): edge keeping (re-weighted least squares, so slopes
+  no real surface could have stay local), compression clean-up (a sub-texel blur, or a 1x AI
+  deblocking model), upsampling of the normal map (guided by the albedo's edges, or a 2x/4x
+  AI model such as 4x-Normal-RG0 run through ONNX Runtime), specular/metallic mask edges
+  as hints, fine relief guessed from the delit albedo, the material's tiled detail normal
+  map, and a strength per material. AI models are not bundled: the user adds `.onnx` files
+  to the models folder.
+- **Test bench.** `python -m darkstl.bench` bakes known relief (bumps, plates, engraving,
+  cloth) into normal maps (8-bit, simulated BC5 and BC1), maps it onto a panel with a
+  mirrored UV seam and reports the error of each method. At 70k vertices integration on the
+  mesh cuts the error against v0.1 by 14 to 59 % on every scene; edge keeping and the blur
+  clean-up measured worse on these scenes, so they are off by default.
 - **Height / grayscale maps.** Used directly, with a chosen height range in millimetres.
 - **Green channel.** DirectX and OpenGL normal maps flip green. FromSoftware's games all use
   DirectX, so their models use that. For other models it is detected per texture (the
@@ -133,11 +153,11 @@ used, so the side stays straight instead of swelling into a bulge. This is on by
   block-compression noise doesn't decide it), and it can always be forced.
 - **Texture detail finer than the vertex spacing** is blurred out first, so it cannot alias
   into noise.
-- **Seams.** The mesh is welded before resampling, so it never tears along UV seams. A height
-  integrated from a normal map is only known up to a constant on each UV island, so the two
-  sides of a seam disagree. Each island is shifted so the islands agree along their seams as
-  well as possible, and what still differs is faded smoothly into each island over a few
-  vertex spacings, so no ridge or groove is left along the seam.
+- **Seams.** The mesh is welded before resampling, so it never tears along UV seams.
+  Integrating on the mesh needs nothing more. With per-texture integration a height is only
+  known up to a constant on each UV island, so each island is shifted so the islands agree
+  along their seams as well as possible, and what still differs is faded smoothly into each
+  island over a few vertex spacings.
 
 ### Step 3: export
 
@@ -213,8 +233,8 @@ differs:
 - [ ] Watertight option: game meshes are open shells with overlapping parts, so add a
       solidify step (voxel or winding-number remesh) that outputs one closed manifold
 - [ ] Thin-part thickening for blades and capes
-- [ ] Per-material strength and on/off in the material list
-- [ ] Use detail and blend maps as well as the main normal map
+- [x] Per-material strength and on/off in the material list
+- [x] Use detail normal maps as well as the main normal map (blend maps still to do)
 - [ ] Height-map preview painted on the model before running the full step
 - [ ] Streaming export for 10M+ vertex results
 

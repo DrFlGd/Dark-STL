@@ -169,6 +169,7 @@ def cmd_export(args) -> int:
 
 def cmd_enhance(args) -> int:
     from .export import export_mesh, write_png
+    from .app.config import models_dir
     from .pipeline import EnhanceSettings, enhance
 
     model = _open(args)
@@ -183,6 +184,16 @@ def cmd_enhance(args) -> int:
         detail_fraction=args.detail,
         max_displacement_mm=args.max_mm,
         mesh_options=_mesh_options(args),
+        integration=args.integration,
+        edge_keeping=args.edge_keeping,
+        deblock=args.deblock,
+        upsample=args.upsample,
+        ai_model=args.ai_model,
+        deblock_model=args.deblock_model,
+        models_dir=models_dir(),
+        edge_hints=args.edge_hints,
+        albedo_detail_mm=args.albedo_detail,
+        detail_normals=args.detail_normals,
     )
     t0 = time.time()
     result = enhance(model, settings, _progress)
@@ -196,7 +207,8 @@ def cmd_enhance(args) -> int:
           f"[{time.time() - t0:.1f}s]")
     for mat, f in result.fields.items():
         name = model.textures[f.texture].name
-        print(f"  material {mat}: {name}, green={f.field.convention or 'n/a'}, texel={f.texel_size * 1000:.3f} mm")
+        print(f"  material {mat}: {name}, green={f.field.convention or 'n/a'}, texel={f.texel_size * 1000:.3f} mm"
+              + "".join(f"; {step}" for step in f.steps))
         if args.save_heights:
             d = Path(args.save_heights)
             d.mkdir(parents=True, exist_ok=True)
@@ -266,6 +278,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--green", choices=["auto", "directx", "opengl"], default="auto")
     s.add_argument("--detail", type=float, default=1 / 16, help="high-pass radius as a fraction of texture size")
     s.add_argument("--max-mm", type=float, help="clamp displacement to this many mm")
+    s.add_argument("--integration", choices=["mesh", "texture"], default="mesh",
+                   help="integrate normal-map slopes on the model's surface (default) or per texture (v0.1)")
+    s.add_argument("--edge-keeping", type=float, default=0.0, help="0..1, keep inconsistent slopes from smearing")
+    s.add_argument("--deblock", choices=["off", "smooth", "ai"], default="off", help="block-compression clean-up")
+    s.add_argument("--upsample", choices=["off", "guided", "ai"], default="off", help="upsample normal maps")
+    s.add_argument("--ai-model", default="", help="upscaling .onnx model (path, or a name in the models folder)")
+    s.add_argument("--deblock-model", default="", help="1x deblocking .onnx model")
+    s.add_argument("--edge-hints", action="store_true", help="use specular/metallic mask edges as hints")
+    s.add_argument("--albedo-detail", type=float, default=0.0, help="mm of fine relief guessed from the albedo")
+    s.add_argument("--detail-normals", action="store_true", help="add the materials' tiled detail normal maps")
     s.add_argument("--save-heights", help="folder to save the generated height maps")
     s.set_defaults(func=cmd_enhance)
 

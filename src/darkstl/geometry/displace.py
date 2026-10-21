@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..textures.heightmap import sample_bilinear
+from ..textures.heightmap import sample_bicubic, sample_bilinear
 from .mesh import TriMesh
 
 
 def corner_heights(mesh: TriMesh, fields: dict[int, np.ndarray],
-                   uv_scales: dict[int, tuple[float, float]] | None = None) -> np.ndarray:
-    """Height sampled at every face corner's UV from its material's field; 0 where none applies."""
+                   uv_scales: dict[int, tuple[float, float]] | None = None, smooth: bool = False) -> np.ndarray:
+    """Height sampled at every face corner's UV from its material's field; 0 where none applies.
+
+    ``smooth`` samples bicubically instead of bilinearly.
+    """
+    sample = sample_bicubic if smooth else sample_bilinear
     out = np.zeros((mesh.n_faces, 3))
     if mesh.corner_uvs is None:
         return out
@@ -21,7 +25,7 @@ def corner_heights(mesh: TriMesh, fields: dict[int, np.ndarray],
         uv = mesh.corner_uvs[sel].reshape(-1, 2).astype(np.float64)
         if uv_scales and mat in uv_scales:
             uv = uv * np.asarray(uv_scales[mat])
-        out[sel] = sample_bilinear(field, uv).reshape(-1, 3)
+        out[sel] = sample(field, uv).reshape(-1, 3)
     return out
 
 

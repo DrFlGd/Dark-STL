@@ -36,6 +36,11 @@ def cache_dir() -> Path:
     return Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "darkstl"
 
 
+def models_dir() -> Path:
+    """Where the user's AI upscaling/deblocking models (.onnx) live."""
+    return config_dir() / "models"
+
+
 def default_export_dir() -> Path:
     docs = Path.home() / "Documents"
     return (docs if docs.is_dir() else Path.home()) / "Dark STL exports"

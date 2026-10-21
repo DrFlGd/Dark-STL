@@ -18,6 +18,7 @@ ROLE_ALBEDO = "albedo"
 ROLE_NORMAL = "normal"
 ROLE_HEIGHT = "height"
 ROLE_DETAIL_NORMAL = "detail_normal"
+ROLE_SPECULAR = "specular"
 ROLE_OTHER = "other"
 
 _TYPE_RULES = [
@@ -25,12 +26,14 @@ _TYPE_RULES = [
     (re.compile(r"height|displace|parallax", re.I), ROLE_HEIGHT),
     (re.compile(r"bump|normal", re.I), ROLE_NORMAL),
     (re.compile(r"diffuse|albedo|base_?color|color_?map", re.I), ROLE_ALBEDO),
+    (re.compile(r"specular|reflectance|metal|rough|gloss", re.I), ROLE_SPECULAR),
 ]
 
 _SUFFIX_RULES = [
     (re.compile(r"_(n|nm|nrm|normal)$", re.I), ROLE_NORMAL),
     (re.compile(r"_(h|height|disp|displacement)$", re.I), ROLE_HEIGHT),
     (re.compile(r"_(a|d|c|albedo|diffuse|col)$", re.I), ROLE_ALBEDO),
+    (re.compile(r"_(r|s|m|spec|specular|metallic)$", re.I), ROLE_SPECULAR),
 ]
 
 
@@ -73,6 +76,9 @@ class MaterialInfo:
     height: str | None = None
     normal_scale: tuple[float, float] = (1.0, 1.0)
     guessed: bool = False  # textures were matched by name heuristics, not FLVER paths
+    specular: str | None = None
+    detail_normal: str | None = None
+    detail_scale: tuple[float, float] = (1.0, 1.0)
 
 
 def _common_prefix_len(a: str, b: str) -> int:
@@ -96,7 +102,7 @@ def resolve_materials(asset: ModelAsset) -> list[MaterialInfo]:
             if role == ROLE_OTHER and key:
                 role = role_from_name(stem)
             info.slots.append(TextureSlot(tex.type, tex.path, key, role, tex.scale))
-        for role_name in (ROLE_ALBEDO, ROLE_NORMAL, ROLE_HEIGHT):
+        for role_name in (ROLE_ALBEDO, ROLE_NORMAL, ROLE_HEIGHT, ROLE_SPECULAR, ROLE_DETAIL_NORMAL):
             primary = [s for s in info.slots if s.role == role_name and s.texture_name and not _is_secondary(s.type)]
             any_slot = [s for s in info.slots if s.role == role_name and s.texture_name]
             chosen = (primary or any_slot or [None])[0]
@@ -104,6 +110,8 @@ def resolve_materials(asset: ModelAsset) -> list[MaterialInfo]:
                 setattr(info, role_name, chosen.texture_name)
                 if role_name == ROLE_NORMAL:
                     info.normal_scale = chosen.scale
+                elif role_name == ROLE_DETAIL_NORMAL:
+                    info.detail_scale = chosen.scale
         infos.append(info)
 
     # Fill gaps from texture-name suffixes, preferring names that look related to the
