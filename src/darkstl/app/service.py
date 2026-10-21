@@ -228,6 +228,8 @@ class Service:
                         {"id": "isotropic", "label": "Isotropic remesh (exact count, uniform triangles)",
                          "available": acvd_available(), "missing": "needs pyacvd"}],
             "open_patterns": _dialog_patterns(),
+            "fast_solver": _importable("pyamg"),
+            "ai_runtime": _importable("onnxruntime"),
             "first_run": not self.config.game_folders,
             "dialogs": bool(self.host.dialogs),
             "platform": sys.platform,
@@ -656,6 +658,12 @@ class Service:
         with self.lock:
             self.sessions.clear()
             self.textures_png.clear()
+
+
+def _importable(name: str) -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec(name) is not None
 
 
 def _dialog_patterns() -> list[str]:

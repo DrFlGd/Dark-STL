@@ -1,12 +1,13 @@
 # PyInstaller build of the app's engine: darkstl(.exe), the command line, which the app runs as
 # "darkstl engine" (src/darkstl/app/engine.py). From the repository root, with the package and
-# the remesher installed (pip install ".[remesh]" pyinstaller):
+# the remesher installed (pip install ".[remesh,fast]" onnxruntime-directml pyinstaller):
 #   pyinstaller desktop/engine/engine.spec --noconfirm --distpath build --workpath build/pyinstaller
 # It lands in build/engine, where the app's bundle takes it from (tauri.conf.json, resources).
 #
 # Of VTK, the remesher only needs the few modules pyvista loads for a PolyData; the rest (rendering,
 # file readers, plotting) would make the app several times the size, so they are left out. The
 # smoke test (smoke.py) runs the remesher in the built engine to prove the cut.
+import importlib.util
 import pkgutil
 from pathlib import Path
 
@@ -20,7 +21,11 @@ VTK_KEEP = {"util", "numpy_interface", "vtkCommonCore", "vtkCommonDataModel", "v
 VTK_CUT = [f"vtkmodules.{m.name}" for m in pkgutil.iter_modules(vtkmodules.__path__) if m.name not in VTK_KEEP]
 EXCLUDES = ["pyvista.plotting", "pyvista.trame", "pyvista.examples", "pyvista.demos", "pyvista.ext", "matplotlib", "tkinter", "webview", "PySide6", "PyQt5", "PyQt6", "IPython", "pytest", *VTK_CUT]
 
-a = Analysis([str(HERE / "main.py")], datas=collect_data_files("darkstl"), hiddenimports=collect_submodules("darkstl"),
+# pyamg (the multigrid solver for integrating normal maps on the mesh) and ONNX Runtime (optional
+# AI upscaling models, DirectML build on Windows) are imported only when used, so name them here.
+OPTIONAL = [m for m in ("pyamg", "onnxruntime") if importlib.util.find_spec(m)]
+a = Analysis([str(HERE / "main.py")], datas=collect_data_files("darkstl"),
+             hiddenimports=collect_submodules("darkstl") + [x for m in OPTIONAL for x in collect_submodules(m)],
              excludes=EXCLUDES)
 exe = EXE(PYZ(a.pure), a.scripts, [], exclude_binaries=True, name="darkstl", icon=str(HERE.parent / "icons" / "icon.ico"),
           console=True)

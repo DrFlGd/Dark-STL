@@ -89,6 +89,8 @@ def check_engine(cli: Path, game: Path, env: dict) -> None:
         info, _ = call("app_info")
         if not info["dialogs"] or not all(m["available"] for m in info["methods"]):
             raise SystemExit(f"app_info: {info}")
+        if not info.get("fast_solver") or not info.get("ai_runtime"):
+            raise SystemExit(f"the multigrid solver or ONNX Runtime is missing: {info}")
         deadline = time.time() + 120
         while True:
             overview, _ = call("overview")
