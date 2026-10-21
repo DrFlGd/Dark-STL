@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dark-stl"
-version = "0.2.1"
+version = "0.3.0"
 description = "Browse FromSoftware game models, add texture detail by displacement, and export print-ready meshes"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,8 +19,10 @@ dependencies = [
 [project.optional-dependencies]
 gui = ["pywebview>=5.0"]
 remesh = ["pyacvd>=0.3", "pyvista>=0.43"]
-dev = ["pytest>=7"]
-all = ["dark-stl[gui,remesh]"]
+fast = ["pyamg>=5.0"]  # multigrid solver: integration on the mesh in about two thirds of the time
+ai = ["onnxruntime>=1.17"]  # AI upscaling/deblocking models (onnxruntime-directml on Windows for the GPU)
+dev = ["pytest>=7", "onnx>=1.15", "onnxruntime>=1.17"]
+all = ["dark-stl[gui,remesh,fast,ai]"]
 
 [project.scripts]
 darkstl = "darkstl.cli:main"

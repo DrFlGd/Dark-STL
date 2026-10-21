@@ -106,6 +106,22 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path):  #
     # the same mesh drawn again stays where it was (on the floor, centred)
     page.wait_for_selector("#stage-canvas:not([data-loading])")
 
+    # the displacement settings: per-material strength, upsampling, colour-texture detail, AI models
+    page.click(".more-settings > summary")
+    page.fill('[data-strength="0"]', "2")
+    page.press('[data-strength="0"]', "Tab")
+    page.select_option("#upsample", "ai")
+    page.wait_for_selector("#ai-models #ai-model-add")
+    assert page.locator("#ai-model option").count() == 1  # nothing in the models folder yet
+    page.select_option("#upsample", "guided")
+    assert page.locator("#ai-models").count() == 0
+    page.fill("#albedo-detail", "0.1")
+    page.press("#albedo-detail", "Tab")
+    if os.environ.get("DARKSTL_SCREENSHOTS"):
+        page.locator("#enhance-tab").screenshot(path=os.path.join(os.environ["DARKSTL_SCREENSHOTS"], "enhance-settings.png"))
+    page.click("#enhance-run")
+    page.wait_for_selector("#enhance-result .field-list :text('albedo detail')", timeout=60000)
+
     page.click("#rail-export")
     page.fill("#export-folder", str(tmp_path / "out"))
     page.press("#export-folder", "Tab")

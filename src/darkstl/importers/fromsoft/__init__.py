@@ -46,7 +46,8 @@ def _material(info: materials.MaterialInfo) -> Material:
                                       for s in info.slots]
     # every FromSoftware game bakes its normal maps with green pointing down the texture (DirectX)
     return Material(info.name, info.albedo, info.normal, info.height, info.normal_scale, info.guessed, details,
-                    normal_green="directx")
+                    normal_green="directx", specular=info.specular, detail_normal=info.detail_normal,
+                    detail_scale=info.detail_scale)
 
 
 def flver_summary(f: flver.Flver) -> list[str]:

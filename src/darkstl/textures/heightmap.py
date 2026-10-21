@@ -138,6 +138,13 @@ def height_from_normal_map(rgba: np.ndarray, convention: str = "auto", mask: np.
     if convention == "auto":
         convention, confidence = detect_convention(rgba, mask)
     p, q = normal_map_slopes(rgba, convention)
+    return height_from_slopes(p, q, mask, detail_fraction, convention, confidence)
+
+
+def height_from_slopes(p: np.ndarray, q: np.ndarray, mask: np.ndarray | None = None,
+                       detail_fraction: float = 1.0 / 16.0, convention: str = "",
+                       confidence: float = 0.0) -> HeightField:
+    """:func:`height_from_normal_map` for slopes already read (and maybe cleaned or upsampled)."""
     h = integrate_slopes(p, q, mask)
     if detail_fraction > 0:
         h = highpass(h, detail_fraction * max(h.shape), mask)
@@ -171,10 +178,13 @@ def uv_coverage_mask(corner_uvs: np.ndarray, width: int, height: int, dilate: in
     shift = np.floor(uv.mean(axis=1))
     uv = uv - shift[:, None, :]
     px = uv * np.array([width, height])
-    for tri in px:
+    los, his = px.min(axis=1), px.max(axis=1)
+    inside = (los[:, 0] >= 0) & (los[:, 1] >= 0) & (his[:, 0] <= width) & (his[:, 1] <= height)
+    for tri, lo, hi, ok in zip(px.tolist(), los, his, inside):
         pts = [tuple(v) for v in tri]
         draw.polygon(pts, fill=255)
-        lo, hi = tri.min(0), tri.max(0)
+        if ok:
+            continue
         # Triangles hanging over the edge also cover the wrapped side
         for dx in (-width, 0, width):
             for dy in (-height, 0, height):
@@ -203,6 +213,132 @@ def texel_world_size(vertices: np.ndarray, faces: np.ndarray, corner_uvs: np.nda
     order = np.argsort(ratio)
     cw = np.cumsum(w[order])
     return float(ratio[order][np.searchsorted(cw, cw[-1] / 2)])
+
+
+def sample_bicubic(img: np.ndarray, uv: np.ndarray) -> np.ndarray:
+    """Catmull-Rom sample of an (H, W) or (H, W, C) array at DirectX-convention UVs, with wrap-around.
+
+    Smoother than bilinear between texels, so a mesh much denser than the
+    texture does not show the texel grid as facets.
+    """
+    h, w = img.shape[:2]
+    flat = img.reshape(h * w, -1)
+    x = np.asarray(uv[:, 0], np.float64) * w - 0.5
+    y = np.asarray(uv[:, 1], np.float64) * h - 0.5
+    x0 = np.floor(x)
+    y0 = np.floor(y)
+    tx = (x - x0).astype(np.float32)
+    ty = (y - y0).astype(np.float32)
+    x0 = x0.astype(np.int64)
+    y0 = y0.astype(np.int64)
+
+    def weights(t):
+        t2 = t * t
+        t3 = t2 * t
+        return (-0.5 * t3 + t2 - 0.5 * t, 1.5 * t3 - 2.5 * t2 + 1.0, -1.5 * t3 + 2.0 * t2 + 0.5 * t, 0.5 * t3 - 0.5 * t2)
+
+    wx, wy = weights(tx), weights(ty)
+    cols = [(x0 + b - 1) % w for b in range(4)]
+    out = np.zeros((len(x), flat.shape[1]), np.float64)
+    for a in range(4):
+        row = ((y0 + a - 1) % h) * w
+        acc = flat[row + cols[0]] * wx[0][:, None]
+        for b in range(1, 4):
+            acc += flat[row + cols[b]] * wx[b][:, None]
+        out += acc * wy[a][:, None]
+    return out[:, 0] if img.ndim == 2 else out
+
+
+def slope_bias(p: np.ndarray, q: np.ndarray, mask: np.ndarray | None = None) -> tuple[float, float]:
+    """The slope a normal map reads where its surface is flat (the most common value).
+
+    Normal maps cannot store "flat" exactly: 8-bit channels have no exact
+    middle, and BC1's 5/6-bit endpoints round it further. That leaves a small
+    constant slope everywhere, which integrates into a tilt across the whole
+    part. The median over the near-flat texels estimates it; real relief is
+    left alone, and with too few flat texels to tell, nothing is removed.
+    """
+    used = mask if mask is not None and mask.any() else np.ones(p.shape, bool)
+    flat = used & (np.abs(p) < 0.06) & (np.abs(q) < 0.06)
+    if flat.sum() < 0.05 * used.sum():
+        return 0.0, 0.0
+    return float(np.median(p[flat])), float(np.median(q[flat]))
+
+
+def smooth_slopes(p: np.ndarray, q: np.ndarray, sigma: float = 0.7) -> tuple[np.ndarray, np.ndarray]:
+    """A sub-texel blur that melts 4x4 block-compression steps before they are integrated."""
+    if sigma <= 0:
+        return p, q
+    return (ndimage.gaussian_filter(p, sigma, mode="wrap"), ndimage.gaussian_filter(q, sigma, mode="wrap"))
+
+
+def luminance(rgba: np.ndarray) -> np.ndarray:
+    f = to_float(rgba)
+    if f.ndim == 2 or f.shape[2] < 3:
+        return f if f.ndim == 2 else f[..., 0]
+    return 0.2126 * f[..., 0] + 0.7152 * f[..., 1] + 0.0722 * f[..., 2]
+
+
+def resize(img: np.ndarray, shape: tuple[int, int], order: int = 1) -> np.ndarray:
+    """Resample a 2D float array to ``shape`` (rows, cols), wrapping at the borders."""
+    if img.shape == tuple(shape):
+        return img
+    zy, zx = shape[0] / img.shape[0], shape[1] / img.shape[1]
+    out = ndimage.zoom(img, (zy, zx), order=order, mode="grid-wrap", grid_mode=True)
+    return out[: shape[0], : shape[1]]
+
+
+def guided_upsample(p: np.ndarray, q: np.ndarray, guide: np.ndarray | None, factor: int,
+                    range_sigma: float = 0.1) -> tuple[np.ndarray, np.ndarray]:
+    """Upsample slopes by ``factor``, snapping their edges to the guide's (joint bilateral upsampling).
+
+    ``guide`` is a luminance image (any size; resized to the output). Without
+    one this is plain cubic upsampling.
+    """
+    if factor <= 1:
+        return p, q
+    shape = (p.shape[0] * factor, p.shape[1] * factor)
+    up_p, up_q = resize(p, shape, 3), resize(q, shape, 3)
+    if guide is None:
+        return up_p, up_q
+    g = resize(guide.astype(np.float64), shape, 1)
+    step = max(factor // 2, 1)
+    acc_p = np.zeros(shape)
+    acc_q = np.zeros(shape)
+    acc_w = np.zeros(shape)
+    spatial = 2.0 * (factor * 0.75) ** 2
+    for dy in range(-factor, factor + 1, step):
+        for dx in range(-factor, factor + 1, step):
+            gs = np.roll(g, (dy, dx), axis=(0, 1))
+            wgt = np.exp(-(dx * dx + dy * dy) / spatial - (g - gs) ** 2 / (2 * range_sigma**2))
+            acc_p += wgt * np.roll(up_p, (dy, dx), axis=(0, 1))
+            acc_q += wgt * np.roll(up_q, (dy, dx), axis=(0, 1))
+            acc_w += wgt
+    return (acc_p / acc_w).astype(np.float32), (acc_q / acc_w).astype(np.float32)
+
+
+def albedo_detail(rgba: np.ndarray, band: float = 1.5, delight: float = 12.0) -> np.ndarray:
+    """Fine relief guessed from the albedo: darker than its surroundings reads as deeper.
+
+    The albedo is first divided by a heavy blur of itself, which removes baked
+    shading and broad colour changes ("delighting"); then only the band finer
+    than ``band`` texels is kept. Returns roughly -1..1 (unitless).
+    """
+    lum = luminance(rgba).astype(np.float64)
+    lit = lum / np.maximum(ndimage.gaussian_filter(lum, delight, mode="wrap"), 1e-3)
+    fine = lit - ndimage.gaussian_filter(lit, band, mode="wrap")
+    s = float(np.percentile(np.abs(fine), 99)) or 1.0
+    return np.clip(fine / s, -1.5, 1.5).astype(np.float32)
+
+
+def edge_hint(rgba: np.ndarray) -> np.ndarray:
+    """Where a mask texture (specular, metallic) changes sharply: 0 flat, 1 a clear material edge."""
+    lum = ndimage.gaussian_filter(luminance(rgba).astype(np.float64), 0.8, mode="wrap")
+    mag = np.hypot(ndimage.sobel(lum, 0, mode="wrap"), ndimage.sobel(lum, 1, mode="wrap"))
+    s = float(np.percentile(mag, 99.5))
+    if s <= 1e-6:
+        return np.zeros_like(lum, np.float32)
+    return np.clip(mag / s, 0, 1).astype(np.float32)
 
 
 def sample_bilinear(img: np.ndarray, uv: np.ndarray) -> np.ndarray:

@@ -8,13 +8,14 @@ import { useStore } from "../lib/store.js";
 import { ui, setPref, resolvedTheme } from "./state.js";
 import { routeHash, placeRoute, modelOf } from "./context.js";
 import { Icon } from "./icons.js";
-import { api, binUrl, info, plural, followJob, toast, showInFolder, pickFolder } from "./api.js";
+import { api, binUrl, info, plural, followJob, toast, showInFolder, pickFolder, pickFile } from "./api.js";
 import { CommandBar } from "./layout.js";
 import { Inspector, useWidth } from "./inspector.js";
 import { Viewer } from "../viewer.js";
 
 const ENHANCE = { target_vertices: 1_000_000, method: "subdivide", smooth: true, source: "normal", strength: 1, height_range_mm: 1,
-  green: "auto", detail_fraction: 0.0625, max_displacement_mm: 0 };
+  green: "auto", detail_fraction: 0.0625, max_displacement_mm: 0, integration: "mesh", edge_keeping: 0, deblock: "off",
+  upsample: "off", ai_model: "", deblock_model: "", edge_hints: false, albedo_detail_mm: 0, detail_normals: false, detail_strength: 1 };
 const EXPORT = { format: ".stl", units: "mm", textures: true, folder: "" };
 const VIEW = { shading: "textured", edges: false };
 const KEEP_MESHES = 4; // built meshes a model page keeps (on the graphics card) to show again at once
@@ -186,8 +187,8 @@ function Stage({ m, variant, which, setWhich, args, result, stats }) {
       const size = viewer.current.show(built, { textures: view.shading === "textured" ? textures : null, wireframe: view.shading === "wire", keepView: shown.current });
       viewer.current.setEdges(view.edges);
       shown.current = true;
-      setState({ loading: false, error: null, size });
-    })().catch((e) => { if (live) setState({ loading: false, error: msg(e), size: null }); });
+      setState({ loading: false, error: null, size, key });
+    })().catch((e) => { if (live) setState({ loading: false, error: msg(e), size: null, key }); });
     return () => { live = false; };
   }, [key, view.shading]);
   const setView = (patch) => setPref({ view: { ...view, ...patch } });
@@ -198,7 +199,7 @@ function Stage({ m, variant, which, setWhich, args, result, stats }) {
   const noTextures = !Object.keys(textures).length;
   return html`<section class="mp-stage workspace-stage" id="workspace-stage" aria-label="3D view">
     <div class="stage-3d">
-      <div class="stage-canvas" id="stage-canvas" data-loading=${state.loading ? "1" : null}>
+      <div class="stage-canvas" id="stage-canvas" data-loading=${state.loading || state.key !== key ? "1" : null}>
         <canvas ref=${canvas} tabindex="0" aria-label="The model in 3D: drag to turn it, right-drag to move, wheel to zoom"></canvas>
         ${state.loading && !shown.current ? html`<div class="stage-note muted">Loading the model…</div>` : null}
         ${state.error ? html`<div class="stage-note"><p class="warn-note" role="alert" id="stage-error">${state.error}</p></div>` : null}
@@ -305,18 +306,36 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
   const s = { ...ENHANCE, ...(saved || {}) };
   const set = (patch) => setPref({ enhance: { ...s, ...patch } });
   const [over, setOver] = useState({});
+  const [strengths, setStrengthState] = useState({}); // material -> strength multiplier
+  const strengthsNow = useRef({}); // the same, readable at once by a click that follows the change
+  const setStrengths = (v) => { strengthsNow.current = v; setStrengthState(v); };
+  const [ai, setAi] = useState(null); // { folder, models, available } once asked for
   const [run, setRun] = useState(null); // { progress, message } while running
   const [error, setError] = useState(null);
   const methods = info().methods || [];
   const have = m.textures.map((t) => t.key);
   const detailOf = (mat, i) => (i in over ? over[i] : (s.source === "height" ? mat.height : mat.normal) || "");
   const spacing = spacingMm(stats.area_m2, s.target_vertices);
+  const wantsAi = s.source === "normal" && (s.upsample === "ai" || s.deblock === "ai");
+  const loadAi = () => api("ai_models").then(setAi, (e) => setError(msg(e)));
+  useEffect(() => { if (wantsAi && !ai) loadAi(); }, [wantsAi]);
+  const addModel = async () => {
+    const path = await pickFile("Add an AI model", ["ONNX models (*.onnx)"]);
+    if (path) { try { setAi(await api("ai_model_add", { path })); } catch (e) { setError(msg(e)); } }
+  };
+  const modelSelect = (id, key, title) => html`<label class="field-block" title=${title}><span>${key === "ai_model" ? "Upscaling model" : "Deblocking model"}</span>
+    <select id=${id} value=${s[key]} onChange=${(e) => set({ [key]: e.target.value })}>
+      <option value="">Choose…</option>${(ai?.models || []).map((x) => html`<option key=${x} value=${x}>${x}</option>`)}</select></label>`;
   const go = async () => {
     setError(null);
     setRun({ progress: 0, message: "Starting" });
     try {
       const overrides = Object.fromEntries(m.materials.map((mat, i) => [i, detailOf(mat, i)]));
-      const { job } = await call("enhance", { sid: m.sid, ...args.json, settings: { ...s, max_displacement_mm: s.max_displacement_mm || null, texture_overrides: overrides } });
+      // the settings as stored now: a number typed and then Generate clicked straight away is saved
+      // (on blur) just before the click, before this tab has drawn it again
+      const now = { ...ENHANCE, ...(ui.get().enhance || {}) };
+      const { job } = await call("enhance", { sid: m.sid, ...args.json, settings: { ...now, max_displacement_mm: now.max_displacement_mm || null,
+        texture_overrides: overrides, material_strength: strengthsNow.current } });
       const r = await followJob(job, `Generating ${m.entry?.label || variantName(m.variant) || m.name}`, (j) => setRun({ progress: j.progress, message: j.message }));
       onDone(r);
       toast(r.kept ? "Already generated with these settings" : `Generated: ${plural(r.stats.vertices, "vertex", "vertices")}`);
@@ -343,12 +362,41 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
       ${s.source !== "none" ? html`<div class="field-block" id="detail-maps"><span>Detail texture for each material</span>
         ${m.materials.map((mat, i) => html`<label class="mat-row" key=${i} title=${mat.details.join("\n")}><span class="mat-name">${mat.name}</span>
           <select data-material=${i} value=${detailOf(mat, i)} onChange=${(e) => setOver({ ...over, [i]: e.target.value })}>
-            <option value="">None</option>${have.map((k) => html`<option key=${k} value=${k}>${m.textures.find((t) => t.key === k).name}</option>`)}</select></label>`)}</div>` : null}
+            <option value="">None</option>${have.map((k) => html`<option key=${k} value=${k}>${m.textures.find((t) => t.key === k).name}</option>`)}</select>
+          <input type="number" class="mat-strength" data-strength=${i} value=${strengths[i] ?? 1} step=${0.25} min=${0} max=${20}
+            title="Strength for this material alone, on top of the overall strength" aria-label=${`Strength for ${mat.name}`}
+            onChange=${(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) setStrengths({ ...strengths, [i]: v }); }} /></label>`)}</div>` : null}
       ${s.source !== "none" ? html`<details class="more-settings"><summary>More settings</summary>
         ${s.source === "normal" ? html`<label class="field-block" title="Which way the normal maps' green channel points. Automatic uses the game's own convention, or reads it from the texture for other models."><span>Normal map green</span>
           <select id="green" value=${s.green} onChange=${(e) => set({ green: e.target.value })}><option value="auto">Automatic</option><option value="directx">DirectX (Y−)</option><option value="opengl">OpenGL (Y+)</option></select></label>
         <${NumberField} id="detail-radius" label="Detail radius" value=${s.detail_fraction} step=${0.01} min=${0} max=${0.5}
-          title="Keeps relief finer than this share of the texture's width. Larger keeps broader shapes; 0 keeps everything (and may bulge)." onChange=${(v) => set({ detail_fraction: v })} />` : null}
+          title="Keeps relief finer than this share of the texture's width. Larger keeps broader shapes; 0 keeps everything (and may bulge)." onChange=${(v) => set({ detail_fraction: v })} />
+        <label class="field-block" title="Where the normal map's slopes are added up into heights. On the model's surface is seamless across UV seams and keeps broader shapes; per texture is how version 0.1 worked."><span>Turn slopes into height</span>
+          <select id="integration" value=${s.integration} onChange=${(e) => set({ integration: e.target.value })}>
+            <option value="mesh">On the model's surface</option><option value="texture">On each texture (v0.1)</option></select></label>
+        ${s.integration === "mesh" ? html`<${NumberField} id="edge-keeping" label="Edge keeping" value=${s.edge_keeping} step=${0.25} min=${0} max=${1}
+          title="0 to 1. Stops slopes that no real surface could have (hand-painted detail, compression noise) from smearing into their surroundings. Slower; on clean maps it can soften relief." onChange=${(v) => set({ edge_keeping: v })} />` : null}
+        <label class="field-block" title="Block compression leaves a faint 4-pixel grid. Smoothing melts it but also softens the finest detail; an AI model can remove it more cleanly."><span>Compression clean-up</span>
+          <select id="deblock" value=${s.deblock} onChange=${(e) => set({ deblock: e.target.value })}>
+            <option value="off">None</option><option value="smooth">Smooth it out</option><option value="ai">AI model</option></select></label>
+        <label class="field-block" title="More pixels in the normal map when the model's vertices are closer together than its pixels. Guided keeps edges where the colour texture has them; AI models invent plausible fine detail."><span>Upsample the normal map</span>
+          <select id="upsample" value=${s.upsample} onChange=${(e) => set({ upsample: e.target.value })}>
+            <option value="off">No</option><option value="guided">Guided by the colour texture</option><option value="ai">AI model</option></select></label>
+        ${wantsAi ? html`<div class="field-block" id="ai-models">
+          ${ai && !ai.available ? html`<p class="insp-note">AI models need ONNX Runtime, which this copy of the app doesn't have.</p>` : null}
+          ${s.upsample === "ai" ? modelSelect("ai-model", "ai_model", "A 2x or 4x model for normal maps, such as 4x-Normal-RG0 (CC0) from openmodeldb.info, in .onnx form.") : null}
+          ${s.deblock === "ai" ? modelSelect("deblock-model", "deblock_model", "A 1x model that removes DDS block artifacts, in .onnx form.") : null}
+          <div class="insp-actions"><button type="button" class="ghost" id="ai-model-add" onClick=${addModel}>Add a model…</button>
+            ${ai ? html`<button type="button" class="ghost" id="ai-models-folder" onClick=${() => showInFolder(ai.folder)}>Open models folder</button>` : null}</div>
+          <small class="muted">Models aren't included; check each one's licence before sharing prints made with it.</small></div>` : null}
+        <label class="check-row" title="Where the specular or metallic mask changes sharply (a gem in its setting, trim on leather), the surfaces either side are allowed to sit at their own heights.">
+          <input type="checkbox" id="edge-hints" checked=${s.edge_hints} onChange=${(e) => set({ edge_hints: e.target.checked })} /><span>Use specular/metallic edges</span></label>
+        <${NumberField} id="albedo-detail" label="Detail from the colour texture" value=${s.albedo_detail_mm} step=${0.05} min=${0} max=${5} unit="mm (0: off)"
+          title="Adds fine relief guessed from the colour texture: darker than its surroundings reads as deeper (grooves, stitching). Painted patterns can turn into bumps, so keep it small." onChange=${(v) => set({ albedo_detail_mm: v })} />
+        <label class="check-row" title="Some materials layer a small tiled normal map on top (leather grain, cloth weave). Adds it as extra fine relief; it is about 0.1 mm deep at print size.">
+          <input type="checkbox" id="detail-normals" checked=${s.detail_normals} onChange=${(e) => set({ detail_normals: e.target.checked })} /><span>Add detail normal maps</span></label>
+        ${s.detail_normals ? html`<${NumberField} id="detail-strength" label="Detail map strength" value=${s.detail_strength} step=${0.25} min=${0} max=${20}
+          onChange=${(v) => set({ detail_strength: v })} />` : null}` : null}
         <${NumberField} id="clamp" label="Most displacement" value=${s.max_displacement_mm} step=${0.1} min=${0} max=${100} unit="mm (0: no limit)"
           title="No vertex moves further than this." onChange=${(v) => set({ max_displacement_mm: v })} />
       </details>` : null}
@@ -365,7 +413,7 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
         <dt>Triangles</dt><dd>${num(result.stats.faces)}</dd>
         <dt>Size</dt><dd>${sizeText(result.size_mm)}</dd>
         <dt>Relief</dt><dd>up to ${result.stats.max_displacement_mm.toFixed(2)} mm</dd></dl>
-      ${result.fields.length ? html`<ul class="ls-list field-list">${result.fields.map((f, i) => html`<li key=${i}><span>${f.material}<small class="muted">${f.texture} · ${f.convention}</small></span>
+      ${result.fields.length ? html`<ul class="ls-list field-list">${result.fields.map((f, i) => html`<li key=${i}><span>${f.material}<small class="muted">${[f.texture, f.convention, ...(f.steps || [])].filter(Boolean).join(" · ")}</small></span>
         <span class="muted" title="One texture pixel covers this much of the model">${f.texel_mm.toFixed(2)} mm/px</span></li>`)}</ul>` : null}
       ${result.warnings.map((w, i) => html`<p class="insp-note" key=${i}>${w}</p>`)}
     </section>` : null}

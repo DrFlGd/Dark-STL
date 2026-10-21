@@ -85,7 +85,8 @@ a.chip-btn.on { background: var(--sel); }
 .material { display: grid; gap: 4px; padding: 6px 0; border-top: 1px solid var(--steel-2); }
 .material:first-of-type { border-top: 0; }
 .material-name { margin: 0; font-weight: 700; font-size: 13.5px; overflow-wrap: anywhere; }
-.mat-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 8px; align-items: center; font-size: 13px; }
+.mat-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) 58px; gap: 8px; align-items: center; font-size: 13px; }
+.mat-strength { width: 100%; }
 .mat-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .more-settings { display: grid; gap: 8px; }
 .more-settings > summary { cursor: pointer; font-size: 13px; color: var(--graphite); margin-bottom: 6px; }

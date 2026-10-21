@@ -60,6 +60,9 @@ class Material:
     guessed: bool = False  # roles were matched by texture names rather than read from the file
     details: list[str] = field(default_factory=list)  # shader and texture slots, for display
     normal_green: str | None = None  # "directx" or "opengl" when the importer knows how its normal maps are made
+    specular: str | None = None  # specular / reflectance / metallic mask: hints where materials meet
+    detail_normal: str | None = None  # small tiled normal map layered on top (leather grain, cloth weave)
+    detail_scale: tuple[float, float] = (1.0, 1.0)  # its UV tiling
 
 
 @dataclass
