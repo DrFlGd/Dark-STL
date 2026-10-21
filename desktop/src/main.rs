@@ -149,14 +149,15 @@ fn log_file() -> Stdio {
 }
 
 /// `darkstl engine`: engine/darkstl(.exe) beside the app, or DARKSTL_ENGINE (an executable) when
-/// set, for working on the app. Folders given to the app are added to its library.
+/// set, for working on the app. Folders given to the app are added to its library; switches are
+/// left out (whatever starts the app may add its own: WebDriver does, for the web view).
 fn engine_command(app: &AppHandle) -> Command {
     let program = std::env::var_os("DARKSTL_ENGINE").map(PathBuf::from).unwrap_or_else(|| {
         let dir = app.path().resource_dir().unwrap_or_default().join("engine");
         dir.join(if cfg!(windows) { "darkstl.exe" } else { "darkstl" })
     });
     let mut command = Command::new(program);
-    command.arg("engine").args(std::env::args_os().skip(1));
+    command.arg("engine").args(std::env::args_os().skip(1).filter(|a| !a.to_string_lossy().starts_with('-')));
     command
 }
 

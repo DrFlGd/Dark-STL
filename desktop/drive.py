@@ -43,7 +43,9 @@ print("settings in", os.environ.get("DARKSTL_HOME") or "the user's own folders",
 
 opts = ArgOptions()
 opts.set_capability("browserName", "wry")
-opts.set_capability("tauri:options", {"application": str(Path(a.app).resolve()), "args": [str(game)]})
+# a switch as well as the folder: WebDriver starts the app with its own (msedgedriver does on Windows),
+# and the app gives its engine only the folders
+opts.set_capability("tauri:options", {"application": str(Path(a.app).resolve()), "args": [str(game), "--a-switch"]})
 d = webdriver.Remote(command_executor=a.driver, options=opts)
 d.set_script_timeout(30)
 failures = []
