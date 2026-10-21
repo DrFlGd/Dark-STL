@@ -3,10 +3,10 @@
     tauri-driver &          # needs msedgedriver (Windows) or WebKitWebDriver (Linux) to hand
     python desktop/drive.py --app "desktop/target/release/Dark STL.exe" --out shots
 
-The app gets a game folder (built byte by byte, as in smoke.py) on its command line. Checks: the
-page runs in the app (the desktop platform, no local server), the game is listed with previews,
-a model opens in the 3D view with its textures, the isotropic remesher enhances it, and the
-result exports. Screenshots go to --out. Exits non-zero on any failure.
+A game folder (built byte by byte, as in smoke.py) is added in the Add game folder dialog. Checks:
+the page runs in the app (the desktop platform, no local server), the game is listed with
+previews, a model opens in the 3D view with its textures, the isotropic remesher enhances it, and
+the result exports. Screenshots go to --out. Exits non-zero on any failure.
 """
 
 from __future__ import annotations
@@ -43,9 +43,9 @@ print("settings in", os.environ.get("DARKSTL_HOME") or "the user's own folders",
 
 opts = ArgOptions()
 opts.set_capability("browserName", "wry")
-# a switch as well as the folder: WebDriver starts the app with its own (msedgedriver does on Windows),
-# and the app gives its engine only the folders
-opts.set_capability("tauri:options", {"application": str(Path(a.app).resolve()), "args": [str(game), "--a-switch"]})
+# a switch: WebDriver starts the app with its own (msedgedriver does, on Windows), and the app gives its
+# engine only folders. The game folder goes in through the dialog: msedgedriver splits arguments at spaces.
+opts.set_capability("tauri:options", {"application": str(Path(a.app).resolve()), "args": ["--a-switch"]})
 d = webdriver.Remote(command_executor=a.driver, options=opts)
 d.set_script_timeout(30)
 failures = []
@@ -73,13 +73,17 @@ def click(css):
 
 
 try:
-    wait("window.__errors && document.querySelector('#game-list .nav-link')", 120, "the game in the menu")
+    wait("window.__errors && document.querySelector('#first-run')", 120, "the first-run page")
     kind = d.execute_script("return [!!window.__TAURI_INTERNALS__, location.protocol, location.host]")
     print("page:", kind, flush=True)
     assert kind[0], "the page isn't running in the app"
     shot("01-home")
-    click("#game-list .nav-link")
-    wait("document.querySelector('#kind-tiles [data-sub=\"Weapons\"]')", what="the game's kinds")
+    click("#first-add-folder")
+    d.find_element(By.CSS_SELECTOR, "#folder-path").send_keys(str(game))
+    wait("document.body.innerText.includes('Recognised as Dark Souls III.')", what="the folder recognised")
+    click("#add-folder-dialog-ok")
+    wait("document.querySelector('#kind-tiles [data-sub=\"Weapons\"]')", 120, "the game's kinds")
+    assert "DS3" in d.find_element(By.CSS_SELECTOR, "#game-list .nav-link").text.upper()
     click('[data-sub="Weapons"]')
     wait("document.querySelector('.results [data-thumb=\"ok\"]')", 60, "a preview (engine:// picture)")
     shot("02-weapons")
