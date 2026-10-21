@@ -27,7 +27,7 @@ export const ui = createStore({
   inspectorWidth: 360,
   catPanel: null,          // the game's category panel beside the menu: open | folded
   catPanelWidth: 230,
-  enhance: null,           // the Enhance tab's settings, kept between models
+  enhance: null,           // the Generate tab's settings, kept between models
   exportOpts: null,        // the Export tab's settings
   view: null,              // the 3D view's shading and edges
 });

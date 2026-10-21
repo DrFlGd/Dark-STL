@@ -22,7 +22,7 @@ export function About() {
     <section class="ls-section">
       <h2>Games and files</h2>
       <p>${games.length ? `Recognised by their folders: ${games.join(", ")}.` : ""} Models are read from .partsbnd, .chrbnd, .objbnd, .geombnd and .mapbnd files (also inside .dcx), loose .flver files and .obj files.
-        Each game is read by its own importer, so more games can be added; enhancing and exporting work the same for all of them.</p>
+        Each game is read by its own importer, so more games can be added; generating and exporting work the same for all of them.</p>
       <p class="muted">Dark STL needs your own copies of the games. It contains no code or data from them.</p>
     </section>
     <section class="ls-section">

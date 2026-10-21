@@ -84,9 +84,10 @@ darkstl            # or darkstl-gui; darkstl gui --browser opens it in your brow
 3. **Open a model** (double-click or Enter). It's shown with the game's textures; *Model*
    lists its parts and options, *Textures* every texture found. A file that holds several
    models (a weapon and its sheath) has a switch at the top.
-4. **Enhance** sets the vertex count (it shows the spacing that gives on this model) and where
+4. **Generate** sets the vertex count (it shows the spacing that gives on this model) and where
    the detail comes from, then makes the detailed model. Show *Original* or *Enhanced* under
-   the view.
+   the view: both stay loaded, so switching is instant. The last three models generated are
+   kept too, so generating again with settings you've already used is instant.
 5. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default.
 
 ![A game's library](docs/images/library.png)
