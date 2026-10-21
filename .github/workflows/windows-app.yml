@@ -1,16 +1,17 @@
 name: Windows app
 
-# Builds the Windows app with PyInstaller (packaging/windows/darkstl.spec), so it runs
-# without Python, smoke-tests it (packaging/windows/smoke.py), and wraps it two ways:
-# DarkSTL_<version>_x64-setup.exe (Inno Setup, per-user, no administrator rights) and
-# DarkSTL_<version>_x64-portable.zip. The installer is smoke-tested too, once installed.
-# Both go up as the windows-app artifact. Runs on pull requests that touch the app, and
-# from the Release workflow, which attaches both files to the release.
+# Builds the Windows app: the Python engine frozen with PyInstaller (desktop/engine/engine.spec,
+# the isotropic remesher included) inside the Tauri app (desktop/), so it runs without Python.
+# Checks the engine (desktop/engine/smoke.py), installs the app with its installer and drives
+# it through WebDriver (desktop/drive.py): browse, open, enhance with the remesher, export.
+# Makes DarkSTL_<version>_x64-setup.exe and DarkSTL_<version>_x64-portable.zip, uploaded as the
+# windows-app artifact (screenshots and logs as windows-app-checks). Runs on pull requests
+# that touch the app, and from the Release workflow, which attaches both files to the release.
 on:
   pull_request:
     paths:
       - "src/**"
-      - "packaging/**"
+      - "desktop/**"
       - "tests/synth.py"
       - "pyproject.toml"
       - ".github/workflows/windows-app.yml"
@@ -31,11 +32,13 @@ concurrency:
 
 jobs:
   build:
-    name: Build and smoke-test
+    name: Build and test
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 60
     defaults:
       run: { shell: bash }
+    env:
+      PYTHONUTF8: "1"   # the console and open() default to cp1252 on Windows
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,48 +46,70 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
       - name: Install
-        run: python -m pip install ".[gui]" pywebview==6.2.1 pyinstaller==6.22.3
+        run: python -m pip install ".[remesh]" pyacvd==0.4.0 pyvista==0.49.1 vtk==9.7.1 pyinstaller==6.22.3 selenium
       - name: Version
         id: version
         run: |
           v=$(python -c "import darkstl; print(darkstl.__version__)")
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "::notice title=Version::$v"
-      - name: Build the app (PyInstaller)
-        run: pyinstaller packaging/windows/darkstl.spec --noconfirm --distpath build/windows/dist --workpath build/windows/work
-      - name: Smoke-test the app
+      - name: Build the engine (PyInstaller)
+        run: pyinstaller desktop/engine/engine.spec --noconfirm --distpath build --workpath build/pyinstaller
+      - name: Test the engine
+        run: timeout 900 python desktop/engine/smoke.py build/engine
+      - name: Build the app (Tauri)
+        working-directory: desktop
+        run: npx --yes @tauri-apps/cli@2 build --bundles nsis
+      - name: Installer and portable zip
         env:
-          PYTHONUTF8: "1"
-        run: timeout 900 python packaging/windows/smoke.py "build/windows/dist/Dark STL"
-      - name: Build the installer (Inno Setup)
-        shell: pwsh
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
+          V: ${{ steps.version.outputs.version }}
         run: |
-          choco upgrade innosetup -y --no-progress | Select-Object -Last 3
-          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe", "$env:ProgramFiles\Inno Setup *\ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $iscc) { throw "ISCC.exe not found" }
-          & $iscc.FullName "/DAppVersion=$env:VERSION" packaging\windows\darkstl.iss
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Portable zip
-        run: |
-          cd build/windows/dist
-          7z a -tzip -bd "../../../dist/DarkSTL_${{ steps.version.outputs.version }}_x64-portable.zip" "Dark STL" > /dev/null
-          cd ../../..
+          mkdir -p dist "build/portable/Dark STL"
+          cp "desktop/target/release/bundle/nsis/Dark STL_${V}_x64-setup.exe" "dist/DarkSTL_${V}_x64-setup.exe"
+          cp "desktop/target/release/Dark STL.exe" "build/portable/Dark STL/"
+          cp -r build/engine "build/portable/Dark STL/engine"
+          cd build/portable && 7z a -tzip -bd "../../dist/DarkSTL_${V}_x64-portable.zip" "Dark STL" > /dev/null && cd ../..
+          rm -rf desktop/target/release/engine   # the build's copy of the engine: kept out of the Rust cache
           ls -la dist
-      - name: Install with the installer, then smoke-test the installed app
+      - name: Install the app with its installer
         shell: pwsh
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-          PYTHONUTF8: "1"
+          V: ${{ steps.version.outputs.version }}
         run: |
-          $dir = Join-Path $env:RUNNER_TEMP "Dark STL"
-          $setup = Start-Process -Wait -PassThru -FilePath "dist\DarkSTL_${env:VERSION}_x64-setup.exe" `
-            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$dir`""
+          $setup = Start-Process -Wait -PassThru -FilePath "dist\DarkSTL_${env:V}_x64-setup.exe" -ArgumentList "/S"
           if ($setup.ExitCode) { throw "setup exited with $($setup.ExitCode)" }
-          python packaging/windows/smoke.py $dir
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-ChildItem "$env:LOCALAPPDATA\Dark STL" | Format-Table Name, Length
+      - name: Drive the installed app (WebDriver)
+        run: |
+          mkdir -p ci-out
+          cargo install tauri-driver --locked 2>&1 | tail -2
+          cargo install --git https://github.com/chippers/msedgedriver-tool 2>&1 | tail -2
+          msedgedriver-tool 2>&1 | tail -2
+          export DARKSTL_HOME="$RUNNER_TEMP/darkstl-home"
+          tauri-driver --native-driver "$PWD/msedgedriver.exe" > ci-out/tauri-driver.log 2>&1 &
+          sleep 3
+          timeout 900 python desktop/drive.py --app "$LOCALAPPDATA/Dark STL/Dark STL.exe" --out ci-out/shots
+      - name: Collect logs
+        if: always()
+        run: |
+          mkdir -p ci-out
+          cp "$RUNNER_TEMP/darkstl-home/cache/darkstl.log" ci-out/ 2>/dev/null || true
+          echo "--- the app's engine log"; tail -n 80 ci-out/darkstl.log 2>/dev/null || true
+          echo "--- tauri-driver"; tail -n 40 ci-out/tauri-driver.log 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-app-checks
+          path: ci-out/
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         with:
           name: windows-app

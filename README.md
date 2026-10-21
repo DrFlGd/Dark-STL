@@ -32,10 +32,10 @@ supported today.
 **Windows:** download `DarkSTL_<version>_x64-setup.exe` from the
 [releases page](https://github.com/DrFlGd/Dark-STL/releases) and run it. It needs no Python
 and installs for your account only. It isn't signed, so SmartScreen asks once: *More info >
-Run anyway*. The `-portable.zip` is the same app in a folder to run from anywhere. Either way
-`darkstl.exe`, the command line, sits beside `Dark STL.exe`, and if the app won't start,
-`%LOCALAPPDATA%\DarkSTL\darkstl.log` says why. The Windows app leaves out the isotropic
-remesher (it would make the app several times the size); install from source for it.
+Run anyway*. The `-portable.zip` is the same app in a folder to run from anywhere. The app is
+`Dark STL.exe`; its engine sits in the `engine` folder beside it, and `engine\darkstl.exe` is
+also the command line. If the app has a problem, `%LOCALAPPDATA%\DarkSTL\cache\darkstl.log`
+says why.
 
 **From source** (any system): Python 3.10 or newer.
 
@@ -127,13 +127,30 @@ best made in both.
 To support another game, write an importer (see `src/darkstl/importers/base.py` and the
 OBJ importer as a short example) and add it to `IMPORTERS` in `importers/__init__.py`.
 
+The Windows app (`desktop/`) is a [Tauri](https://tauri.app) app, like Model Library's. Its
+window shows the same page, and the page reaches the engine through the window
+(`web/platform-desktop.js`, `desktop/src/main.rs`): the window runs `darkstl engine`
+(`app/engine.py`) and passes the page's commands to it over its stdin and stdout, so the
+app opens no port. The engine is frozen with PyInstaller (`desktop/engine/engine.spec`, with
+only the parts of VTK the remesher needs) and bundled beside the app. To build it, with Rust
+and Node installed:
+
+```
+pip install ".[remesh]" pyinstaller
+pyinstaller desktop/engine/engine.spec --noconfirm --distpath build --workpath build/pyinstaller
+python desktop/engine/smoke.py build/engine
+cd desktop && npx @tauri-apps/cli@2 build
+```
+
+`desktop/drive.py` drives the built app through tauri-driver (WebDriver). The Windows app
+workflow does all of this on every pull request that touches the app.
+
 Releases publish themselves: once the tests pass on main and the version in
-`pyproject.toml` has no release yet, the Release workflow builds the Windows app (the
-Windows app workflow, which also runs on pull requests that touch the app), the wheel and
-the source archive, and releases them as `v<version>`, with `docs/releases/v<version>.md` as
-the notes.
-To release, bump the version (in `pyproject.toml` and `src/darkstl/__init__.py`), add the
-notes, and merge.
+`pyproject.toml` has no release yet, the Release workflow builds the Windows app, the wheel
+and the source archive, and releases them as `v<version>`, with `docs/releases/v<version>.md`
+as the notes. To release, bump the version (in `pyproject.toml`, `src/darkstl/__init__.py`
+and `desktop/Cargo.toml`, then `cargo update -p dark-stl` in `desktop/`), add the notes, and
+merge.
 
 ## Credits
 
