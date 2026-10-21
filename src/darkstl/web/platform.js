@@ -1,7 +1,8 @@
-// How the page reaches Dark STL's engine: the local server that serves it
+// How the page reaches Dark STL's engine: in the desktop app through the window
+// (platform-desktop.js), otherwise the local server that serves the page
 // (darkstl/app/server.py). Everything else in web/ talks only to this object.
 //
-// createPlatform() -> { info, store, api(cmd, args), binUrl(cmd, args), refreshInfo() }
+// createPlatform() -> { kind, info, store, api(cmd, args), binUrl(cmd, args), refreshInfo() }
 //   info:   app_info (version, games, export formats, whether native dialogs work)
 //   api:    one of the engine's commands (darkstl/app/service.py), answered as JSON
 //   binUrl: the address of a mesh or picture (GET /bin/<cmd>), for fetch() or <img src>
@@ -10,7 +11,7 @@
 const token = document.querySelector('meta[name="darkstl-token"]')?.content || "";
 
 /** One of the engine's commands. Throws an Error with the engine's message. */
-export async function api(cmd, args = {}) {
+async function serverApi(cmd, args = {}) {
   let res;
   try {
     res = await fetch(`/api/${cmd}`, {
@@ -26,12 +27,14 @@ export async function api(cmd, args = {}) {
   return data.result;
 }
 
-export function binUrl(cmd, args = {}) {
+function serverBinUrl(cmd, args = {}) {
   const q = new URLSearchParams({ ...Object.fromEntries(Object.entries(args).filter(([, v]) => v != null)), t: token });
   return `/bin/${cmd}?${q}`;
 }
 
 export async function createPlatform() {
+  const desktop = globalThis.__TAURI_INTERNALS__ ? await import("./platform-desktop.js") : null;
+  const { api, binUrl } = desktop || { api: serverApi, binUrl: serverBinUrl };
   const info = await api("app_info").catch((e) => ({ error: String(e.message || e), games: [], formats: [], methods: [] }));
   let prefs = await api("prefs_get").catch(() => ({}));
   let timer = null;
@@ -46,6 +49,7 @@ export async function createPlatform() {
     },
   };
   return {
+    kind: desktop ? "desktop" : "server",
     info,
     store,
     api,
