@@ -131,7 +131,7 @@ def test_open_a_model_and_read_its_mesh_and_textures(service):
 def test_enhance_then_export(service, tmp_path):
     item = service.call("models_query", {"game": "Dark Souls III", "category": "Weapons"})["items"][0]
     m = service.call("model_open", {"id": item["id"]})
-    with pytest.raises(AppError, match="Enhance the model first"):
+    with pytest.raises(AppError, match="Generate the enhanced model first"):
         service.call("export", {"sid": m["sid"], "which": "enhanced"})
     r = wait(service, service.call("enhance", {"sid": m["sid"], "settings": {"target_vertices": 4000}})["job"])
     assert 3000 < r["stats"]["vertices"] < 6000 and r["fields"] and r["fields"][0]["convention"]
@@ -147,6 +147,39 @@ def test_enhance_then_export(service, tmp_path):
     glb = wait(service, service.call("export", {"sid": m["sid"], "which": "original", "format": ".glb", "folder": str(out),
                                                 "name": "plate"})["job"])
     assert Path(glb["path"]).name == "plate.glb" and Path(glb["path"]).read_bytes()[:4] == b"glTF"
+
+
+def test_generated_models_are_kept(service, monkeypatch):
+    from darkstl import pipeline
+
+    runs = []
+    enhance = pipeline.enhance
+    monkeypatch.setattr(pipeline, "enhance", lambda *a, **k: runs.append(1) or enhance(*a, **k))
+    item = service.call("models_query", {"game": "Dark Souls III", "category": "Weapons"})["items"][0]
+    m = service.call("model_open", {"id": item["id"]})
+
+    def generate(**settings):
+        return wait(service, service.call("enhance", {"sid": m["sid"], "settings": settings})["job"])
+
+    a = generate(target_vertices=4000)
+    b = generate(target_vertices=5000)
+    assert len(runs) == 2 and not a["kept"] and a["id"] != b["id"]
+    # the same settings again: the kept model, at once
+    again = generate(target_vertices=4000)
+    assert len(runs) == 2 and again["kept"] and again["id"] == a["id"] and again["stats"] == a["stats"]
+    header, _ = unpack_mesh(service.call("model_mesh", {"sid": m["sid"], "which": "enhanced"}))
+    assert header["triangles"] == a["stats"]["faces"]
+    # any setting the page sends counts, even one this version doesn't know
+    assert generate(target_vertices=4000, later_setting=1)["id"] != a["id"] and len(runs) == 3
+    # a model opened again (the engine had let it go) shows the last one generated
+    service.sessions.clear()
+    assert service.call("model_open", {"id": item["id"]})["enhanced"]["id"] not in (a["id"], b["id"])
+    # three are kept: the oldest (5000) was let go
+    generate(target_vertices=6000)
+    assert generate(target_vertices=5000)["kept"] is False and len(runs) == 5
+    # other texture folders: other textures, so nothing kept is used
+    service.call("settings_set", {"texture_dirs": []})
+    assert not service.generated
 
 
 def test_a_model_file_can_be_opened_on_its_own(home, weapon_dir):  # noqa: F811

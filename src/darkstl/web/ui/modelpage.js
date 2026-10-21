@@ -1,5 +1,5 @@
 // A model's own page (model:<id>[@<variant>]): the 3D view with its textures,
-// and the inspector's Model (parts, options, size, file), Textures, Enhance
+// and the inspector's Model (parts, options, size, file), Textures, Generate
 // (even out the vertices, then displace them by the textures' detail) and
 // Export tabs. A file holding several models (a weapon and its sheath) gets a
 // switch between them in the command bar.
@@ -17,6 +17,7 @@ const ENHANCE = { target_vertices: 1_000_000, method: "subdivide", smooth: true,
   green: "auto", detail_fraction: 0.0625, max_displacement_mm: 0 };
 const EXPORT = { format: ".stl", units: "mm", textures: true, folder: "" };
 const VIEW = { shading: "textured", edges: false };
+const KEEP_MESHES = 4; // built meshes a model page keeps (on the graphics card) to show again at once
 const UNITS = [["mm", "Millimetres (game metres × 1000)"], ["cm", "Centimetres"], ["m", "Metres (the game's own units)"], ["in", "Inches"]];
 /** The least room the 3D view gets beside the inspector, and the inspector's rail. */
 const STAGE = 440, RAIL = 36;
@@ -115,7 +116,7 @@ function Workspace({ m, variant }) {
     <${Inspector} page="model" crowded=${crowded} label="Panels" tabs=${[
       { id: "model", label: "Model", icon: "box", body: html`<${ModelTab} m=${m} off=${off} setOff=${setOff} flags=${flags} setFlags=${setFlags} stats=${stats} />` },
       { id: "textures", label: "Textures", icon: "image", body: html`<${TexturesTab} m=${m} />` },
-      { id: "enhance", label: "Enhance", icon: "layers", body: html`<${EnhanceTab} m=${m} args=${args} stats=${stats} result=${result} stale=${!!result && !!resultKey && resultKey !== args.key}
+      { id: "enhance", label: "Generate", icon: "layers", body: html`<${EnhanceTab} m=${m} args=${args} stats=${stats} result=${result} stale=${!!result && !!resultKey && resultKey !== args.key}
         call=${call} onDone=${enhanced} />` },
       { id: "export", label: "Export", icon: "download", body: html`<${ExportTab} m=${m} args=${args} result=${result} which=${which} call=${call} />` },
     ]} />
@@ -126,7 +127,9 @@ function Workspace({ m, variant }) {
 function Stage({ m, variant, which, setWhich, args, result, stats }) {
   const canvas = useRef(null);
   const viewer = useRef(null);
-  const cache = useRef({ key: null, buf: null });
+  // the meshes shown lately, built, the newest last: showing the original and the enhanced model in
+  // turn (or parts switched off and on again) doesn't fetch or build them again
+  const kept = useRef(new Map());
   const shown = useRef(false);
   const view = { ...VIEW, ...(useStore(ui, (s) => s.view) || {}) };
   const [state, setState] = useState({ loading: true, error: null, size: null });
@@ -137,7 +140,11 @@ function Stage({ m, variant, which, setWhich, args, result, stats }) {
     const theme = () => v.setTheme(resolvedTheme() !== "light");
     theme();
     addEventListener("ds-theme", theme);
-    return () => { removeEventListener("ds-theme", theme); v.dispose(); viewer.current = null; };
+    return () => {
+      removeEventListener("ds-theme", theme); v.dispose(); viewer.current = null;
+      for (const b of kept.current.values()) b.dispose();
+      kept.current.clear();
+    };
   }, []);
   // each material's colour texture, for the textured view
   const textures = useMemo(() => {
@@ -146,12 +153,13 @@ function Stage({ m, variant, which, setWhich, args, result, stats }) {
     m.materials.forEach((mat, i) => { if (mat.albedo && have.has(mat.albedo)) out[i] = binUrl("texture", { sid: m.sid, key: mat.albedo, max: 2048 }); });
     return out;
   }, [m.sid]);
-  const key = JSON.stringify([which, which === "enhanced" ? result?.rev : args.key]);
+  const key = JSON.stringify([which, which === "enhanced" ? result?.id || result?.rev : args.key]);
   useEffect(() => {
     let live = true;
     (async () => {
-      let buf = cache.current.key === key ? cache.current.buf : null;
-      if (!buf) {
+      let built = kept.current.get(key);
+      kept.current.delete(key);
+      if (!built) {
         setState((s) => ({ ...s, loading: true, error: null }));
         const url = () => binUrl("model_mesh", { sid: m.sid, which, uv: 1, ...args.url });
         let res = await fetch(url());
@@ -163,11 +171,19 @@ function Stage({ m, variant, which, setWhich, args, result, stats }) {
           res = await fetch(url());
         }
         if (!res.ok) throw new Error(await res.text());
-        buf = await res.arrayBuffer();
-        if (!live) return;
-        cache.current = { key, buf };
+        const buf = await res.arrayBuffer();
+        if (!viewer.current) return;
+        built = viewer.current.build(buf);
       }
-      const size = viewer.current.show(buf, { textures: view.shading === "textured" ? textures : null, wireframe: view.shading === "wire", keepView: shown.current });
+      kept.current.set(key, built);
+      for (const [k, b] of kept.current) {
+        if (kept.current.size <= KEEP_MESHES) break;
+        if (b === viewer.current?.shown) continue;
+        kept.current.delete(k);
+        b.dispose();
+      }
+      if (!live) return;
+      const size = viewer.current.show(built, { textures: view.shading === "textured" ? textures : null, wireframe: view.shading === "wire", keepView: shown.current });
       viewer.current.setEdges(view.edges);
       shown.current = true;
       setState({ loading: false, error: null, size });
@@ -191,7 +207,7 @@ function Stage({ m, variant, which, setWhich, args, result, stats }) {
       <div class="stage-bar">
         <span class="stage-what" id="stage-size" title="Width × depth × height, as exported in millimetres">${size?.triangles ? html`${sizeText([size.x, size.y, size.z])}<span class="muted"> · ${plural(size.triangles, "triangle")}</span>` : sizeText(stats?.size_mm)}</span>
         <span class="stage-tools">
-          ${seg("show-which", "Show", [["original", "Original"], ["enhanced", "Enhanced", result ? "The enhanced model" : "Enhance the model first (Enhance tab)", !result]], which, setWhich)}
+          ${seg("show-which", "Show", [["original", "Original"], ["enhanced", "Enhanced", result ? "The enhanced model" : "Generate it first (Generate tab)", !result]], which, setWhich)}
           ${seg("shading", "Shading", [["textured", "Textured", noTextures ? "No colour textures were found for this model" : "With the game's colour textures"], ["clay", "Clay"], ["wire", "Wireframe"]], view.shading, (v) => setView({ shading: v }))}
           <button type="button" class="ghost" id="edges-toggle" aria-pressed=${view.edges ? "true" : "false"} title="Show the triangles' sharp edges" onClick=${() => edges(!view.edges)}>Edges</button>
           ${seg("views", "View", [["iso", "3/4", "Three-quarter view"], ["top", "Top"], ["front", "Front"]], null, (v) => viewer.current?.view(v))}
@@ -276,14 +292,14 @@ function TexturesTab({ m }) {
   </div>`;
 }
 
-/** A number box saved to the Enhance settings. */
+/** A number box saved to the Generate settings. */
 function NumberField({ id, label, value, step, min, max, unit, title, onChange }) {
   return html`<label class="field-block" title=${title}><span>${label}</span>
     <span class="field-row"><input type="number" id=${id} value=${value} step=${step} min=${min} max=${max}
       onChange=${(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onChange(v); }} />${unit ? html`<span class="muted unit">${unit}</span>` : null}</span></label>`;
 }
 
-/** Enhance: even out the vertices to the count chosen, then displace them by the detail in the textures. */
+/** Generate: even out the vertices to the count chosen, then displace them by the detail in the textures. */
 function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
   const saved = useStore(ui, (s) => s.enhance);
   const s = { ...ENHANCE, ...(saved || {}) };
@@ -301,9 +317,9 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
     try {
       const overrides = Object.fromEntries(m.materials.map((mat, i) => [i, detailOf(mat, i)]));
       const { job } = await call("enhance", { sid: m.sid, ...args.json, settings: { ...s, max_displacement_mm: s.max_displacement_mm || null, texture_overrides: overrides } });
-      const r = await followJob(job, `Enhancing ${m.entry?.label || variantName(m.variant) || m.name}`, (j) => setRun({ progress: j.progress, message: j.message }));
+      const r = await followJob(job, `Generating ${m.entry?.label || variantName(m.variant) || m.name}`, (j) => setRun({ progress: j.progress, message: j.message }));
       onDone(r);
-      toast(`Enhanced: ${plural(r.stats.vertices, "vertex", "vertices")}`);
+      toast(r.kept ? "Already generated with these settings" : `Generated: ${plural(r.stats.vertices, "vertex", "vertices")}`);
     } catch (e) { setError(msg(e)); }
     setRun(null);
   };
@@ -338,12 +354,12 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
       </details>` : null}
     </section>
     <div class="insp-actions enhance-go">
-      <button type="button" class="primary" id="enhance-run" disabled=${!!run || !stats.triangles} onClick=${go}>${run ? "Enhancing…" : result ? "Enhance again" : "Enhance"}</button>
+      <button type="button" class="primary" id="enhance-run" disabled=${!!run || !stats.triangles} onClick=${go}>${run ? "Generating…" : result ? "Generate again" : "Generate"}</button>
     </div>
     ${run ? html`<div class="job-progress" id="enhance-progress"><progress max="1" value=${run.progress}></progress><small class="muted">${run.message}</small></div>` : null}
     ${error ? html`<p class="warn-note" role="alert" id="enhance-error">${error}</p>` : null}
     ${result ? html`<section class="insp-section" id="enhance-result"><h3>Enhanced</h3>
-      ${stale ? html`<p class="insp-note">Made with other parts or options than those chosen now: enhance again to include the change.</p>` : null}
+      ${stale ? html`<p class="insp-note">Made with other parts or options than those chosen now: generate again to include the change.</p>` : null}
       <dl class="insp-dl">
         <dt>Vertices</dt><dd>${num(result.stats.vertices)} <span class="muted">from ${num(result.stats.source_vertices)}</span></dd>
         <dt>Triangles</dt><dd>${num(result.stats.faces)}</dd>
@@ -386,9 +402,9 @@ function ExportTab({ m, args, result, which: shownWhich, call }) {
   };
   return html`<div class="tab-pad" id="export-tab">
     <div class="field-block"><span>Model</span><div class="seg" role="group" aria-label="Which model" id="export-which">
-      <button type="button" aria-pressed=${which === "enhanced" ? "true" : "false"} disabled=${!result} title=${result ? "The enhanced model" : "Enhance the model first"} onClick=${() => setWhich("enhanced")}>Enhanced</button>
+      <button type="button" aria-pressed=${which === "enhanced" ? "true" : "false"} disabled=${!result} title=${result ? "The enhanced model" : "Generate it first (Generate tab)"} onClick=${() => setWhich("enhanced")}>Enhanced</button>
       <button type="button" aria-pressed=${which === "original" ? "true" : "false"} onClick=${() => setWhich("original")}>Original</button></div>
-      ${!result ? html`<small class="muted">Enhance it first (Enhance tab) to export the detailed version.</small>` : null}</div>
+      ${!result ? html`<small class="muted">Generate it first (Generate tab) to export the detailed version.</small>` : null}</div>
     <label class="field-block"><span>Format</span><select id="export-format" value=${o.format} onChange=${(e) => set({ format: e.target.value })}>
       ${formats.map((f) => html`<option key=${f.ext} value=${f.ext}>${f.label} (${f.ext})</option>`)}</select></label>
     <label class="field-block"><span>Units</span><select id="export-units" value=${o.units} onChange=${(e) => set({ units: e.target.value })}>

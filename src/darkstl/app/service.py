@@ -8,7 +8,9 @@ requests here, so the commands can be tested without a browser. Long work
 
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 import os
 import subprocess
 import sys
@@ -132,13 +134,13 @@ class Jobs:
 
 @dataclass
 class Session:
-    """A model open on a page: the file, the last mesh built from it and the last enhanced result."""
+    """A model open on a page: the file, the last mesh built from it and the enhanced model shown."""
 
     sid: str
     model: SourceModel
     entry: CatalogEntry | None
     result: Any = None  # EnhanceResult
-    result_key: tuple | None = None
+    result_id: str = ""  # names the result for the page, which keeps the meshes it has shown
     mesh_key: tuple | None = None
     mesh: TriMesh | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -153,6 +155,21 @@ class Session:
 
 def _options_key(options: MeshOptions) -> tuple:
     return (None if options.parts is None else tuple(sorted(options.parts)), tuple(sorted(options.flags.items())))
+
+
+def generated_key(session: Session, options: MeshOptions, settings: dict) -> tuple:
+    """What a generated model depends on: the model file as it is now, its parts and options, and every
+    setting the page sent (all of them, so settings added later count without being listed here)."""
+    settings_key = json.dumps(settings, sort_keys=True, default=str)
+    return session.sid, _file_id(session.model.path), _options_key(options), settings_key
+
+
+def _file_id(path: Path) -> tuple:
+    try:
+        st = Path(path).stat()
+    except OSError:
+        return (str(path),)
+    return str(path), st.st_size, st.st_mtime_ns
 
 
 def mesh_options(args: dict) -> MeshOptions:
@@ -190,6 +207,7 @@ def mesh_stats(mesh: TriMesh) -> dict:
 
 class Service:
     BYTES = {"model_mesh", "texture", "thumb"}
+    KEEP_GENERATED = 3  # enhanced models kept, so generating one again with the same settings is instant
 
     def __init__(self, config: Config, cache: Path, host: Host | None = None):
         self.config = config
@@ -202,6 +220,7 @@ class Service:
         self.lock = threading.RLock()
         self.scanning = 0
         self.textures_png: OrderedDict[tuple, bytes] = OrderedDict()
+        self.generated: OrderedDict[tuple, Any] = OrderedDict()  # EnhanceResult by generated_key(), newest last
         if config.oodle:
             self._use_oodle(config.oodle)
 
@@ -456,6 +475,7 @@ class Service:
         if session is None:
             model = open_model(path, variant, tuple(self.config.texture_dirs))
             session = Session(sid, model, entry)
+            self._show_kept(session)
             with self.lock:
                 self.sessions[sid] = session
                 while len(self.sessions) > 6:
@@ -486,7 +506,7 @@ class Service:
         uv = str(args.get("uv", "1")) not in ("0", "false", "")
         if args.get("which") == "enhanced":
             if session.result is None:
-                raise AppError("This model hasn't been enhanced yet.")
+                raise AppError("This model hasn't been generated yet.")
             return pack_mesh(session.result.displaced, uv, extra={"which": "enhanced"})
         return pack_mesh(session.build(mesh_options(_parse_lists(args))), uv, extra={"which": "original"})
 
@@ -568,20 +588,42 @@ class Service:
         )
         if settings.target_vertices < 1000:
             raise AppError("Choose at least 1,000 vertices.")
+        key = generated_key(session, options, s)
+        with self.lock:
+            kept = self.generated.get(key)
 
         def run(job: Job):
-            result = enhance(session.model, settings, job.report)
-            session.result, session.result_key = result, _options_key(options)
-            return self._result_json(session)
+            result = kept or enhance(session.model, settings, job.report)
+            self._keep(key, result)
+            session.result, session.result_id = result, _key_id(key)
+            return {**self._result_json(session), "kept": kept is not None}
 
         name = session.model.variant or session.model.name
-        return {"job": self.jobs.start(f"Enhancing {name}", run).id}
+        return {"job": self.jobs.start(f"Generating {name}", run).id}
+
+    def _keep(self, key: tuple, result: Any) -> None:
+        with self.lock:
+            self.generated[key] = result
+            self.generated.move_to_end(key)
+            while len(self.generated) > self.KEEP_GENERATED:
+                self.generated.popitem(last=False)
+
+    def _show_kept(self, session: Session) -> None:
+        """A model opened again shows the enhanced model last generated from it, if that's still kept."""
+        file = _file_id(session.model.path)
+        with self.lock:
+            kept = list(self.generated.items())
+        for key, result in reversed(kept):
+            if key[:2] == (session.sid, file):
+                session.result, session.result_id = result, _key_id(key)
+                return
 
     def _result_json(self, session: Session) -> dict:
         r = session.result
         st = r.stats()
         model = session.model
-        return {"stats": st, "size_mm": ((r.displaced.bounds()[1] - r.displaced.bounds()[0]) * 1000).round(2).tolist(),
+        return {"id": session.result_id, "stats": st,
+                "size_mm": ((r.displaced.bounds()[1] - r.displaced.bounds()[0]) * 1000).round(2).tolist(),
                 "fields": [{"material": model.materials[m].name if m < len(model.materials) else str(m),
                             "texture": model.textures[f.texture].name if f.texture in model.textures else f.texture,
                             "convention": f.field.convention, "texel_mm": f.texel_size * 1000}
@@ -593,7 +635,7 @@ class Service:
         which = args.get("which", "enhanced")
         if which == "enhanced":
             if session.result is None:
-                raise AppError("Enhance the model first, or export the original.")
+                raise AppError("Generate the enhanced model first, or export the original.")
             mesh = session.result.displaced
         else:
             mesh = session.build(mesh_options(args))
@@ -621,6 +663,11 @@ class Service:
         with self.lock:
             self.sessions.clear()
             self.textures_png.clear()
+            self.generated.clear()
+
+
+def _key_id(key: tuple) -> str:
+    return hashlib.sha1(repr(key).encode("utf-8")).hexdigest()[:12]
 
 
 def _dialog_patterns() -> list[str]:

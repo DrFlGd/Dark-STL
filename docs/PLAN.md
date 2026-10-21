@@ -58,7 +58,7 @@ the tests call directly.
   (`thumbnails.py`: the model from the 3D view's angle, coloured from its albedo texture, long
   weapons laid corner to corner) and cached by file date, a few at a time so browsing stays quick.
 - **The model page.** The 3D view with the game's textures (or clay, or wireframe), and the
-  inspector's Model (parts, importer options, size, file), Textures, Enhance and Export tabs.
+  inspector's Model (parts, importer options, size, file), Textures, Generate and Export tabs.
   Meshes travel to the page in a packed binary form (`app/meshpack.py`) split at UV seams and
   grouped by material.
 - **Safety.** The server listens on 127.0.0.1 only, checks the Host header (against DNS
