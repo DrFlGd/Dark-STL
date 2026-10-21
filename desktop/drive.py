@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 from selenium import webdriver
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.options import ArgOptions
@@ -74,7 +75,7 @@ def click(css):
 
 try:
     wait("window.__errors && document.querySelector('#first-run')", 120, "the first-run page")
-    kind = d.execute_script("return [!!window.__TAURI_INTERNALS__, location.protocol, location.host]")
+    kind = d.execute_script("return [!!window.__TAURI_INTERNALS__, location.protocol, location.host, innerWidth, innerHeight]")
     print("page:", kind, flush=True)
     assert kind[0], "the page isn't running in the app"
     shot("01-home")
@@ -87,9 +88,8 @@ try:
     click('[data-sub="Weapons"]')
     wait("document.querySelector('.results [data-thumb=\"ok\"]')", 60, "a preview (engine:// picture)")
     shot("02-weapons")
-    click(".results [data-model]")
-    wait("document.querySelector('#summary-open')", what="the model's summary")
-    click("#summary-open")
+    # opened with a double click: on a small screen (CI's) the Details pane with its Open button starts folded
+    ActionChains(d).double_click(d.find_element(By.CSS_SELECTOR, ".results [data-model]")).perform()
     wait("document.querySelector('#stage-canvas:not([data-loading])') && window.__viewer?.mesh", 60,
          "the model in the 3D view (engine:// mesh)")
     assert not d.find_elements(By.CSS_SELECTOR, "#stage-error"), d.find_element(By.CSS_SELECTOR, "#stage-error").text
