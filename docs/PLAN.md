@@ -251,7 +251,9 @@ differs:
 ### Phase 4: distribution
 
 - [x] Windows build (single folder, no Python install needed): an installer and a portable zip on
-      each release, built and smoke-tested on GitHub's Windows machines (`packaging/windows/`)
+      each release, built and smoke-tested on GitHub's Windows machines
+- [x] A Tauri app (`desktop/`), like Model Library: the page in the window, the Python engine
+      behind it over a pipe (no local server), the isotropic remesher included
 - [ ] User guide with extraction steps for each game
 
 ## Known limits today
@@ -261,4 +263,4 @@ differs:
 - Output is not guaranteed watertight; most slicers repair it, but Phase 2 adds a proper fix.
 - Skinned meshes (characters, armor) are shown in their bind pose, which is a T or A pose.
 - Isotropic remeshing needs the optional `pyacvd` package; the app falls back to subdivision
-  without it. The Windows app leaves it out (VTK would make the app several times the size).
+  without it. The Windows app includes it, with only the parts of VTK it uses.

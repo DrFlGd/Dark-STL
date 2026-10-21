@@ -224,6 +224,12 @@ def cmd_gui(args) -> int:
     return run(args.folders, browser=getattr(args, "browser", False), port=getattr(args, "port", 0))
 
 
+def cmd_engine(args) -> int:
+    from .app.engine import main
+
+    return main(args.folders)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="darkstl", description="Game model explorer and detail enhancer")
     p.add_argument("--version", action="version", version=f"darkstl {__version__}")
@@ -296,6 +302,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--browser", action="store_true", help="open in the web browser instead of an app window")
     s.add_argument("--port", type=int, default=0, help="port for the local server (default: any free port)")
     s.set_defaults(func=cmd_gui)
+
+    # the desktop app's engine: commands on stdin, answers on stdout (app/engine.py)
+    s = sub.add_parser("engine")
+    s.add_argument("folders", nargs="*", help="game folders to add to the library")
+    s.set_defaults(func=cmd_engine)
     return p
 
 
