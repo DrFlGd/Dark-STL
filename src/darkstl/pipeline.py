@@ -3,6 +3,10 @@
 It works on :class:`~darkstl.model.SourceModel`, so it is the same for every
 game; only the importer that produced the model differs.
 
+Re-sampling (2) and displacement (3) are separate steps (:func:`resample`,
+:func:`displace_resampled`), so the evened-out mesh can be kept while other
+displacement settings are tried on it.
+
 1. Build the model's welded triangle mesh (export frame, metres).
 2. Re-sample the surface to the requested number of evenly spaced vertices,
    either by adaptive subdivision (exact UVs, keeps every original edge) or by
@@ -351,8 +355,26 @@ def _corner_mean(mesh: TriMesh, per_corner: np.ndarray) -> np.ndarray:
     return np.bincount(v, weights=vals, minlength=mesh.n_vertices) / np.maximum(cnt, 1)
 
 
-def enhance(model: SourceModel, settings: EnhanceSettings | None = None,
-            progress: ProgressFn | None = None) -> EnhanceResult:
+@dataclass
+class Resampled:
+    """Step 1's result: the model's mesh evened out to the vertex count asked for. It depends only on the
+    model, its parts and pose (``mesh_options``) and :data:`MESH_SETTINGS`, so trying other displacement
+    settings on it (step 2) doesn't need it made again."""
+
+    source: TriMesh
+    resampled: TriMesh
+    carrier: TriMesh  # where heights are worked out (the dense mesh behind an isotropic remesh)
+    projection: tuple[np.ndarray, np.ndarray] | None  # carrier face + barycentrics of each resampled vertex
+    spacing: float
+    warnings: list[str] = field(default_factory=list)
+
+
+MESH_SETTINGS = ("target_vertices", "method", "smooth")  # the settings step 1 depends on (with mesh_options)
+
+
+def resample(model: SourceModel, settings: EnhanceSettings | None = None,
+             progress: ProgressFn | None = None) -> Resampled:
+    """Step 1: build the model's mesh and even it out to ``settings.target_vertices``."""
     settings = settings or EnhanceSettings()
     warnings: list[str] = []
     _report(progress, 0.02, "Building mesh")
@@ -360,41 +382,63 @@ def enhance(model: SourceModel, settings: EnhanceSettings | None = None,
     if source.n_faces == 0:
         raise ValueError(f"{model.name} has no triangles to work on" if not model.parts
                          else "The selected parts have no triangles")
-    materials = model.materials
     area = source.surface_area()
     target = max(int(settings.target_vertices), 4)
     spacing = edge_length_for_vertex_count(area, target)
-
-    def sub(lo: float, hi: float) -> ProgressFn | None:
-        if progress is None:
-            return None
-        return lambda f, m: progress(lo + (hi - lo) * f, m)
-
     method = settings.method
     if method == METHOD_ISOTROPIC and not acvd_available():
         warnings.append("Isotropic remeshing needs the 'pyacvd' package; used adaptive subdivision instead")
         method = METHOD_SUBDIVIDE
-
     if method == METHOD_ISOTROPIC:
-        resampled = isotropic_remesh(source, target, progress=sub(0.05, 0.6), smooth=settings.smooth)
+        resampled = isotropic_remesh(source, target, progress=_sub(progress, 0.05, 1.0), smooth=settings.smooth)
         carrier = resampled.metadata.pop("dense")  # heights are worked out here, where UVs are exact
         projection = resampled.metadata.pop("projection")
     else:
         if target <= source.n_vertices:
             warnings.append(f"Target ({target:,}) is not above the model's {source.n_vertices:,} vertices; "
                             "adaptive subdivision only adds vertices, so the mesh is unchanged")
-        resampled = subdivide_to_vertex_count(source, target, progress=sub(0.05, 0.6), smooth=settings.smooth)
+        resampled = subdivide_to_vertex_count(source, target, progress=_sub(progress, 0.05, 1.0), smooth=settings.smooth)
         carrier, projection = resampled, None
+    return Resampled(source, resampled, carrier, projection, spacing, warnings)
 
-    fields = build_fields(model, source, materials, settings, spacing, warnings, sub(0.6, 0.8))
-    heights = np.zeros(resampled.n_vertices)
-    if fields and carrier.corner_uvs is not None:
-        heights = vertex_heights(carrier, fields, materials, settings, spacing, sub(0.8, 0.92))
-        if projection is not None:
-            face, bary = projection
-            heights = np.einsum("ij,ij->i", bary, heights[carrier.faces[face]])
-    _report(progress, 0.92, "Displacing vertices")
+
+def displace_resampled(model: SourceModel, mesh: Resampled, settings: EnhanceSettings | None = None,
+                       progress: ProgressFn | None = None) -> EnhanceResult:
+    """Step 2: work out the heights from the textures and push the evened-out mesh's vertices by them."""
+    settings = settings or EnhanceSettings()
+    warnings = list(mesh.warnings)
+    materials = model.materials
+    fields = build_fields(model, mesh.source, materials, settings, mesh.spacing, warnings, _sub(progress, 0.0, 0.6))
+    heights = np.zeros(mesh.resampled.n_vertices)
+    if fields and mesh.carrier.corner_uvs is not None:
+        heights = vertex_heights(mesh.carrier, fields, materials, settings, mesh.spacing, _sub(progress, 0.6, 0.9))
+        if mesh.projection is not None:
+            face, bary = mesh.projection
+            heights = np.einsum("ij,ij->i", bary, heights[mesh.carrier.faces[face]])
+    _report(progress, 0.9, "Displacing vertices")
     max_disp = settings.max_displacement_mm / 1000.0 if settings.max_displacement_mm else None
-    displaced = displace(resampled, heights, max_disp)
+    displaced = displace(mesh.resampled, heights, max_disp)
     _report(progress, 1.0, "Done")
-    return EnhanceResult(source, resampled, displaced, fields, materials, warnings)
+    return EnhanceResult(mesh.source, mesh.resampled, displaced, fields, materials, warnings)
+
+
+def enhance(model: SourceModel, settings: EnhanceSettings | None = None,
+            progress: ProgressFn | None = None, mesh: Resampled | None = None,
+            on_mesh: Callable[[Resampled], None] | None = None) -> EnhanceResult:
+    """Both steps. ``mesh``: the evened-out mesh made before with the same mesh settings (see
+    :data:`MESH_SETTINGS`), to skip making it again; ``on_mesh`` is handed the one made here."""
+    settings = settings or EnhanceSettings()
+    if mesh is None:
+        mesh = resample(model, settings, _sub(progress, 0.0, 0.6))
+        if on_mesh is not None:
+            on_mesh(mesh)
+        progress = _sub(progress, 0.6, 1.0)
+    else:
+        _report(progress, 0.0, f"Using the evened-out mesh made before ({mesh.resampled.n_vertices:,} vertices)")
+    return displace_resampled(model, mesh, settings, progress)
+
+
+def _sub(progress: ProgressFn | None, lo: float, hi: float) -> ProgressFn | None:
+    if progress is None:
+        return None
+    return lambda f, m: progress(lo + (hi - lo) * f, m)

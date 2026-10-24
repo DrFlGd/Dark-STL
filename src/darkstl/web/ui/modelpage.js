@@ -378,6 +378,14 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
   const [ai, setAi] = useState(null); // { folder, models, available } once asked for
   const [run, setRun] = useState(null); // { progress, message } while running
   const [error, setError] = useState(null);
+  const [meshKept, setMeshKept] = useState(null); // { kept, vertices } for step 1's settings as they are now
+  const meshDeps = [args.key, s.target_vertices, s.method, s.smooth, result?.rev, !!run]; // again after each Generate, stopped ones too
+  useEffect(() => {
+    let live = true;
+    call("enhance_mesh", { sid: m.sid, ...args.json, settings: { target_vertices: s.target_vertices, method: s.method, smooth: s.smooth } })
+      .then((r) => live && setMeshKept(r), () => live && setMeshKept(null));
+    return () => { live = false; };
+  }, meshDeps);
   const methods = info().methods || [];
   const have = m.textures.map((t) => t.key);
   const detailOf = (mat, i) => (i in over ? over[i] : (s.source === "height" ? mat.height : mat.normal) || "");
@@ -405,7 +413,8 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
       setRun({ progress: 0, message: "Starting", job });
       const r = await followJob(job, `Generating ${m.entry?.label || variantName(m.variant) || m.name}`, (j) => setRun({ progress: j.progress, message: j.message, job, stopping: j.stopping }));
       onDone(r);
-      toast(r.kept ? "Already generated with these settings" : `Generated: ${plural(r.stats.vertices, "vertex", "vertices")}`);
+      toast(r.kept ? "Already generated with these settings"
+        : `Generated: ${plural(r.stats.vertices, "vertex", "vertices")}${r.mesh_reused ? " (step 2 only: the evened-out mesh was kept)" : ""}`);
     } catch (e) { if (e.stopped) toast("Stopped generating"); else setError(msg(e)); }
     setRun(null);
   };
@@ -418,6 +427,7 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
         ${methods.map((x) => html`<option key=${x.id} value=${x.id} disabled=${!x.available}>${x.label}${x.available ? "" : ` (${x.missing || "not installed"})`}</option>`)}</select></label>
       <label class="check-row" title="New vertices follow the curve the model's shading describes, so low-poly cylinders and blades print round instead of faceted. Flat-shaded parts stay flat.">
         <input type="checkbox" id="smooth" checked=${s.smooth} onChange=${(e) => set({ smooth: e.target.checked })} /><span>Round off curved surfaces</span></label>
+      ${meshKept?.kept ? html`<p class="insp-note" id="mesh-kept">${Icon.check(14)} Evened out already (${num(meshKept.vertices)} vertices): changing only step 2 starts from this mesh, so Generate skips step 1.</p>` : null}
     </section>
     <section class="insp-section"><h3>2 · Raise the texture detail</h3>
       <label class="field-block"><span>From</span><select id="source" value=${s.source} onChange=${(e) => { setOver({}); set({ source: e.target.value }); }}>

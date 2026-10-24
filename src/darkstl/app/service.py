@@ -191,6 +191,15 @@ def generated_key(session: Session, options: MeshOptions, settings: dict) -> tup
     return session.sid, _file_id(session.model.path), _options_key(options), settings_key
 
 
+def mesh_key(session: Session, options: MeshOptions, settings) -> tuple:
+    """What step 1's evened-out mesh depends on: the model file, its parts, options and pose, and the
+    step-1 settings (pipeline.MESH_SETTINGS) alone."""
+    from ..pipeline import MESH_SETTINGS
+
+    return (session.sid, _file_id(session.model.path), _options_key(options),
+            tuple(getattr(settings, k) for k in MESH_SETTINGS))
+
+
 def _file_id(path: Path) -> tuple:
     try:
         st = Path(path).stat()
@@ -253,6 +262,7 @@ def mesh_stats(mesh: TriMesh) -> dict:
 class Service:
     BYTES = {"model_mesh", "texture", "thumb"}
     KEEP_GENERATED = 3  # enhanced models kept, so generating one again with the same settings is instant
+    KEEP_MESHES = 2  # evened-out meshes kept, so other displacement settings are tried without making them again
 
     def __init__(self, config: Config, cache: Path, host: Host | None = None):
         self.config = config
@@ -269,6 +279,7 @@ class Service:
         self.scanning = 0
         self.textures_png: OrderedDict[tuple, bytes] = OrderedDict()
         self.generated: OrderedDict[tuple, Any] = OrderedDict()  # EnhanceResult by generated_key(), newest last
+        self.meshes: OrderedDict[tuple, Any] = OrderedDict()  # step 1's evened-out meshes (Resampled) by mesh_key()
         if config.oodle:
             self._use_oodle(config.oodle)
 
@@ -814,12 +825,10 @@ class Service:
 
     # ------------------------------------------------------------ enhance and export
 
-    def cmd_enhance(self, args: dict) -> dict:
-        from ..pipeline import EnhanceSettings, enhance
+    @staticmethod
+    def _enhance_settings(s: dict, options: MeshOptions):
+        from ..pipeline import EnhanceSettings
 
-        session = self._session(args)
-        options = mesh_options(args)
-        s = args.get("settings") or {}
         defaults = EnhanceSettings()
         settings = EnhanceSettings(
             target_vertices=int(s.get("target_vertices", 1_000_000)),
@@ -849,19 +858,48 @@ class Service:
         )
         if settings.target_vertices < 1000:
             raise AppError("Choose at least 1,000 vertices.")
+        return settings
+
+    def cmd_enhance(self, args: dict) -> dict:
+        from ..pipeline import enhance
+
+        session = self._session(args)
+        options = mesh_options(args)
+        s = args.get("settings") or {}
+        settings = self._enhance_settings(s, options)
         key = generated_key(session, options, s)
+        mkey = mesh_key(session, options, settings)
         with self.lock:
             kept = self.generated.get(key)
+            mesh = self.meshes.get(mkey)
+
+        def keep_mesh(made) -> None:  # kept as soon as it's made, so stopping step 2 doesn't lose it
+            with self.lock:
+                self.meshes[mkey] = made
+                self.meshes.move_to_end(mkey)
+                while len(self.meshes) > self.KEEP_MESHES:
+                    self.meshes.popitem(last=False)
 
         def run(job: Job):
-            result = kept or enhance(session.model, settings, job.report)
+            result = kept or enhance(session.model, settings, job.report, mesh=mesh, on_mesh=keep_mesh)
             job.check()  # stopped in its last step: not kept
             self._keep(key, result)
             session.result, session.result_id = result, _key_id(key)
-            return {**self._result_json(session), "kept": kept is not None}
+            return {**self._result_json(session), "kept": kept is not None, "mesh_reused": mesh is not None}
 
         name = session.model.variant or session.model.name
         return {"job": self.jobs.start(f"Generating {name}", run, stoppable=True).id}
+
+    def cmd_enhance_mesh(self, args: dict) -> dict:
+        """Whether the evened-out mesh for these parts, pose and step-1 settings is kept from an earlier
+        Generate (so generating with other displacement settings starts from it)."""
+        session = self._session(args)
+        options = mesh_options(args)
+        settings = self._enhance_settings(args.get("settings") or {}, options)
+        with self.lock:
+            mesh = self.meshes.get(mesh_key(session, options, settings))
+        return {"kept": mesh is not None, "vertices": mesh.resampled.n_vertices if mesh else 0,
+                "triangles": mesh.resampled.n_faces if mesh else 0}
 
     def _keep(self, key: tuple, result: Any) -> None:
         with self.lock:
@@ -926,6 +964,7 @@ class Service:
             self.sessions.clear()
             self.textures_png.clear()
             self.generated.clear()
+            self.meshes.clear()
 
 
 def _collection_json(path: Path, data: dict) -> dict:

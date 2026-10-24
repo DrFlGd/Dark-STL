@@ -122,8 +122,17 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path):  #
     page.press("#albedo-detail", "Tab")
     if os.environ.get("DARKSTL_SCREENSHOTS"):
         page.locator("#enhance-tab").screenshot(path=os.path.join(os.environ["DARKSTL_SCREENSHOTS"], "enhance-settings.png"))
+    page.wait_for_selector("#mesh-kept")  # step 1 is the same: its mesh is used again
+    assert "Generate skips step 1" in page.text_content("#mesh-kept")
     page.click("#enhance-run")
     page.wait_for_selector("#enhance-result .field-list :text('albedo detail')", timeout=60000)
+    page.wait_for_selector("text=the evened-out mesh was kept")
+    page.fill("#target-vertices", "3500")  # a step-1 setting: no kept mesh for it
+    page.press("#target-vertices", "Tab")
+    page.wait_for_selector("#mesh-kept", state="detached")
+    page.fill("#target-vertices", "3000")
+    page.press("#target-vertices", "Tab")
+    page.wait_for_selector("#mesh-kept")
 
     page.click("#rail-export")
     page.fill("#export-folder", str(tmp_path / "out"))

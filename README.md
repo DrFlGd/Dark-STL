@@ -91,7 +91,9 @@ darkstl            # or darkstl-gui; darkstl gui --browser opens it in your brow
 4. **Generate** sets the vertex count (it shows the spacing that gives on this model) and where
    the detail comes from, then makes the detailed model. Show *Original* or *Enhanced* under
    the view: both stay loaded, so switching is instant. The last three models generated are
-   kept too, so generating again with settings you've already used is instant. Click the job
+   kept too, so generating again with settings you've already used is instant. Its two steps
+   are independent: the evened-out mesh from step 1 is kept, so trying other step-2 (displacement)
+   settings on it skips step 1 and only displaces again. Click the job
    in the status bar (or Stop under the progress bar) to stop it.
 5. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default.
 
