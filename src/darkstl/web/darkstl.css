@@ -124,9 +124,10 @@ a.chip-btn.on { background: var(--sel); }
 .collect-plan p { margin: 0; overflow-wrap: anywhere; }
 #library-status { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 
-/* the status bar's job: clicking it stops it (chrome.js) */
-.status-job.can-stop .status-stop { display: none; margin-left: 8px; align-items: center; gap: 3px; color: var(--danger); }
-.status-job.can-stop:hover .status-stop, .status-job.can-stop:focus-visible .status-stop { display: inline-flex; }
+/* the status bar's job: its Stop is always shown while it can be stopped, and clicking the job stops it too (chrome.js) */
+.status-job.can-stop .status-stop { display: inline-flex; margin-left: 8px; padding: 0 7px; align-items: center; gap: 3px; color: var(--danger);
+  border: 1px solid currentColor; border-radius: 999px; font-weight: 700; line-height: 1.5; }
+.status-job.can-stop:hover .status-stop, .status-job.can-stop:focus-visible .status-stop { background: var(--danger); color: var(--panel); }
 .status-job.can-stop:hover .dot { animation: none; background: var(--danger); }
 .status-more { padding-left: 0; }
 .job .job-stop { color: var(--danger); }

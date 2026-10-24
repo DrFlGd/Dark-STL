@@ -91,10 +91,11 @@ darkstl            # or darkstl-gui; darkstl gui --browser opens it in your brow
 4. **Generate** sets the vertex count (it shows the spacing that gives on this model) and where
    the detail comes from, then makes the detailed model. Show *Original* or *Enhanced* under
    the view: both stay loaded, so switching is instant. The last three models generated are
-   kept too, so generating again with settings you've already used is instant. Its two steps
-   are independent: the evened-out mesh from step 1 is kept, so trying other step-2 (displacement)
-   settings on it skips step 1 and only displaces again. Click the job
-   in the status bar (or Stop under the progress bar) to stop it.
+   kept too, so generating again with settings you've already used is instant. The two steps
+   have their own buttons: *Run step 1 only* evens out the vertices and shows that model;
+   *Displace (step 2)* adds the texture detail to it, and can be run again with other settings
+   without evening out again; *Generate (steps 1 + 2)* does both. Click **Stop** in the status
+   bar (or under the progress bar) to stop a job.
 5. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default.
 
 ![A game's library](docs/images/library.png)

@@ -864,12 +864,20 @@ class Service:
         return settings
 
     def cmd_enhance(self, args: dict) -> dict:
-        from ..pipeline import enhance
+        """Generate: step 1 (even out the vertices) then step 2 (displace them), starting from step 1's
+        mesh when it's kept. ``step: "mesh"`` runs step 1 alone: the evened-out model, not displaced."""
+        from dataclasses import replace
+
+        from ..pipeline import MESH_SETTINGS, SOURCE_NONE, enhance
 
         session = self._session(args)
         options = mesh_options(args)
         s = args.get("settings") or {}
         settings = self._enhance_settings(s, options)
+        only_mesh = args.get("step") == "mesh"
+        if only_mesh:  # what step 1 depends on alone, so step-2 settings don't make it again
+            s = {**{k: s[k] for k in MESH_SETTINGS if k in s}, "step": "mesh"}
+            settings = replace(settings, source=SOURCE_NONE)
         key = generated_key(session, options, s)
         mkey = mesh_key(session, options, settings)
         with self.lock:
@@ -891,7 +899,8 @@ class Service:
             return {**self._result_json(session), "kept": kept is not None, "mesh_reused": mesh is not None}
 
         name = session.model.variant or session.model.name
-        return {"job": self.jobs.start(f"Generating {name}", run, stoppable=True).id}
+        label = f"Evening out {name}" if only_mesh else f"Generating {name}"
+        return {"job": self.jobs.start(label, run, stoppable=True).id}
 
     def cmd_enhance_mesh(self, args: dict) -> dict:
         """Whether the evened-out mesh for these parts, pose and step-1 settings is kept from an earlier
@@ -931,7 +940,7 @@ class Service:
                             "texture": model.textures[f.texture].name if f.texture in model.textures else f.texture,
                             "convention": f.field.convention, "texel_mm": f.texel_size * 1000, "steps": f.steps}
                            for m, f in r.fields.items()],
-                "warnings": list(r.warnings)}
+                "warnings": list(r.warnings), "displaced": r.displaced_by_textures}
 
     def cmd_export(self, args: dict) -> dict:
         session = self._session(args)

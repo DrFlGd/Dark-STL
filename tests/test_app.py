@@ -219,6 +219,26 @@ def test_displacement_settings_reuse_the_evened_out_mesh(service, monkeypatch):
     assert not service.meshes
 
 
+def test_step_one_can_run_on_its_own(service, monkeypatch):
+    from darkstl import pipeline
+
+    made = []
+    resample = pipeline.resample
+    monkeypatch.setattr(pipeline, "resample", lambda *a, **k: made.append(1) or resample(*a, **k))
+    item = service.call("models_query", {"game": "Dark Souls III", "category": "Weapons"})["items"][0]
+    m = service.call("model_open", {"id": item["id"]})
+    a = wait(service, service.call("enhance", {"sid": m["sid"], "step": "mesh", "settings": {"target_vertices": 4000, "strength": 5.0}})["job"])
+    assert not a["displaced"] and a["stats"]["max_displacement_mm"] == 0 and len(made) == 1
+    header, _ = unpack_mesh(service.call("model_mesh", {"sid": m["sid"], "which": "enhanced"}))
+    assert header["triangles"] == a["stats"]["faces"]  # the evened-out model is the one shown
+    # step 2 starts from it, whatever its own settings
+    b = wait(service, service.call("enhance", {"sid": m["sid"], "settings": {"target_vertices": 4000, "strength": 2.0}})["job"])
+    assert b["mesh_reused"] and b["displaced"] and b["stats"]["max_displacement_mm"] > 0 and len(made) == 1
+    # step 1 again: the kept model at once; step-2 settings don't count for it
+    again = wait(service, service.call("enhance", {"sid": m["sid"], "step": "mesh", "settings": {"target_vertices": 4000, "strength": 1.0}})["job"])
+    assert again["kept"] and again["id"] == a["id"] and len(made) == 1
+
+
 def test_a_model_file_can_be_opened_on_its_own(home, weapon_dir):  # noqa: F811
     s = make_service(home)
     path = weapon_dir / "chr" / "c1100.chrbnd.dcx"

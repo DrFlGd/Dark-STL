@@ -406,22 +406,26 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
     <select id=${id} value=${s[key]} onChange=${(e) => set({ [key]: e.target.value })}>
       <option value="">${included(key) ? "Included (matched to each texture's compression)" : "Choose…"}</option>
       ${(ai?.models || []).map((x) => html`<option key=${x} value=${x}>${x}</option>`)}</select></label>`;
-  const go = async () => {
+  // step "mesh": step 1 alone (the evened-out model, shown and kept); "both": step 2, after step 1
+  // when its mesh isn't kept yet
+  const go = async (step) => {
     setError(null);
-    setRun({ progress: 0, message: "Starting" });
+    setRun({ progress: 0, message: "Starting", step });
     try {
       const overrides = Object.fromEntries(m.materials.map((mat, i) => [i, detailOf(mat, i)]));
       // the settings as stored now: a number typed and then Generate clicked straight away is saved
       // (on blur) just before the click, before this tab has drawn it again
       const now = { ...ENHANCE, ...(ui.get().enhance || {}) };
       const { job } = await call("enhance", { sid: m.sid, ...args.json, settings: { ...now, max_displacement_mm: now.max_displacement_mm || null,
-        texture_overrides: overrides, material_strength: strengthsNow.current } });
-      setRun({ progress: 0, message: "Starting", job });
-      const r = await followJob(job, `Generating ${m.entry?.label || variantName(m.variant) || m.name}`, (j) => setRun({ progress: j.progress, message: j.message, job, stopping: j.stopping }));
+        texture_overrides: overrides, material_strength: strengthsNow.current }, step });
+      setRun({ progress: 0, message: "Starting", job, step });
+      const name = m.entry?.label || variantName(m.variant) || m.name;
+      const r = await followJob(job, `${step === "mesh" ? "Evening out" : "Generating"} ${name}`, (j) => setRun({ progress: j.progress, message: j.message, job, step, stopping: j.stopping }));
       onDone(r);
-      toast(r.kept ? "Already generated with these settings"
+      toast(step === "mesh" ? `Step 1 done: ${plural(r.stats.vertices, "vertex", "vertices")}. Now Displace adds the texture detail.`
+        : r.kept ? "Already generated with these settings"
         : `Generated: ${plural(r.stats.vertices, "vertex", "vertices")}${r.mesh_reused ? " (step 2 only: the evened-out mesh was kept)" : ""}`);
-    } catch (e) { if (e.stopped) toast("Stopped generating"); else setError(msg(e)); }
+    } catch (e) { if (e.stopped) toast(step === "mesh" ? "Stopped evening out" : "Stopped generating"); else setError(msg(e)); }
     setRun(null);
   };
   return html`<div class="tab-pad" id="enhance-tab">
@@ -433,7 +437,9 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
         ${methods.map((x) => html`<option key=${x.id} value=${x.id} disabled=${!x.available}>${x.label}${x.available ? "" : ` (${x.missing || "not installed"})`}</option>`)}</select></label>
       <label class="check-row" title="New vertices follow the curve the model's shading describes, so low-poly cylinders and blades print round instead of faceted. Flat-shaded parts stay flat.">
         <input type="checkbox" id="smooth" checked=${s.smooth} onChange=${(e) => set({ smooth: e.target.checked })} /><span>Round off curved surfaces</span></label>
-      ${meshKept?.kept ? html`<p class="insp-note" id="mesh-kept">${Icon.check(14)} Evened out already (${num(meshKept.vertices)} vertices): changing only step 2 starts from this mesh, so Generate skips step 1.</p>` : null}
+      ${meshKept?.kept ? html`<p class="insp-note" id="mesh-kept">${Icon.check(14)} Step 1 is done (${num(meshKept.vertices)} vertices). Displace starts from this mesh, so you can try step 2's settings without evening out again.</p>` : null}
+      <div class="insp-actions"><button type="button" class="ghost" id="mesh-run" disabled=${!!run || !stats.triangles} onClick=${() => go("mesh")}
+        title="Only even out the vertices, and show that model, so step 2 can be tried on it">${run?.step === "mesh" ? "Evening out…" : meshKept?.kept ? "Show the evened-out mesh" : "Run step 1 only"}</button></div>
     </section>
     <section class="insp-section"><h3>2 · Raise the texture detail</h3>
       <label class="field-block"><span>From</span><select id="source" value=${s.source} onChange=${(e) => { setOver({}); set({ source: e.target.value }); }}>
@@ -485,12 +491,13 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
       </details>` : null}
     </section>
     <div class="insp-actions enhance-go">
-      <button type="button" class="primary" id="enhance-run" disabled=${!!run || !stats.triangles} onClick=${go}>${run ? "Generating…" : result ? "Generate again" : "Generate"}</button>
+      <button type="button" class="primary" id="enhance-run" disabled=${!!run || !stats.triangles} onClick=${() => go("both")}
+        title=${meshKept?.kept ? "Displace the evened-out mesh by the texture detail (step 2)" : "Even out the vertices (step 1), then displace them by the texture detail (step 2)"}>${run?.step === "both" ? "Generating…" : meshKept?.kept ? "Displace (step 2)" : "Generate (steps 1 + 2)"}</button>
     </div>
     ${run ? html`<div class="job-progress" id="enhance-progress"><progress max="1" value=${run.progress}></progress><small class="muted">${run.message}</small>
-      ${run.job ? html`<button type="button" class="ghost compact" id="enhance-stop" disabled=${!!run.stopping} title="Stop generating; the model shown stays as it is" onClick=${() => { setRun({ ...run, stopping: true, message: "Stopping…" }); stopJob(run.job); }}>${run.stopping ? "Stopping…" : "Stop"}</button>` : null}</div>` : null}
+      ${run.job ? html`<button type="button" class="ghost compact danger-text" id="enhance-stop" disabled=${!!run.stopping} title="Stop; the model shown stays as it is" onClick=${() => { setRun({ ...run, stopping: true, message: "Stopping…" }); stopJob(run.job); }}>${run.stopping ? "Stopping…" : "Stop"}</button>` : null}</div>` : null}
     ${error ? html`<p class="warn-note" role="alert" id="enhance-error">${error}</p>` : null}
-    ${result ? html`<section class="insp-section" id="enhance-result"><h3>Enhanced</h3>
+    ${result ? html`<section class="insp-section" id="enhance-result"><h3>${result.displaced === false ? "Evened out (step 1)" : "Enhanced"}</h3>
       ${stale ? html`<p class="insp-note">Made with other parts, options or pose than those chosen now: generate again to include the change.</p>` : null}
       <dl class="insp-dl">
         <dt>Vertices</dt><dd>${num(result.stats.vertices)} <span class="muted">from ${num(result.stats.source_vertices)}</span></dd>

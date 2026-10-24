@@ -106,6 +106,7 @@ class EnhanceResult:
     fields: dict[int, MaterialField]
     materials: list[Material]
     warnings: list[str] = field(default_factory=list)
+    displaced_by_textures: bool = True  # False: step 1 alone (or nothing to displace by chosen)
 
     def stats(self) -> dict:
         h = self.displaced.metadata.get("displacement")
@@ -435,7 +436,8 @@ def displace_resampled(model: SourceModel, mesh: Resampled, settings: EnhanceSet
     max_disp = settings.max_displacement_mm / 1000.0 if settings.max_displacement_mm else None
     displaced = displace(mesh.resampled, heights, max_disp)
     _report(progress, 1.0, "Done")
-    return EnhanceResult(mesh.source, mesh.resampled, displaced, fields, materials, warnings)
+    return EnhanceResult(mesh.source, mesh.resampled, displaced, fields, materials, warnings,
+                         displaced_by_textures=settings.source != SOURCE_NONE)
 
 
 def enhance(model: SourceModel, settings: EnhanceSettings | None = None,

@@ -90,10 +90,11 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path, mon
     page.fill("#target-vertices", "3000")
     page.press("#target-vertices", "Tab")
     assert page.text_content("#rail-enhance").strip() == "Generate"
-    assert page.text_content("#enhance-run") == "Generate"
+    assert page.text_content("#enhance-run") == "Generate (steps 1 + 2)"
     page.click("#enhance-run")
     page.wait_for_selector("#enhance-result", timeout=60000)
-    assert page.text_content("#enhance-run") == "Generate again"
+    page.wait_for_selector("#mesh-kept")  # step 1's mesh is kept, so the button now does step 2 alone
+    assert page.text_content("#enhance-run") == "Displace (step 2)"
     page.wait_for_selector('#show-which [data-value="enhanced"][aria-pressed="true"]')
     page.wait_for_selector("#stage-canvas:not([data-loading])")
     # the original and the enhanced model in turn: both are kept, nothing is fetched or made again
@@ -130,7 +131,7 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path, mon
     if os.environ.get("DARKSTL_SCREENSHOTS"):
         page.locator("#enhance-tab").screenshot(path=os.path.join(os.environ["DARKSTL_SCREENSHOTS"], "enhance-settings.png"))
     page.wait_for_selector("#mesh-kept")  # step 1 is the same: its mesh is used again
-    assert "Generate skips step 1" in page.text_content("#mesh-kept")
+    assert "Step 1 is done" in page.text_content("#mesh-kept")
     page.click("#enhance-run")
     page.wait_for_selector("#enhance-result .field-list :text('albedo detail')", timeout=60000)
     page.wait_for_selector("text=the evened-out mesh was kept")
@@ -140,6 +141,19 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path, mon
     page.fill("#target-vertices", "3000")
     page.press("#target-vertices", "Tab")
     page.wait_for_selector("#mesh-kept")
+    # step 1 on its own: the evened-out model, not displaced, is shown and kept; step 2 then starts from it
+    page.fill("#target-vertices", "4000")
+    page.press("#target-vertices", "Tab")
+    page.wait_for_selector("#mesh-kept", state="detached")
+    assert page.text_content("#mesh-run") == "Run step 1 only" and page.text_content("#enhance-run") == "Generate (steps 1 + 2)"
+    page.click("#mesh-run")
+    page.wait_for_selector("#enhance-result h3:text('Evened out (step 1)')", timeout=60000)
+    assert "up to 0.00 mm" in page.text_content("#enhance-result")
+    page.wait_for_selector("#mesh-kept")
+    assert page.text_content("#enhance-run") == "Displace (step 2)" and page.text_content("#mesh-run") == "Show the evened-out mesh"
+    page.click("#enhance-run")
+    page.wait_for_selector("text=step 2 only")
+    page.wait_for_selector("#enhance-result h3:text('Enhanced')", timeout=60000)
 
     page.click("#rail-export")
     page.fill("#export-folder", str(tmp_path / "out"))
@@ -220,8 +234,8 @@ def test_previews_stay_shown_and_a_job_stops_from_the_status_bar(page, app, weap
     page.fill("#target-vertices", "20000000")
     page.press("#target-vertices", "Tab")
     page.click("#enhance-run")
-    page.wait_for_selector("#status-job.can-stop", timeout=10000)
+    page.wait_for_selector("#status-job.can-stop .status-stop", timeout=10000)  # Stop is shown without hovering
     page.click("#status-job")
     page.wait_for_selector("text=Stopped generating", timeout=120000)
     assert page.locator("#enhance-error").count() == 0 and page.locator("#enhance-result").count() == 0
-    assert page.text_content("#enhance-run") == "Generate"
+    assert page.text_content("#enhance-run") == "Generate (steps 1 + 2)"
