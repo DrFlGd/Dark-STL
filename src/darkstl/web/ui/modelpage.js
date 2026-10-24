@@ -359,11 +359,15 @@ function PoseTab({ m, pose, setPose, busy, call }) {
   </div>`;
 }
 
-/** A number box saved to the Generate settings. */
+/** A number box saved to the Generate settings. What's typed is kept while the tab draws again
+ * (a progress update, a toast going) until it's saved on leaving the box. */
 function NumberField({ id, label, value, step, min, max, unit, title, onChange }) {
+  const [typed, setTyped] = useState(null); // { over: the value it was typed over, text }
+  const shown = typed && typed.over === value ? typed.text : value;
   return html`<label class="field-block" title=${title}><span>${label}</span>
-    <span class="field-row"><input type="number" id=${id} value=${value} step=${step} min=${min} max=${max}
-      onChange=${(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onChange(v); }} />${unit ? html`<span class="muted unit">${unit}</span>` : null}</span></label>`;
+    <span class="field-row"><input type="number" id=${id} value=${shown} step=${step} min=${min} max=${max}
+      onInput=${(e) => setTyped({ over: value, text: e.target.value })}
+      onChange=${(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onChange(v); else setTyped(null); }} />${unit ? html`<span class="muted unit">${unit}</span>` : null}</span></label>`;
 }
 
 /** Generate: even out the vertices to the count chosen, then displace them by the detail in the textures. */
