@@ -1,0 +1,23 @@
+{
+  "about": "Normal-map upscalers included with Dark STL. By Michael Schmidt (RunDevelopment), https://github.com/RunDevelopment/ESRGAN-models (normals), licensed CC BY 4.0; converted from PyTorch to ONNX by desktop/models/bundle.py, otherwise unchanged. 'codecs' lists the texture compressions each one is used for when no model is picked ('*': any other).",
+  "models": [
+    {
+      "name": "4x-Normal-RG0-BC1",
+      "description": "4x normal-map upscaler trained on BC1-compressed normal maps",
+      "codecs": ["BC1", "BC2", "BC3"],
+      "url": "https://github.com/RunDevelopment/ESRGAN-models/raw/1f396890c8ec38517f8963dc462b001d2664257f/normals/4x-Normal-RG0-BC1.pth",
+      "sha256": "769f5b9b51813b5c8f43ece9fb17da9e249e3d667a5be649ba9583cae5e8843f",
+      "author": "Michael Schmidt (RunDevelopment)",
+      "license": "CC-BY-4.0"
+    },
+    {
+      "name": "4x-Normal-RG0-BC7",
+      "description": "4x normal-map upscaler trained on BC7-compressed normal maps",
+      "codecs": ["BC7", "*"],
+      "url": "https://github.com/RunDevelopment/ESRGAN-models/raw/1f396890c8ec38517f8963dc462b001d2664257f/normals/4x-Normal-RG0-BC7.pth",
+      "sha256": "ce39c9e227b672eadd6e924a3b5ea19781207af2cf982b8c70257a64745263cd",
+      "author": "Michael Schmidt (RunDevelopment)",
+      "license": "CC-BY-4.0"
+    }
+  ]
+}

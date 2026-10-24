@@ -303,7 +303,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--edge-keeping", type=float, default=0.0, help="0..1, keep inconsistent slopes from smearing")
     s.add_argument("--deblock", choices=["off", "smooth", "ai"], default="off", help="block-compression clean-up")
     s.add_argument("--upsample", choices=["off", "guided", "ai"], default="off", help="upsample normal maps")
-    s.add_argument("--ai-model", default="", help="upscaling .onnx model (path, or a name in the models folder)")
+    s.add_argument("--ai-model", default="", help="upscaling .onnx model (path, or a name in the models folder); "
+                   "default: the included one for each texture's compression")
     s.add_argument("--deblock-model", default="", help="1x deblocking .onnx model")
     s.add_argument("--edge-hints", action="store_true", help="use specular/metallic mask edges as hints")
     s.add_argument("--albedo-detail", type=float, default=0.0, help="mm of fine relief guessed from the albedo")

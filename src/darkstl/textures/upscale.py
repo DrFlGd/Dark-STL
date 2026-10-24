@@ -4,9 +4,12 @@ Community models (ESRGAN and similar, see openmodeldb.info) are image to image
 networks: RGB in 0..1, RGB out at 1x (deblocking) or 2x/4x (upscaling). Dark
 STL runs them with ONNX Runtime, which uses the GPU on Windows through
 DirectML when ``onnxruntime-directml`` is installed and the CPU otherwise.
-Models are not bundled: the user puts ``.onnx`` files in the models folder
-(Settings shows where), and only ones whose licence allows it should be
-offered for download.
+
+The Windows app ships normal-map upscalers in ``engine/models`` (see
+desktop/models: RunDevelopment's 4x-Normal-RG0 models, CC BY 4.0), next to
+the engine rather than inside it. When no model is picked, the one trained for
+the texture's block compression is used. Users can add their own ``.onnx``
+files to the models folder (Settings shows where).
 
 Normal maps go through a model trained for them in "RG0" form (red and green
 kept, blue zeroed). The output is not unit length, so blue is rebuilt and the
@@ -15,6 +18,9 @@ vector renormalised afterwards.
 
 from __future__ import annotations
 
+import json
+import os
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -38,6 +44,49 @@ def list_models(folder: Path) -> list[str]:
     if not folder.is_dir():
         return []
     return sorted(p.name for p in folder.iterdir() if p.suffix.lower() == ".onnx")
+
+
+def bundled_dir() -> Path | None:
+    """The folder of the models that come with the app: ``models`` beside the frozen engine, or
+    DARKSTL_BUNDLED_MODELS (for source installs, wherever desktop/models/bundle.py put them)."""
+    if os.environ.get("DARKSTL_BUNDLED_MODELS"):
+        folder = Path(os.environ["DARKSTL_BUNDLED_MODELS"])
+    elif getattr(sys, "frozen", False):
+        folder = Path(sys.executable).resolve().parent / "models"
+    else:
+        return None
+    return folder if (folder / "models.json").is_file() else None
+
+
+@lru_cache(maxsize=4)
+def _bundled_spec(folder: str) -> list[dict]:
+    try:
+        spec = json.loads((Path(folder) / "models.json").read_text("utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [m for m in spec.get("models", []) if (Path(folder) / f"{m['name']}.onnx").is_file()]
+
+
+def bundled_models() -> list[dict]:
+    """The bundled models present: [{"name", "file", "codecs", "description", ...}]."""
+    folder = bundled_dir()
+    if folder is None:
+        return []
+    return [{**m, "file": str(folder / f"{m['name']}.onnx")} for m in _bundled_spec(str(folder))]
+
+
+def automatic_model(codec: str | None) -> Path | None:
+    """The bundled upscaler trained for textures stored with ``codec`` ("BC1", "BC7"...): the one
+    listing it, else the one marked as the fallback (``codecs`` containing "*")."""
+    models = bundled_models()
+    codec = (codec or "").upper()
+    for m in models:
+        if codec and codec in m.get("codecs", []):
+            return Path(m["file"])
+    for m in models:
+        if "*" in m.get("codecs", []):
+            return Path(m["file"])
+    return Path(models[0]["file"]) if models else None
 
 
 @dataclass

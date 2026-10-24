@@ -2,6 +2,7 @@ name: Windows app
 
 # Builds the Windows app: the Python engine frozen with PyInstaller (desktop/engine/engine.spec,
 # the isotropic remesher included) inside the Tauri app (desktop/), so it runs without Python.
+# The included AI upscalers (desktop/models) go beside the engine as engine/models/*.onnx files.
 # Checks the engine (desktop/engine/smoke.py), installs the app with its installer and drives
 # it through WebDriver (desktop/drive.py): browse, open, enhance with the remesher, export.
 # Makes DarkSTL_<version>_x64-setup.exe and DarkSTL_<version>_x64-portable.zip, uploaded as the
@@ -63,8 +64,16 @@ jobs:
           echo "::notice title=Version::$v"
       - name: Build the engine (PyInstaller)
         run: pyinstaller desktop/engine/engine.spec --noconfirm --distpath build --workpath build/pyinstaller
+      - uses: actions/cache@v4
+        with:
+          path: build/model-cache
+          key: upscalers-${{ hashFiles('desktop/models/models.json') }}
+      - name: Add the included AI upscalers (beside the engine, not inside it)
+        run: |
+          python -m pip install onnx==1.17.0
+          python desktop/models/bundle.py build/engine/models --cache build/model-cache
       - name: Test the engine
-        run: timeout 900 python desktop/engine/smoke.py build/engine
+        run: timeout 900 python desktop/engine/smoke.py build/engine --models
       - name: Build the app (Tauri)
         working-directory: desktop
         run: npx --yes @tauri-apps/cli@2 build --bundles nsis

@@ -55,7 +55,12 @@ def page(browser, app):
     pg.close()
 
 
-def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path):  # noqa: F811
+def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path, monkeypatch):  # noqa: F811
+    included = tmp_path / "included"
+    included.mkdir()
+    (included / "models.json").write_text('{"models": [{"name": "up", "codecs": ["*"]}]}')
+    (included / "up.onnx").write_bytes(b"")
+    monkeypatch.setenv("DARKSTL_BUNDLED_MODELS", str(included))
     page.wait_for_selector("#first-run")
     page.click("#first-add-folder")
     page.fill("#folder-path", str(weapon_dir))
@@ -115,7 +120,9 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path):  #
     page.press('[data-strength="0"]', "Tab")
     page.select_option("#upsample", "ai")
     page.wait_for_selector("#ai-models #ai-model-add")
+    page.wait_for_selector("#ai-models-folder")  # the list has come
     assert page.locator("#ai-model option").count() == 1  # nothing in the models folder yet
+    assert page.locator("#ai-model option").inner_text().startswith("Included")  # the app's own, by default
     page.select_option("#upsample", "guided")
     assert page.locator("#ai-models").count() == 0
     page.fill("#albedo-detail", "0.1")

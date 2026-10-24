@@ -1,7 +1,8 @@
 """Smoke test of the built engine (build/engine): the command line reads a model and enhances it
-both ways, the remesher included, and "darkstl engine" answers the app's requests on its pipe.
+both ways, the remesher included, upscales its normal map with the included AI model (engine/models,
+from desktop/models/bundle.py), and "darkstl engine" answers the app's requests on its pipe.
 
-    python desktop/engine/smoke.py build/engine
+    python desktop/engine/smoke.py build/engine --models
 
 The model is built byte by byte like the tests' (tests/synth.py), so it needs the package
 installed and numpy, nothing else. drive.py, which tests the whole app, uses weapon() too.
@@ -116,6 +117,7 @@ def check_engine(cli: Path, game: Path, env: dict) -> None:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("folder", type=Path, help="the built engine folder (build/engine)")
+    p.add_argument("--models", action="store_true", help="fail unless the included AI models are in <folder>/models")
     args = p.parse_args()
     cli = args.folder / f"darkstl{EXE}"
     with tempfile.TemporaryDirectory() as tmp:
@@ -134,6 +136,15 @@ def main() -> int:
             assert size > 84 + 50 * 2000, f"the STL is too small ({size} bytes)"
             assert "needs the 'pyacvd' package" not in log, "the remesher is missing"
             print(f"enhance --method {method}: {size} bytes of STL", flush=True)
+        if (args.folder / "models" / "models.json").is_file():
+            # the included upscalers, found beside the engine and picked without being named
+            out = tmp / "ai.stl"
+            log = run([str(cli), "enhance", str(model), "-n", "50000", "--upsample", "ai", "-o", str(out)], env)
+            if "4x by 4x-Normal-RG0-" not in log or "warning:" in log:
+                raise SystemExit("the included AI upscaler wasn't used")
+            print("enhance --upsample ai: used the included model", flush=True)
+        elif args.models:
+            raise SystemExit(f"no included AI models in {args.folder / 'models'}")
         check_engine(cli, game, env)
     print("Smoke test passed.")
     return 0
