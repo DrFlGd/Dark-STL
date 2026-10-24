@@ -46,11 +46,68 @@ def test_pipeline_ai_upscale_and_deblock(tmp_path):
     _resize_model(tmp_path / "x2.onnx", 2)
     _resize_model(tmp_path / "x1.onnx", 1)
     mesh = bench.panel_mesh(32)
-    model = bench.source_model(mesh, bench.normal_texture(bench.scene_bumps()))
+    model = bench.source_model(mesh, bench.normal_texture(bench.scene_bumps(32)))
     s = pipeline.EnhanceSettings(target_vertices=8000, smooth=0.0, upsample="ai", ai_model="x2.onnx",
                                  deblock="ai", deblock_model="x1.onnx", models_dir=tmp_path)
     r = pipeline.enhance(model, s)
     steps = r.fields[0].steps
     assert any("2x by x2.onnx" in x for x in steps) and any("deblocked by x1.onnx" in x for x in steps)
-    assert r.fields[0].slopes.p.shape == (512, 512)
+    assert r.fields[0].slopes.p.shape == (64, 64)
+    assert not r.warnings
+
+
+def test_ai_upscaling_skipped_when_texels_are_already_finer(tmp_path):
+    _resize_model(tmp_path / "x2.onnx", 2)
+    model = bench.source_model(bench.panel_mesh(32), bench.normal_texture(bench.scene_bumps()))
+    s = pipeline.EnhanceSettings(target_vertices=8000, smooth=0.0, upsample="ai", ai_model="x2.onnx", models_dir=tmp_path)
+    r = pipeline.enhance(model, s)
+    assert any("no AI upscaling needed" in x for x in r.fields[0].steps)
+    assert r.fields[0].slopes.p.shape == (256, 256)
+
+
+def _shifting_model(path, scale, shift):
+    """An upscaler that also tilts everything a little, as real ones do: resize, then add ``shift``."""
+    x = helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 3, None, None])
+    y = helper.make_tensor_value_info("output", TensorProto.FLOAT, [1, 3, None, None])
+    scales = helper.make_tensor("scales", TensorProto.FLOAT, [4], [1.0, 1.0, float(scale), float(scale)])
+    add = helper.make_tensor("shift", TensorProto.FLOAT, [1, 3, 1, 1], [shift, shift, 0.0])
+    nodes = [helper.make_node("Resize", ["input", "", "scales"], ["r"], mode="nearest"),
+             helper.make_node("Add", ["r", "shift"], ["output"])]
+    graph = helper.make_graph(nodes, "up", [x], [y], initializer=[scales, add])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model.ir_version = 8
+    onnx.save(model, str(path))
+    return path
+
+
+def test_ai_upscaling_keeps_the_textures_broad_shape(tmp_path):
+    _shifting_model(tmp_path / "tilt.onnx", 2, 0.03)
+    model = bench.source_model(bench.panel_mesh(32), bench.normal_texture(bench.scene_bumps(32)))
+    base = pipeline.EnhanceSettings(target_vertices=8000, smooth=0.0, upsample="guided", models_dir=tmp_path)
+    ai = pipeline.EnhanceSettings(target_vertices=8000, smooth=0.0, upsample="ai", ai_model="tilt.onnx", models_dir=tmp_path)
+    p_ref = pipeline.enhance(model, base).fields[0].slopes.p
+    p_ai = pipeline.enhance(model, ai).fields[0].slopes.p
+    assert p_ai.shape == p_ref.shape == (64, 64)
+    # a 0.03 shift in the texture is a slope of about 0.06; none of it survives
+    assert abs(float(p_ai.mean() - p_ref.mean())) < 0.005
+
+
+def test_bundled_model_is_picked_by_compression(tmp_path, monkeypatch):
+    import json
+
+    for name in ("up-bc1", "up-any"):
+        _resize_model(tmp_path / f"{name}.onnx", 2)
+    (tmp_path / "models.json").write_text(json.dumps({"models": [
+        {"name": "up-bc1", "codecs": ["BC1", "BC2", "BC3"]}, {"name": "up-any", "codecs": ["*"]},
+        {"name": "missing", "codecs": ["BC5"]}]}))
+    monkeypatch.setenv("DARKSTL_BUNDLED_MODELS", str(tmp_path))
+    upscale._bundled_spec.cache_clear()
+    assert [m["name"] for m in upscale.bundled_models()] == ["up-bc1", "up-any"]
+    assert upscale.automatic_model("BC1").name == "up-bc1.onnx"
+    assert upscale.automatic_model("BC7").name == "up-any.onnx"
+    assert upscale.automatic_model(None).name == "up-any.onnx"
+
+    model = bench.source_model(bench.panel_mesh(32), bench.normal_texture(bench.scene_bumps(32)))
+    r = pipeline.enhance(model, pipeline.EnhanceSettings(target_vertices=8000, smooth=0.0, upsample="ai"))
+    assert any("2x by up-any.onnx (included" in x for x in r.fields[0].steps)
     assert not r.warnings

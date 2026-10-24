@@ -328,7 +328,10 @@ class Service:
 
         folder = models_dir()
         folder.mkdir(parents=True, exist_ok=True)
-        return {"folder": str(folder), "models": upscale.list_models(folder), "available": upscale.available()}
+        bundled = [{"name": m["name"], "description": m.get("description", ""), "codecs": m.get("codecs", [])}
+                   for m in upscale.bundled_models()]
+        return {"folder": str(folder), "models": upscale.list_models(folder), "bundled": bundled,
+                "available": upscale.available()}
 
     def cmd_ai_model_add(self, args: dict) -> dict:
         """Copy a picked .onnx model into the models folder."""

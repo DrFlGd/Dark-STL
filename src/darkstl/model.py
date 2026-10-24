@@ -42,6 +42,16 @@ class Texture:
         h, w = self.decode().shape[:2]
         return f"{w} x {h}"
 
+    def codec(self) -> str | None:
+        """How the texture is stored ("BC1", "BC7", "R8G8B8A8"...), when the format says."""
+        if self.describe_fn is None:
+            return None
+        try:
+            parts = [x.strip() for x in self.describe_fn().split(",")]
+        except Exception:  # noqa: BLE001 - only a hint
+            return None
+        return parts[1] if len(parts) > 2 else None
+
 
 @lru_cache(maxsize=48)
 def _decode_cached(texture: Texture) -> np.ndarray:
