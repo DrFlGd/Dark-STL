@@ -166,9 +166,12 @@ def test_unreadable_animations_are_listed_but_say_so():
 @pytest.fixture
 def char_dir(tmp_path):
     """A fake Dark Souls III character: a skinned strip on the arm, a rigid cube on the hand, and an anibnd."""
-    game = tmp_path / "DARK SOULS III" / "Game"
+    return make_char_dir(tmp_path / "DARK SOULS III" / "Game")
+
+
+def make_char_dir(game):
     chr_dir = game / "chr"
-    chr_dir.mkdir(parents=True)
+    chr_dir.mkdir(parents=True, exist_ok=True)
     (game / "DarkSoulsIII.exe").write_bytes(b"")
     bones = [synth.SynthBone(b.name, b.translation, parent=b.parent) for b in BONES]
     # mesh 0: a skinned quad, every vertex on the arm bone (index 1)

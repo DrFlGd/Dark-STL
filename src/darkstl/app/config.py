@@ -52,6 +52,7 @@ class Config:
     texture_dirs: list[str] = field(default_factory=list)
     oodle: str = ""
     export_dir: str = ""
+    library_dir: str = ""  # where collected copies of game files go (empty: the app's own folder)
     prefs: dict = field(default_factory=dict)  # the page's own preferences
     path: Path | None = field(default=None, repr=False, compare=False)
 
@@ -62,7 +63,8 @@ class Config:
             raw = json.loads(path.read_text("utf-8"))
         except (OSError, ValueError):
             raw = {}
-        known = {k: raw[k] for k in ("game_folders", "texture_dirs", "oodle", "export_dir", "prefs") if k in raw}
+        known = {k: raw[k] for k in ("game_folders", "texture_dirs", "oodle", "export_dir", "library_dir", "prefs")
+                 if k in raw}
         cfg = cls(**known)
         cfg.game_folders = [f for f in cfg.game_folders if isinstance(f, dict) and f.get("path")]
         cfg.path = path
@@ -81,6 +83,10 @@ class Config:
     @property
     def export_folder(self) -> Path:
         return Path(self.export_dir) if self.export_dir else default_export_dir()
+
+    @property
+    def library_folder(self) -> Path:
+        return Path(self.library_dir) if self.library_dir else config_dir() / "library"
 
 
 _write_lock = threading.Lock()

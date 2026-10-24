@@ -385,3 +385,65 @@ def find_animations(path: Path, stem: str, binder: bnd.Binder | None):
         return skeleton, sources, labels, comp_bytes
 
     return AnimationSet(loader=load)
+
+
+# ---------------------------------------------------------------------------
+# What a model needs when it is copied out of the game
+
+
+def _map_texture_files(directory: Path, stem: str) -> list[Path]:
+    """A map piece's texture packs: the files beside it that share its map's name (``m10_00_00_00_0001.tpfbhd``
+    and its ``.tpfbdt``, ``m10_0000.tpf.dcx``...)."""
+    m = re.match(r"^(m\d\d)(_\d\d_\d\d_\d\d)?", stem, re.I)
+    if not m:
+        return []
+    prefixes = {m.group(0).lower(), m.group(1).lower()}
+    out = []
+    for low, entry in sorted(_dir_listing(directory).items()):
+        base = strip_dcx(low)
+        if any(low.startswith(p) for p in prefixes) and base.endswith((".tpf", ".tpfbhd", ".tpfbdt", ".texbnd")):
+            out.append(entry)
+    return out
+
+
+def related_files(path: Path, textures: bool = True, animations: bool = True, lod: bool = False) -> list[Path]:
+    """The model file and, beside it, what it needs: texture archives (and split pairs), unpacked texture
+    folders, animation archives, and low-detail copies when asked. Folders stand for everything in them."""
+    path = Path(path)
+    stem = file_stem(path.name)
+    out: list[Path] = [path]
+    folder = path.parent
+    if folder.name.lower().endswith(("-partsbnd-dcx", "-chrbnd-dcx", "-objbnd-dcx", "-geombnd-dcx", "-mapbnd-dcx",
+                                     "-partsbnd", "-chrbnd", "-objbnd", "-geombnd", "-mapbnd")):
+        out = [folder]  # a loose FLVER inside an unpacked archive folder: take the whole folder
+        folder = folder.parent
+    listing = _dir_listing(folder)
+    s = stem.lower()
+    if textures:
+        out += _sibling_texture_files(folder, stem)
+        for ext in (".chrtpfbhd", ".chrtpfbdt", ".tpfbhd", ".tpfbdt"):
+            if f"{s}{ext}" in listing:
+                out.append(listing[f"{s}{ext}"])
+        out += _map_texture_files(folder, stem)
+    if animations:
+        out += animation_archives(path, stem)
+    if lod:
+        for low, entry in listing.items():
+            if re.match(rf"^{re.escape(s)}(_l|_lod\d*)\.", low) and strip_dcx(low).endswith(MODEL_EXTENSIONS):
+                out += related_files(entry, textures, animations, False)
+    seen: set[Path] = set()
+    return [p for p in out if not (p in seen or seen.add(p))]
+
+
+def shared_files(root: Path, player_animations: bool = False) -> list[Path]:
+    """What a game folder holds that any model from it may need: the Oodle library (Sekiro, Elden Ring),
+    and the player's animations when asked for (armour has none of its own)."""
+    out = []
+    for low, entry in sorted(_dir_listing(root).items()):
+        if re.match(r"^(lib)?oo2core.*\.(dll|so|dylib)$", low):
+            out.append(entry)
+    if player_animations:
+        chr_dir = root / "chr"
+        if chr_dir.is_dir():
+            out += animation_archives(chr_dir / "c0000.chrbnd.dcx", "c0000")
+    return out

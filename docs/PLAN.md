@@ -54,6 +54,20 @@ the tests call directly.
 - **One library per game.** The menu lists each game with its model count. A game's page shows
   its kinds of model (weapons, armour, characters...) as tiles; a kind shows its groups as chips
   and its models as cards or rows, searchable, with the selected model's details beside them.
+- **Collect into the app.** A game install is tens of gigabytes; the files Dark STL reads for
+  the models someone wants are a few megabytes. *Collect into the app…* (a game's ⋯ menu, a
+  kind's or group's details, a model's right-click menu or the model page's ⋯ menu) copies the
+  chosen models' files into the app's own library folder (`<settings>/library/<game>/`, movable
+  in Settings): the model archive (or its unpacked folder), its texture archives and split
+  texture packs, its animations, and, when asked, the player's animations and the low-detail
+  copies, plus what the game needs as a whole (the Oodle library). Each file keeps its path
+  below the game folder, so the same sibling lookups work on the copies. The dialog shows what
+  would be copied and what is already there (same size and date) before copying; the library
+  folder is then listed as a folder of that game, and a model present in both the game folder
+  and the library is listed once. The game's folder can then be removed from the library, or
+  the game uninstalled, and the collected models stay, with their textures and poses. Each
+  importer says which files go with a model (`Importer.related_files`) and which a game needs
+  as a whole (`Importer.shared_files`); `collect.py` plans and copies.
 - **Previews.** Each card's picture is drawn by the engine the first time it scrolls into view
   (`thumbnails.py`: the model from the 3D view's angle, coloured from its albedo texture, long
   weapons laid corner to corner) and cached by file date, a few at a time so browsing stays quick.
@@ -199,6 +213,7 @@ src/darkstl/
                 displacement
   textures/     DDS decoding, normal map -> height, grayscale height, UV coverage, texel size
   library.py    the library: game folders scanned by every importer, by game, kind and group
+  collect.py    copies the files chosen models need into the app's own library folder
   thumbnails.py preview pictures for the library's cards, cached on disk
   pipeline.py   the three steps with their settings
   export.py     STL, OBJ, PLY, GLB writers
@@ -259,6 +274,8 @@ differs:
 
 - [x] A library per game: game folders added, rescanned and removed in the app, kinds of
       model as tiles, groups, search, previews (on Model Library's interface)
+- [x] Collect into the app: the files chosen models need (model, textures, animations) copied
+      into the app's own library folder, so the game's install isn't needed afterwards
 - [ ] In-game names (weapon, armor and enemy names from the game's text and param files)
 - [ ] Batch queue: enhance and export a whole group with one set of settings
 - [ ] Read Elden Ring MATBIN files for exact material maps

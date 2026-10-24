@@ -9,7 +9,8 @@ import { useStore } from "../lib/store.js";
 import { ui, setPref, resolvedTheme } from "./state.js";
 import { routeHash, placeRoute, modelOf } from "./context.js";
 import { Icon } from "./icons.js";
-import { api, binUrl, info, plural, followJob, toast, showInFolder, pickFolder, pickFile } from "./api.js";
+import { collectModelItem } from "./games.js";
+import { api, binUrl, info, plural, bytesText, followJob, toast, showInFolder, pickFolder, pickFile } from "./api.js";
 import { CommandBar } from "./layout.js";
 import { Inspector, useWidth } from "./inspector.js";
 import { Viewer } from "../viewer.js";
@@ -28,7 +29,6 @@ const msg = (e) => String(e?.message || e);
 const num = (n) => Math.round(n).toLocaleString();
 const mm = (v) => (v >= 100 ? Math.round(v) : v >= 10 ? v.toFixed(1) : v.toFixed(2));
 const sizeText = (s) => (s ? `${mm(s[0])} × ${mm(s[1])} × ${mm(s[2])} mm` : "");
-const bytes = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 const variantName = (v) => (v || "").replace(/\.(flver|flv)$/i, "");
 /** Where new vertices will be on average, for a mesh of `area` m² with `n` vertices: equilateral triangles, about 2 per vertex. */
 const spacingMm = (area, n) => (area > 0 && n > 0 ? Math.sqrt((2 * area) / (Math.sqrt(3) * n)) * 1000 : 0);
@@ -72,6 +72,8 @@ export function ModelPage({ route }) {
   const more = [
     { id: "show", label: "Show in folder", icon: "folder", run: () => showInFolder(m.file) },
     { id: "copy-path", label: "Copy file path", icon: "copy", run: () => navigator.clipboard?.writeText(m.file).then(() => toast("Copied the file's path")) },
+    { sep: true },
+    collectModelItem({ id: m.id, file: m.file, label: entry?.label || m.name, category: entry?.category, group: entry?.group }, entry?.game),
     { sep: true },
     { id: "open-file", label: "Open another model file…", icon: "file", run: () => ui.set({ dialog: { type: "open-file" } }) },
   ];
@@ -529,7 +531,7 @@ function ExportTab({ m, args, result, which: shownWhich, pose, call }) {
       ${info().dialogs ? html`<button type="button" class="ghost" id="export-browse" onClick=${browse}>Browse…</button>` : null}</div></div>
     <div class="insp-actions"><button type="button" class="primary" id="export-run" disabled=${busy} onClick=${go}>${Icon.download(15)} ${busy ? "Exporting…" : "Export"}</button></div>
     ${error ? html`<p class="warn-note" role="alert" id="export-error">${error}</p>` : null}
-    ${done ? html`<div class="export-done" id="export-done" role="status"><p><b>Saved</b> ${done.path.split(/[\\/]/).pop()} <span class="muted">· ${bytes(done.bytes)}</span></p>
+    ${done ? html`<div class="export-done" id="export-done" role="status"><p><b>Saved</b> ${done.path.split(/[\\/]/).pop()} <span class="muted">· ${bytesText(done.bytes)}</span></p>
       <p class="note-path muted">${done.path}</p>
       <div class="insp-actions"><button type="button" class="ghost" onClick=${() => showInFolder(done.path)}>${Icon.folder(14)} Show in folder</button></div></div>` : null}
     <p class="muted export-note">STL and PLY are written Z-up, as slicers expect; OBJ and GLB Y-up. Game models often aren't watertight, so check them in your slicer before printing.</p>

@@ -7,6 +7,8 @@ export const api = (cmd, args) => ctx.platform.api(cmd, args);
 export const binUrl = (cmd, args) => ctx.platform.binUrl(cmd, args);
 export const info = () => ctx.platform?.info || {};
 export const plural = (n, one, many = `${one}s`) => `${Number(n).toLocaleString()} ${n === 1 ? one : many}`;
+/** A size in bytes as people read it: "1.2 GB", "48.3 MB", "12 KB". */
+export const bytesText = (n) => (n >= 1073741824 ? `${(n / 1073741824).toFixed(2)} GB` : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 let overviewTimer = null;
 /** Read the games and their categories again (and keep reading while folders are being scanned). */

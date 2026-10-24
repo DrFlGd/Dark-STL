@@ -118,3 +118,8 @@ a.chip-btn.on { background: var(--sel); }
 #oodle-status { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .credits li { align-items: flex-start; }
 .about-page .how-list { font-size: 14px; }
+
+/* Collect into the app */
+.collect-plan { display: grid; gap: 4px; padding: 10px 12px; border-radius: var(--radius-s); background: var(--panel); border: 1px solid var(--steel-2); font-size: 13.5px; }
+.collect-plan p { margin: 0; overflow-wrap: anywhere; }
+#library-status { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }

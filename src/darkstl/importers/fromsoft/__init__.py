@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ...collect import RelatedFile
 from ...errors import FormatError
 from ...model import BuildOption, CatalogEntry, Material, MeshOptions, Part, SourceModel, Texture
 from ...textures import dds
@@ -90,6 +91,18 @@ def _game_from_archives(folder: Path, archives: int = 3, max_files: int = 5000,
             if game:
                 return game
     return None
+
+
+def _kind_of(path: Path) -> str:
+    low = files.strip_dcx(path.name.lower())
+    if files.ANIBND_FILE.search(path.name) or files.ANIBND_FOLDER.search(path.name):
+        return "animation"
+    if low.endswith((".tpf", ".tpfbhd", ".tpfbdt", ".chrtpfbhd", ".chrtpfbdt", ".texbnd", ".dds")) or \
+            re.search(r"-(tpf|texbnd)(-dcx)?$", path.name, re.I):
+        return "texture"
+    if _OPENABLE.search(path.name) or re.search(r"-(partsbnd|chrbnd|objbnd|geombnd|mapbnd)(-dcx)?$", path.name, re.I):
+        return "model"
+    return "other"
 
 
 class FromSoftwareImporter(Importer):
@@ -187,6 +200,13 @@ class FromSoftwareImporter(Importer):
             info = dds.parse_dds(data)
             return [f"DDS {info.width}x{info.height} {info.codec} mips={info.mipmaps}"]
         return None
+
+    def related_files(self, path: Path, textures: bool = True, animations: bool = True,
+                      lod: bool = False) -> list[RelatedFile]:
+        return [RelatedFile(p, _kind_of(p)) for p in files.related_files(Path(path), textures, animations, lod)]
+
+    def shared_files(self, root: Path, game: str, player_animations: bool = False) -> list[RelatedFile]:
+        return [RelatedFile(p, _kind_of(p)) for p in files.shared_files(Path(root), player_animations)]
 
     @staticmethod
     def texture_pack(path: Path) -> dict[str, Texture]:

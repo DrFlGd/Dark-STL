@@ -4,7 +4,7 @@
 import { html, useState, useEffect } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui, THEMES, SKINS, setTheme, setSkin } from "./state.js";
-import { api, info, plural, toast, showInFolder, pickFolder } from "./api.js";
+import { api, info, plural, bytesText, toast, showInFolder, pickFolder } from "./api.js";
 import { CommandBar } from "./layout.js";
 import { Icon } from "./icons.js";
 import { GameBadge } from "./gameicons.js";
@@ -21,7 +21,7 @@ function GameFolders() {
     ${games.length ? html`<ul class="ls-list folder-list" id="folder-list">${games.flatMap((g) => g.folders.map((f) => html`<li key=${f.path} data-folder=${f.path}>
       <span class="folder-what"><span class="folder-game"><${GameBadge} name=${g.name} /> ${g.name}</span>
         <span class="note-path">${f.path}</span>
-        <small class=${f.missing ? "danger-text" : "muted"}>${f.missing ? "This folder isn't there any more." : plural(f.count, "model")}</small>
+        <small class=${f.missing ? "danger-text" : "muted"}>${f.missing ? "This folder isn't there any more." : plural(f.count, "model")}${f.collected ? " · copies kept by Dark STL (collected into the app)" : ""}</small>
         ${f.notes.map((n, i) => html`<small class="warn-text" key=${i}>${n}</small>`)}</span>
       <span class="folder-actions">
         <button type="button" class="ghost" title="Show in folder" aria-label="Show in folder" disabled=${f.missing} onClick=${() => showInFolder(f.path)}>${Icon.folder(14)}</button>
@@ -62,6 +62,15 @@ function Engine() {
   };
   return html`
     ${error ? html`<p class="warn-note" role="alert" id="settings-error">${error}</p>` : null}
+    <section class="ls-section" id="settings-library">
+      <h2>App library</h2>
+      <p class="muted">Where "Collect into the app" keeps its copies: the files chosen models need (the model, its textures, its animations),
+        laid out like the game's folder, one folder per game. Collected models stay listed when the game's folder is removed or the game uninstalled.</p>
+      <p id="library-status">${s.library_files ? html`${Icon.inbox(14)} ${plural(s.library_files, "file")} · ${bytesText(s.library_bytes)}` : html`<span class="muted">Nothing collected yet. Each game's ⋯ menu, a model's right-click menu and the model page's ⋯ menu have Collect into the app.</span>`}</p>
+      <${PathRow} id="library-dir" value=${s.library_dir} placeholder="Folder for the copies" busy=${busy} browse=${(v) => pickFolder("Keep collected files in", v || undefined)}
+        onSave=${(p) => save({ library_dir: p }, "Saved. Files collected so far stay where they were; collect them again to copy them here.")} />
+      <div><button type="button" class="ghost" id="library-show" onClick=${() => showInFolder(s.library_dir)}>${Icon.folder(14)} Show in folder</button></div>
+    </section>
     <section class="ls-section" id="settings-textures">
       <h2>Texture folders</h2>
       <p class="muted">Where to look for textures a model uses but doesn't hold itself: map pieces and some objects share textures kept elsewhere in the game.</p>
