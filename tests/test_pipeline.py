@@ -139,11 +139,12 @@ def test_the_two_steps_run_apart(weapon_dir, method):
     before = mesh.resampled.vertices.copy()
     steps = []
     again = pipeline.enhance(model, settings, lambda f, m: steps.append(m), mesh=mesh)
-    assert np.array_equal(again.displaced.vertices, whole.displaced.vertices)
+    # the same up to rounding: the height solver may add up in another order from one run to the next
+    assert np.allclose(again.displaced.vertices, whole.displaced.vertices, rtol=1e-6, atol=1e-9)
     assert steps[0].startswith("Using the evened-out mesh made before") and "Building mesh" not in steps
     stronger = pipeline.enhance(model, pipeline.EnhanceSettings(target_vertices=8_000, method=method, strength=3.0), mesh=mesh)
     fresh = pipeline.enhance(model, pipeline.EnhanceSettings(target_vertices=8_000, method=method, strength=3.0))
-    assert np.allclose(stronger.displaced.vertices, fresh.displaced.vertices)
+    assert np.allclose(stronger.displaced.vertices, fresh.displaced.vertices, rtol=1e-6, atol=1e-9)
     assert np.array_equal(mesh.resampled.vertices, before)
 
 
