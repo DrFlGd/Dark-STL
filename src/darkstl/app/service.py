@@ -368,7 +368,10 @@ class Service:
 
         folder = models_dir()
         folder.mkdir(parents=True, exist_ok=True)
-        return {"folder": str(folder), "models": upscale.list_models(folder), "available": upscale.available()}
+        bundled = [{"name": m["name"], "description": m.get("description", ""), "codecs": m.get("codecs", [])}
+                   for m in upscale.bundled_models()]
+        return {"folder": str(folder), "models": upscale.list_models(folder), "bundled": bundled,
+                "available": upscale.available()}
 
     def cmd_ai_model_add(self, args: dict) -> dict:
         """Copy a picked .onnx model into the models folder."""
@@ -422,7 +425,7 @@ class Service:
                 if path.is_dir():
                     lib.add_root(path, game)
                     if _is_under(path, self.config.library_folder) and collect.read_manifest(path) is None:
-                        collect.write_manifest(path, game or path.name)  # collected before version 0.4.1
+                        collect.write_manifest(path, game or path.name)  # collected before version 0.5.1
                 else:
                     lib.roots[path] = game or path.name
                     lib.notes[path] = [f"This folder isn't there any more: {path}"]

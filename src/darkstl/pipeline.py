@@ -76,7 +76,7 @@ class EnhanceSettings:
     smooth_sampling: bool = True  # bicubic instead of bilinear texture reads
     deblock: str = "off"  # block-compression clean-up: off | smooth | ai
     upsample: str = "off"  # off | guided (albedo-guided) | ai
-    ai_model: str = ""  # upscaling model file in models_dir
+    ai_model: str = ""  # upscaling model file in models_dir ("": the included one for the texture's compression)
     deblock_model: str = ""  # 1x deblocking model file in models_dir
     models_dir: Path | None = None
     material_strength: dict[int, float] = field(default_factory=dict)  # material -> extra strength multiplier
@@ -157,7 +157,8 @@ def build_fields(model: SourceModel, source: TriMesh, materials: list[Material],
                 green = settings.green
                 if green == "auto" and info is not None and info.normal_green:
                     green = info.normal_green  # the importer knows; detection is for normal maps of unknown origin
-                cache[cache_key] = _normal_layers(model, info, img, all_uv, green, texel, spacing, settings, warnings)
+                cache[cache_key] = _normal_layers(model, info, img, all_uv, green, texel, spacing, settings, warnings,
+                                                  model.textures[key].codec())
         entry = cache[cache_key]
         hf = entry["hf"]
         if hf.units == "texels":
@@ -200,12 +201,14 @@ def _model_path(settings: EnhanceSettings, name: str) -> Path | None:
     return path
 
 
-def _ai(settings: EnhanceSettings, name: str, what: str, warnings: list[str]):
+def _ai(settings: EnhanceSettings, name: str, what: str, warnings: list[str], codec: str | None = None):
     from .textures import upscale
 
     path = _model_path(settings, name)
+    if path is None and what == "upscaling":
+        path = upscale.automatic_model(codec)
     if path is None:
-        warnings.append(f"Pick a model for AI {what} in the Enhance settings; skipped it")
+        warnings.append(f"Pick a model for AI {what} in the Generate settings; skipped it")
         return None
     try:
         return upscale.load(str(path))
@@ -215,7 +218,8 @@ def _ai(settings: EnhanceSettings, name: str, what: str, warnings: list[str]):
 
 
 def _normal_layers(model: SourceModel, info: Material | None, img: np.ndarray, all_uv: np.ndarray, green: str,
-                   texel: float, spacing: float, settings: EnhanceSettings, warnings: list[str]) -> dict:
+                   texel: float, spacing: float, settings: EnhanceSettings, warnings: list[str],
+                   codec: str | None = None) -> dict:
     """Slopes from one normal map, cleaned and upsampled as the settings ask, plus its texture-space height."""
     from .textures import upscale
 
@@ -238,16 +242,28 @@ def _normal_layers(model: SourceModel, info: Material | None, img: np.ndarray, a
             work = upscale.normal_map(m, work, rg_only=False)
             steps.append(f"deblocked by {m.path.name}")
     factor = 1
-    if settings.upsample == "ai":
-        m = _ai(settings, settings.ai_model, "upscaling", warnings)
+    base = None
+    if settings.upsample == "ai" and texel > 0 and texel / max(spacing, 1e-12) <= 1.5:
+        steps.append("no AI upscaling needed: the vertices are no closer together than the texels")
+    elif settings.upsample == "ai":
+        m = _ai(settings, settings.ai_model, "upscaling", warnings, codec)
         if m is not None and max(h, w) * m.scale <= MAX_UPSCALED:
+            base = work
             work = upscale.normal_map(m, work)
             factor = m.scale
-            steps.append(f"{m.scale}x by {m.path.name}")
+            picked = f", picked for {codec}" if codec and codec.startswith("BC") else ""
+            steps.append(f"{m.scale}x by {m.path.name}" + ("" if settings.ai_model else f" (included{picked})"))
         elif m is not None:
             warnings.append(f"AI upscaling skipped for {w} x {h}: the result would pass {MAX_UPSCALED} px")
     p, q = hm.normal_map_slopes(work, convention)
     p, q = p - bias[0], q - bias[1]
+    if base is not None:
+        # Keep the model's fine detail but the texture's own broader shape: upscalers drift by a
+        # degree or two and bend broad slopes, which integration would turn into bulges.
+        bp, bq = hm.normal_map_slopes(base, convention)
+        sigma = factor / 2
+        p = hm.resize(bp - bias[0], p.shape, 3) + p - ndimage.gaussian_filter(p, sigma, mode="wrap")
+        q = hm.resize(bq - bias[1], q.shape, 3) + q - ndimage.gaussian_filter(q, sigma, mode="wrap")
     if settings.deblock == "smooth" and factor == 1:
         p, q = hm.smooth_slopes(p, q, 0.7)
         steps.append("smoothed compression blocks")

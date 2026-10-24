@@ -165,8 +165,13 @@ used, so the side stays straight instead of swelling into a bulge. This is on by
   deblocking model), upsampling of the normal map (guided by the albedo's edges, or a 2x/4x
   AI model such as 4x-Normal-RG0 run through ONNX Runtime), specular/metallic mask edges
   as hints, fine relief guessed from the delit albedo, the material's tiled detail normal
-  map, and a strength per material. AI models are not bundled: the user adds `.onnx` files
-  to the models folder.
+  map, and a strength per material. Since 0.5.0 the Windows app includes two AI upscalers,
+  RunDevelopment's 4x-Normal-RG0-BC1 and -BC7 (CC BY 4.0), as `.onnx` files in
+  `engine\models` beside the engine (desktop/models/bundle.py converts them from PyTorch at
+  build time); with no model picked the one trained for the texture's compression is used.
+  The upscaled slopes keep the texture's own broad shape (only the model's detail finer than
+  the original texels is added), and AI upscaling is skipped where the texels are already
+  finer than the vertices. Users can still add their own `.onnx` files to the models folder.
 - **Test bench.** `python -m darkstl.bench` bakes known relief (bumps, plates, engraving,
   cloth) into normal maps (8-bit, simulated BC5 and BC1), maps it onto a panel with a
   mirrored UV seam and reports the error of each method. At 70k vertices integration on the

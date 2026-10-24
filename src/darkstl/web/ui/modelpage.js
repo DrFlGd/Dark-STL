@@ -401,9 +401,11 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
     const path = await pickFile("Add an AI model", ["ONNX models (*.onnx)"]);
     if (path) { try { setAi(await api("ai_model_add", { path })); } catch (e) { setError(msg(e)); } }
   };
+  const included = (key) => key === "ai_model" && ai?.bundled?.length;
   const modelSelect = (id, key, title) => html`<label class="field-block" title=${title}><span>${key === "ai_model" ? "Upscaling model" : "Deblocking model"}</span>
     <select id=${id} value=${s[key]} onChange=${(e) => set({ [key]: e.target.value })}>
-      <option value="">Choose…</option>${(ai?.models || []).map((x) => html`<option key=${x} value=${x}>${x}</option>`)}</select></label>`;
+      <option value="">${included(key) ? "Included (matched to each texture's compression)" : "Choose…"}</option>
+      ${(ai?.models || []).map((x) => html`<option key=${x} value=${x}>${x}</option>`)}</select></label>`;
   const go = async () => {
     setError(null);
     setRun({ progress: 0, message: "Starting" });
@@ -465,11 +467,11 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
             <option value="off">No</option><option value="guided">Guided by the colour texture</option><option value="ai">AI model</option></select></label>
         ${wantsAi ? html`<div class="field-block" id="ai-models">
           ${ai && !ai.available ? html`<p class="insp-note">AI models need ONNX Runtime, which this copy of the app doesn't have.</p>` : null}
-          ${s.upsample === "ai" ? modelSelect("ai-model", "ai_model", "A 2x or 4x model for normal maps, such as 4x-Normal-RG0 (CC0) from openmodeldb.info, in .onnx form.") : null}
+          ${s.upsample === "ai" ? modelSelect("ai-model", "ai_model", "A 2x or 4x model for normal maps. The app includes RunDevelopment's 4x-Normal-RG0 models (CC BY 4.0), picking the one trained for each texture's compression; add your own in .onnx form.") : null}
           ${s.deblock === "ai" ? modelSelect("deblock-model", "deblock_model", "A 1x model that removes DDS block artifacts, in .onnx form.") : null}
           <div class="insp-actions"><button type="button" class="ghost" id="ai-model-add" onClick=${addModel}>Add a model…</button>
             ${ai ? html`<button type="button" class="ghost" id="ai-models-folder" onClick=${() => showInFolder(ai.folder)}>Open models folder</button>` : null}</div>
-          <small class="muted">Models aren't included; check each one's licence before sharing prints made with it.</small></div>` : null}
+          <small class="muted">${s.upsample === "ai" && ai?.bundled?.length ? "Included: 4x-Normal-RG0 by RunDevelopment (CC BY 4.0). " : ""}Without a graphics card it is slow (about half a minute per 512 px texture, several minutes at 2048 px), and it only runs where the vertices are closer together than the texels. Check the licence of models you add before sharing prints made with them.</small></div>` : null}
         <label class="check-row" title="Where the specular or metallic mask changes sharply (a gem in its setting, trim on leather), the surfaces either side are allowed to sit at their own heights.">
           <input type="checkbox" id="edge-hints" checked=${s.edge_hints} onChange=${(e) => set({ edge_hints: e.target.checked })} /><span>Use specular/metallic edges</span></label>
         <${NumberField} id="albedo-detail" label="Detail from the colour texture" value=${s.albedo_detail_mm} step=${0.05} min=${0} max=${5} unit="mm (0: off)"

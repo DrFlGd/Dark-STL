@@ -170,7 +170,8 @@ def test_texture_integration_still_available():
 
 
 def test_missing_ai_model_warns_and_continues(tmp_path):
-    model = _panel_model()
+    # a texture coarser than the vertices, so upscaling is wanted
+    model = bench.source_model(bench.panel_mesh(32), bench.normal_texture(bench.scene_bumps(32)))
     r, h = _heights(model, upsample="ai", ai_model="nothing.onnx", models_dir=tmp_path)
     assert any("AI upscaling skipped" in w for w in r.warnings)
     assert np.abs(h).max() > 0
