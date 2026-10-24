@@ -99,4 +99,5 @@ export const Icon = {
   move: (s) => svg(html`<path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><path d="M9 13h7M13 10l3 3-3 3" />`, s),
   layers: (s) => svg(skinned(html`<path d="M3 8.5l9-4.5 9 4.5-9 4.5z" /><path d="M3 12.5l9 4.5 9-4.5" /><path d="M3 16.5l9 4.5 9-4.5" />`, OWN.layers), s),
   code: (s) => svg(html`<path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16" />`, s),
+  play: (s) => svg(html`<path d="M7 4.5v15l12-7.5z" />`, s),
 };

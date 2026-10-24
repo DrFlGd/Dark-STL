@@ -27,6 +27,46 @@ class FlverMeshOptions:
     uv_channel: int = 0
     weld: bool = True
     fix_orientation: bool = True
+    bone_world: np.ndarray | None = None  # (bones, 4, 4) world matrices of a pose; None = the bind pose
+
+
+def _vertex_bones(flver: Flver, mesh) -> np.ndarray | None:
+    """Global bone index for each vertex and influence (n, 4), -1 where there is none."""
+    n_bones = len(flver.bones)
+    vd = mesh.vertices
+    if n_bones == 0 or vd.bone_indices is None:
+        return None
+    idx = vd.bone_indices.astype(np.int64)
+    if mesh.bone_indices:
+        table = np.asarray(mesh.bone_indices, np.int64)
+        idx = np.where((idx >= 0) & (idx < len(table)), table[np.clip(idx, 0, len(table) - 1)], -1)
+    return np.where((idx >= 0) & (idx < n_bones), idx, -1)
+
+
+def _skin(flver: Flver, mesh, skin: np.ndarray, p: np.ndarray, n: np.ndarray | None):
+    """Linear blend skinning: each vertex follows its bones' matrices, weighted."""
+    bones = _vertex_bones(flver, mesh)
+    if bones is None:
+        return p, n
+    vd = mesh.vertices
+    if vd.bone_weights is not None:
+        w = vd.bone_weights.astype(np.float64)
+    else:  # no weights stored: the first bone alone
+        w = np.zeros(bones.shape, np.float64)
+        w[:, 0] = 1.0
+    w = np.where(bones >= 0, w, 0.0)
+    total = w.sum(axis=1)
+    if not (total > 1e-6).any():
+        return p, n
+    w = np.where(total[:, None] > 1e-6, w / np.where(total > 1e-6, total, 1.0)[:, None], 0.0)
+    w[total <= 1e-6, 0] = 1.0  # vertices with no influence keep the first bone (identity when it has none)
+    mats = skin[np.clip(bones, 0, None)]  # (n, 4, 4, 4)
+    mats = np.where((bones >= 0)[:, :, None, None], mats, np.eye(4))
+    blended = np.einsum("ni,nijk->njk", w, mats)
+    p = np.einsum("nij,nj->ni", blended[:, :3, :3], p) + blended[:, :3, 3]
+    if n is not None:
+        n = np.einsum("nij,nj->ni", blended[:, :3, :3], n)
+    return p, n
 
 
 def _static_vertex_bones(flver: Flver, mesh) -> np.ndarray | None:
@@ -49,7 +89,13 @@ def _static_vertex_bones(flver: Flver, mesh) -> np.ndarray | None:
 
 def flver_to_trimesh(flver: Flver, options: FlverMeshOptions | None = None) -> TriMesh:
     options = options or FlverMeshOptions()
-    world = flver.bone_world_matrices() if (options.apply_bone_transforms and flver.bones) else None
+    posed = bool(flver.bones) and options.bone_world is not None and len(options.bone_world) == len(flver.bones)
+    bind = flver.bone_world_matrices() if ((options.apply_bone_transforms or posed) and flver.bones) else None
+    world = np.asarray(options.bone_world, np.float64) if posed else bind
+    skin = None
+    if posed:
+        # a skinned vertex moves with its bones: out of the bind pose and into the animation's
+        skin = world @ np.linalg.pinv(bind)
 
     positions, normals, faces, uvs, mats, groups = [], [], [], [], [], []
     offset = 0
@@ -62,13 +108,15 @@ def flver_to_trimesh(flver: Flver, options: FlverMeshOptions | None = None) -> T
         vd = mesh.vertices
         p = vd.positions.astype(np.float64)
         n = vd.normals.astype(np.float64) if vd.normals is not None else None
-        if world is not None and not mesh.dynamic:
+        if world is not None and not mesh.dynamic:  # rigid parts sit where their bone is (posed or bind)
             bones = _static_vertex_bones(flver, mesh)
             if bones is not None and (bones >= 0).any():
                 mats4 = np.where((bones >= 0)[:, None, None], world[np.clip(bones, 0, None)], np.eye(4))
                 p = np.einsum("nij,nj->ni", mats4[:, :3, :3], p) + mats4[:, :3, 3]
                 if n is not None:
                     n = np.einsum("nij,nj->ni", mats4[:, :3, :3], n)
+        elif skin is not None and mesh.dynamic:
+            p, n = _skin(flver, mesh, skin, p, n)
         if options.uv_channel < len(vd.uvs):
             uv = vd.uvs[options.uv_channel]
         elif vd.uvs:

@@ -137,10 +137,20 @@ class FromSoftwareImporter(Importer):
                          f"({len(f.bones)} bone{'s' if len(f.bones) != 1 else ''}). FromSoftware uses these for "
                          "variants that borrow another model; this file only carries textures.")
         game = profiles.game_from_archive_path(asset.inner_name) or profiles.detect_game(Path(path).parent)
+        animations = files.find_animations(Path(path), asset.name, asset.binder) if f.bones else None
 
         def build(options: MeshOptions):
+            bone_world = None
+            if options.pose is not None:
+                if animations is None:
+                    raise FormatError(f"{asset.name} has no animations to pose it with")
+                anim, frame = options.pose
+                bone_world = animations.pose_bones([b.name for b in f.bones], np.array([b.parent for b in f.bones]),
+                                                   np.array([b.local_matrix() for b in f.bones]), anim,
+                                                   animations.clamp(anim, frame))
             return flver_to_trimesh(f, FlverMeshOptions(include_meshes=options.parts,
-                                                        apply_bone_transforms=options.flags.get("bones", True)))
+                                                        apply_bone_transforms=options.flags.get("bones", True),
+                                                        bone_world=bone_world))
 
         return SourceModel(
             name=asset.name, path=Path(path), importer=self.key, build=build,
@@ -150,7 +160,7 @@ class FromSoftwareImporter(Importer):
             options=[BuildOption("bones", "Place rigid parts using their bones", True,
                                  "Moves non-skinned meshes (blades, guards, armour plates) to where their bone "
                                  "holds them. Turn off if parts end up out of place.")],
-            info=flver_summary(f), notes=notes,
+            info=flver_summary(f), notes=notes, animations=animations,
         )
 
     def describe(self, path: Path) -> list[str] | None:

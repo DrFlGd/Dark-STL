@@ -76,6 +76,14 @@ def cmd_info(args) -> int:
             print("\n".join("  " + line for line in model.info))
         for i, part in enumerate(model.parts):
             print(f"  part {i}: {part.name}, {part.vertices:,} vertices, {part.triangles:,} triangles")
+        if model.animations is not None:
+            try:
+                infos = model.animations.list()
+                print(f"  {len(infos)} animations (use --pose NAME@FRAME):")
+                for a in infos:
+                    print(f"    {a.name}: {a.frames} frames, {a.duration:.2f} s")
+            except FormatError as exc:
+                print(f"  animations could not be read: {exc}")
         for i, mat in enumerate(model.materials):
             roles = ", ".join(f"{role} {key}" for role, key in
                               (("albedo", mat.albedo), ("normal", mat.normal), ("height", mat.height)) if key)
@@ -125,7 +133,11 @@ def _mesh_options(args):
         flags[key.strip()] = value.strip().lower() not in ("0", "off", "false", "no")
     if args.no_bones:
         flags["bones"] = False
-    return MeshOptions(parts=_parse_meshes(args.parts), flags=flags)
+    pose = None
+    if getattr(args, "pose", None):
+        name, _, frame = args.pose.rpartition("@")
+        pose = (name or args.pose, int(frame) if name and frame else 0)
+    return MeshOptions(parts=_parse_meshes(args.parts), flags=flags, pose=pose)
 
 
 def _open(args):
@@ -257,6 +269,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--option", action="append", metavar="KEY=on|off",
                         help="importer option (see 'info'), e.g. --option mm=on for an OBJ in millimetres")
         sp.add_argument("--no-bones", action="store_true", help="same as --option bones=off")
+        sp.add_argument("--pose", metavar="ANIMATION@FRAME",
+                        help="pose the model with an animation from its anibnd (see 'info'), e.g. a000_003000@12")
         sp.add_argument("--scale", type=float, default=1000.0, help="unit scale (default 1000: metres -> mm)")
         sp.add_argument("--ascii", action="store_true", help="ASCII STL")
         sp.add_argument("--textures", action="append", help="extra folder to search for textures")

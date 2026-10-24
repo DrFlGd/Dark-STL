@@ -58,7 +58,9 @@ the tests call directly.
   (`thumbnails.py`: the model from the 3D view's angle, coloured from its albedo texture, long
   weapons laid corner to corner) and cached by file date, a few at a time so browsing stays quick.
 - **The model page.** The 3D view with the game's textures (or clay, or wireframe), and the
-  inspector's Model (parts, importer options, size, file), Textures, Generate and Export tabs.
+  inspector's Model (parts, importer options, size, file), Textures, Pose (an animation and a
+  frame, with a slider, stepping and playback; only for models with animations), Generate and
+  Export tabs.
   Meshes travel to the page in a packed binary form (`app/meshpack.py`) split at UV seams and
   grouped by material.
 - **Safety.** The server listens on 127.0.0.1 only, checks the Host header (against DNS
@@ -72,6 +74,7 @@ the tests call directly.
 | Archives | BND3, BND4, BXF3/BXF4 (`.xxxbhd` + `.xxxbdt`) | Nested archives and `.dcx` members are opened on demand. |
 | Models | FLVER2 (version 0x2000C to 0x2001A) | Every vertex layout the PC and PS4 releases use, including the packed ones (PS3 edge compression is not supported); triangle strips and lists; LOD and motion-blur face sets are skipped; rigid parts are placed by their bones. |
 | Textures | TPF, DDS | BC1 to BC7 and the uncompressed formats. Bloodborne's PS4 textures have no DDS header and are tiled; they are rebuilt into DDS and untiled. |
+| Animations | Havok HKX: packfiles (hk_2010 32-bit, hk_2014 64-bit) and tagfiles (2015 onwards, with Elden Ring's `.compendium`) | `Skeleton.HKX` and the `aXXX_XXXXXX.hkx` animations in a model's `.anibnd` (plus the `_divXX` / `_aXX` split archives and unpacked folders). Spline-compressed animations are decoded (ThreeComp40/48, Polar32 and uncompressed rotations); interleaved ones read as they are. |
 
 Textures are looked up in this order: inside the model's own archive, in a sibling
 `.texbnd` / `_h.texbnd` / `.tpf` (characters and objects), in unpacked folders next to the model,
@@ -79,6 +82,15 @@ and finally in any extra texture folders you add (map pieces share `mXX_XX_XX_XX
 Each material's maps are taken from the texture paths stored in the FLVER; when those are
 empty (Elden Ring keeps them in MATBIN files) the suffix convention is used instead
 (`_a` albedo, `_n` normal, `_h` height).
+
+**Posing.** A model with an anibnd beside it can be held at any frame of any of its
+animations (`animation.py`). The FLVER's bones are matched to the Havok skeleton by name; the
+skeleton's bones take the animation's local transforms, the FLVER's extra bones (mesh, dummy
+and cloth bones) keep their bind-pose ones under their parents. Skinned vertices follow their
+bones' matrices by weight (`world · bind⁻¹`), rigid parts sit where their bone is. The pose is
+part of the mesh options, so Generate and Export, the cache of generated models and the
+previews all take it into account without knowing about animations. Root motion
+(`extractedMotion`) is ignored: the model stays where its bind pose puts it.
 
 The library groups models by their FromSoftware naming:
 
@@ -176,10 +188,12 @@ Units can be mm, cm, m or inches; the game's own scale is metres.
 src/darkstl/
   model.py      SourceModel: what every importer produces and everything else uses
   importers/    base.py (the Importer interface) and the registry
-    fromsoft/   formats/ (binary reader, DCX + Oodle, BND3/BND4/BXF, TPF, PS4 untiling, FLVER2),
-                games.py (per-game profiles), files.py (finds a model and its textures on disk),
-                materials.py (albedo / normal / height per material), mesh.py (FLVER -> mesh),
-                catalog.py (classifies models by FromSoftware naming)
+    fromsoft/   formats/ (binary reader, DCX + Oodle, BND3/BND4/BXF, TPF, PS4 untiling, FLVER2,
+                Havok HKX packfiles and tagfiles), games.py (per-game profiles), files.py (finds
+                a model, its textures and its animations on disk), materials.py (albedo / normal /
+                height per material), mesh.py (FLVER -> mesh, skinned to a pose), animation.py
+                (skeletons, spline-compressed animations, poses), catalog.py (classifies models
+                by FromSoftware naming)
     wavefront.py  OBJ + MTL
   geometry/     TriMesh, subdivision, isotropic remesh, UV seam matching, closest-point queries,
                 displacement
@@ -226,6 +240,9 @@ differs:
       recognised as Bloodborne
 - [ ] Sekiro and Elden Ring: same set with Oodle, and Elden Ring's material lookup
 - [ ] Rigid parts placed by bones match the in-game pose
+- [x] Characters posed by their animations: Bloodborne's `c1120` (hk_2014 packfiles) at any
+      frame; Dark Souls Remastered's `c2240.hkx` skeleton (tagfile) reads. Still to check on
+      real files: Dark Souls PTDE (hk_2010), Dark Souls III, Sekiro and Elden Ring (compendium)
 - [ ] Compare against the before/after example: same weapon, same look
 
 ### Phase 2: print-ready output
@@ -261,6 +278,10 @@ differs:
 - Of the real game files, Dark Souls Remastered weapons and Bloodborne characters, objects and
   armour have been loaded so far (Phase 1).
 - Output is not guaranteed watertight; most slicers repair it, but Phase 2 adds a proper fix.
-- Skinned meshes (characters, armor) are shown in their bind pose, which is a T or A pose.
+- Without an anibnd beside the model, skinned meshes (characters, armor) are shown in their
+  bind pose, which is a T or A pose. Armour pieces take the player's animations
+  (`c0000.anibnd`) only when that archive is copied next to them.
+- Animations that use root motion are shown in place; cloth simulated in the game keeps its
+  bind pose.
 - Isotropic remeshing needs the optional `pyacvd` package; the app falls back to subdivision
   without it. The Windows app includes it, with only the parts of VTK it uses.

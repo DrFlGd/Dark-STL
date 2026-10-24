@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Protocol
 
 import numpy as np
 
@@ -89,6 +89,7 @@ class BuildOption:
 class MeshOptions:
     parts: set[int] | None = None  # part indices to include (None = all)
     flags: dict[str, bool] = field(default_factory=dict)  # BuildOption values by key
+    pose: tuple[str, int] | None = None  # (animation name, frame) to pose the model in; None = bind pose
 
 
 @dataclass
@@ -106,12 +107,24 @@ class SourceModel:
     options: list[BuildOption] = field(default_factory=list)
     info: list[str] = field(default_factory=list)  # description lines (format, version, counts)
     notes: list[str] = field(default_factory=list)  # things the user should know
+    animations: Animations | None = field(default=None, repr=False)  # how the model can be posed, if it can
 
     def build_mesh(self, options: MeshOptions | None = None) -> TriMesh:
         options = options or MeshOptions()
         flags = {o.key: o.default for o in self.options}
         flags.update(options.flags)
-        return self.build(MeshOptions(options.parts, flags))
+        return self.build(MeshOptions(options.parts, flags, options.pose))
+
+
+class Animations(Protocol):
+    """What an importer offers for posing a model: a list of animations and their frame counts.
+
+    ``MeshOptions.pose`` names one of them and a frame; the importer's ``build`` does the posing.
+    """
+
+    def list(self) -> list: ...  # objects with .name, .frames, .duration, .fps and .as_dict()
+
+    def info(self, name: str): ...
 
 
 CATEGORY_ORDER = ["Weapons", "Armor", "Characters", "Faces & Hair", "Objects", "Map Pieces", "Models", "Other"]

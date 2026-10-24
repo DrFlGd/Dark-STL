@@ -154,7 +154,8 @@ class Session:
 
 
 def _options_key(options: MeshOptions) -> tuple:
-    return (None if options.parts is None else tuple(sorted(options.parts)), tuple(sorted(options.flags.items())))
+    return (None if options.parts is None else tuple(sorted(options.parts)), tuple(sorted(options.flags.items())),
+            options.pose)
 
 
 def generated_key(session: Session, options: MeshOptions, settings: dict) -> tuple:
@@ -175,7 +176,24 @@ def _file_id(path: Path) -> tuple:
 def mesh_options(args: dict) -> MeshOptions:
     parts = args.get("parts")
     flags = args.get("flags") or {}
-    return MeshOptions(None if parts is None else {int(p) for p in parts}, {str(k): bool(v) for k, v in flags.items()})
+    return MeshOptions(None if parts is None else {int(p) for p in parts}, {str(k): bool(v) for k, v in flags.items()},
+                       parse_pose(args.get("pose")))
+
+
+def parse_pose(value) -> tuple[str, int] | None:
+    """A pose as the page sends it: ``["a000_003000", 12]`` in JSON or ``a000_003000@12`` in a URL."""
+    if value is None or value == "" or value == []:
+        return None
+    if isinstance(value, str):
+        name, _, frame = value.rpartition("@")
+        if not name:
+            raise AppError("A pose is written as animation@frame.")
+        value = [name, frame]
+    try:
+        name, frame = value
+        return str(name), int(frame)
+    except (TypeError, ValueError):
+        raise AppError("A pose is an animation name and a frame number.") from None
 
 
 def entry_json(e: CatalogEntry) -> dict:
@@ -194,7 +212,7 @@ def model_json(m: SourceModel, mesh: TriMesh) -> dict:
                        "specular": x.specular, "detail_normal": x.detail_normal,
                        "guessed": x.guessed, "details": x.details} for x in m.materials],
         "textures": [{"key": k, "name": t.name, "source": t.source} for k, t in sorted(m.textures.items())],
-        "info": m.info, "notes": m.notes, "stats": mesh_stats(mesh),
+        "info": m.info, "notes": m.notes, "stats": mesh_stats(mesh), "animated": m.animations is not None,
     }
 
 
@@ -523,6 +541,19 @@ class Service:
     def cmd_model_stats(self, args: dict) -> dict:
         session = self._session(args)
         return mesh_stats(session.build(mesh_options(args)))
+
+    def cmd_model_animations(self, args: dict) -> dict:
+        """The animations that can pose the model: name, frames, duration and frame rate of each."""
+        session = self._session(args)
+        anims = session.model.animations
+        if anims is None:
+            return {"animations": [], "bones": 0}
+        try:
+            infos = anims.list()
+            bones = len(anims.skeleton)
+        except Exception as exc:  # noqa: BLE001 - a broken archive is reported, not fatal
+            raise AppError(f"The animations couldn't be read: {exc}") from exc
+        return {"animations": [i.as_dict() for i in infos], "bones": bones}
 
     def cmd_model_mesh(self, args: dict) -> bytes:
         session = self._session(args)
