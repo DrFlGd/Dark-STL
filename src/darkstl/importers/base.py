@@ -8,7 +8,7 @@ from typing import Callable
 from ..collect import RelatedFile
 from ..model import CatalogEntry, SourceModel
 
-ScanProgress = Callable[[int, str], None]
+ScanProgress = Callable[[int, str], None]  # (files looked at, the file now); a count below 0: just the text
 
 
 class Importer:
@@ -23,6 +23,7 @@ class Importer:
     name = ""
     file_filter = ""  # for open-file dialogs, e.g. "Models (*.flver *.partsbnd)"
     games: tuple[str, ...] = ()  # games this importer knows, offered when adding a folder
+    cache: Path | None = None  # a folder of its own in the app's cache, for what scans find (see set_cache_folder)
 
     def detect_game(self, folder: Path) -> str | None:
         """Name of the game a folder of extracted files belongs to, if this importer recognises it."""

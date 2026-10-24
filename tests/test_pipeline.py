@@ -125,6 +125,29 @@ def test_enhance_end_to_end(weapon_dir, method):
     assert rise > 0  # outward along +Z (the plane's normal)
 
 
+@pytest.mark.parametrize("method", ["subdivide", "isotropic"])
+def test_the_two_steps_run_apart(weapon_dir, method):
+    """Step 1's evened-out mesh, kept, gives the same model as both steps run together, for any step-2
+    settings, and isn't changed by being displaced."""
+    if method == "isotropic" and not acvd_available():
+        pytest.skip("pyacvd not installed")
+    model = open_model(weapon_dir / "parts" / "wp_a_0300.partsbnd.dcx")
+    settings = pipeline.EnhanceSettings(target_vertices=8_000, method=method)
+    handed = []
+    whole = pipeline.enhance(model, settings, on_mesh=handed.append)
+    (mesh,) = handed
+    before = mesh.resampled.vertices.copy()
+    steps = []
+    again = pipeline.enhance(model, settings, lambda f, m: steps.append(m), mesh=mesh)
+    # the same up to rounding: the height solver may add up in another order from one run to the next
+    assert np.allclose(again.displaced.vertices, whole.displaced.vertices, rtol=1e-6, atol=1e-9)
+    assert steps[0].startswith("Using the evened-out mesh made before") and "Building mesh" not in steps
+    stronger = pipeline.enhance(model, pipeline.EnhanceSettings(target_vertices=8_000, method=method, strength=3.0), mesh=mesh)
+    fresh = pipeline.enhance(model, pipeline.EnhanceSettings(target_vertices=8_000, method=method, strength=3.0))
+    assert np.allclose(stronger.displaced.vertices, fresh.displaced.vertices, rtol=1e-6, atol=1e-9)
+    assert np.array_equal(mesh.resampled.vertices, before)
+
+
 def test_enhance_without_textures_still_resamples(weapon_dir):
     model = open_model(weapon_dir / "parts" / "wp_a_0300.partsbnd.dcx")
     model.textures.clear()

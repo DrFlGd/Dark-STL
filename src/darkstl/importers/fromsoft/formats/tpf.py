@@ -137,3 +137,52 @@ def read_tpf(data: bytes) -> TPF:
         name = br.get_utf16(name_offset) if encoding == 1 else br.get_shift_jis(name_offset)
         textures.append(TPFTexture(name, fmt, ttype, mips, flags1, payload, platform, width, height, dxgi))
     return TPF(platform, encoding, textures)
+
+
+def texture_names(data: bytes) -> list[str]:
+    """The names of a TPF's textures, read from its header alone: ``data`` may be just the start of the
+    file (for indexing a game's textures without reading them), as long as it reaches past the names.
+    Raises FormatError when it doesn't."""
+    br = BinaryReader(data)
+    br.assert_ascii("TPF\0")
+    platform = data[0x0C]
+    br.big_endian = platform in (PLATFORM_X360, PLATFORM_PS3)
+    br.i32()  # data size
+    count = br.i32()
+    br.skip(1)  # platform
+    flag2 = br.u8()
+    encoding = br.u8()
+    br.skip(1)
+    if not 0 <= count < 100_000:
+        raise FormatError(f"Bad TPF texture count {count}")
+    names = []
+    for _ in range(count):
+        br.skip(12 if platform == PLATFORM_PC else 16)  # offset, size, format bytes (and width, height)
+        if platform == PLATFORM_X360 or (platform == PLATFORM_PS3 and flag2 == 0):
+            br.skip(4)
+        elif platform == PLATFORM_PS3:
+            br.skip(8)
+        elif platform in (PLATFORM_PS4, PLATFORM_XBONE):
+            br.skip(8)
+        name_offset = br.u32()
+        has_float_struct = br.i32() == 1
+        if platform in (PLATFORM_PS4, PLATFORM_XBONE):
+            br.skip(4)
+        if has_float_struct:
+            br.i32()
+            length = br.i32()
+            if length < 0 or length % 4:
+                raise FormatError(f"Bad TPF float struct length {length}")
+            br.skip(length)
+        end = name_offset
+        if encoding == 1:
+            while end + 1 < len(data) and (data[end] or data[end + 1]):
+                end += 2
+            if end + 1 >= len(data):
+                raise FormatError("TPF names run past the data read")
+            names.append(br.get_utf16(name_offset))
+        else:
+            if data.find(b"\0", name_offset) < 0:
+                raise FormatError("TPF names run past the data read")
+            names.append(br.get_shift_jis(name_offset))
+    return names

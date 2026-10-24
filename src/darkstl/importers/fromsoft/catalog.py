@@ -87,12 +87,15 @@ def iter_model_files(root: Path) -> Iterable[Path]:
 
 
 def scan(root: str | os.PathLike, game: str | None = None,
-         progress: Callable[[int, str], None] | None = None) -> list[CatalogEntry]:
-    """Find every model under ``root``. Packed and unpacked copies of one model are listed once."""
+         progress: Callable[[int, str], None] | None = None,
+         paths: Iterable[Path] | None = None) -> list[CatalogEntry]:
+    """Find every model under ``root`` (or among ``paths``, its files when they're listed already).
+    Packed and unpacked copies of one model are listed once."""
     root = Path(root)
     game = game or detect_game(root) or root.name
     by_stem: dict[str, CatalogEntry] = {}
-    for i, path in enumerate(iter_model_files(root)):
+    models = iter_model_files(root) if paths is None else (p for p in paths if MODEL_FILE_RX.search(p.name))
+    for i, path in enumerate(models):
         name = path.name
         packed = not strip_dcx(name).lower().endswith((".flver", ".flv"))
         stem = file_stem(name)

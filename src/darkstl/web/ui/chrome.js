@@ -4,7 +4,7 @@ import { html, useEffect, useState } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui, setPref, cycleTheme, resolvedTheme, nextTheme, THEMES } from "./state.js";
 import { Icon } from "./icons.js";
-import { plural } from "./api.js";
+import { plural, stopJob } from "./api.js";
 
 const themeName = (t) => (t === "system" ? "System" : THEMES.find(([v]) => v === t)?.[1].replace(/ \(.*\)$/, "") || t);
 
@@ -76,6 +76,15 @@ function Elapsed({ since }) {
   return html`${Math.round((Date.now() - since) / 1000)} s`;
 }
 
+/** A job's line: what it is, how far along, for how long. */
+function jobText(j) {
+  if (j.stopping) return html`Stopping ${j.label.charAt(0).toLowerCase() + j.label.slice(1)}…`;
+  return html`${j.label}${j.progress > 0 && j.progress < 1 ? ` ${Math.round(j.progress * 100)}%` : "…"} <${Elapsed} since=${j.started} />`;
+}
+
+// The status bar's right end shows the work going on. Clicking it stops that work (when it can be
+// stopped: generating, exporting, scanning, collecting); with more than one thing running, "N running"
+// lists them all, each with its own Stop.
 export function StatusBar() {
   const s = useStore(ui, (st) => ({ jobs: st.jobs, ready: st.ready, overview: st.overview }));
   const [open, setOpen] = useState(false);
@@ -83,15 +92,21 @@ export function StatusBar() {
   const latest = s.jobs[s.jobs.length - 1];
   const ov = s.overview;
   const games = ov?.games?.length || 0;
+  const canStop = latest?.stoppable && !latest.stopping;
   return html`<div class="statusbar-inner">
     <span class="status-library" id="status-library">${ov ? (games ? `${plural(games, "game")} · ${plural(ov.total, "model")}` : "No game folders yet") : "Reading the library…"}</span>
     <span class="status-jobs">
-      ${latest ? html`<button type="button" class="status-job" aria-expanded=${open ? "true" : "false"} title="Show what's running" onClick=${() => setOpen(!open)}>
-        <span class="dot busy"></span>${latest.label}${latest.progress > 0 && latest.progress < 1 ? ` ${Math.round(latest.progress * 100)}%` : "…"} <${Elapsed} since=${latest.started} />${s.jobs.length > 1 ? ` · ${s.jobs.length} running` : ""}</button>`
+      ${latest ? html`<button type="button" class=${`status-job${canStop ? " can-stop" : ""}`} id="status-job" data-job=${latest.id}
+          aria-expanded=${canStop ? null : open ? "true" : "false"}
+          title=${canStop ? `Click to stop: ${latest.label}` : latest.stopping ? "Stopping at its next step" : "Show what's running"}
+          onClick=${() => (canStop ? stopJob(latest.id) : setOpen(!open))}>
+        <span class="dot busy"></span><span class="status-job-text">${jobText(latest)}</span>${canStop ? html`<span class="status-stop" aria-hidden="true">${Icon.close(12)} Stop</span>` : null}</button>
+        ${s.jobs.length > 1 ? html`<button type="button" class="status-job status-more" id="status-more" aria-expanded=${open ? "true" : "false"} title="Show what's running" onClick=${() => setOpen(!open)}>· ${s.jobs.length} running</button>` : null}`
         : ov?.scanning ? html`<span class="status-idle"><span class="dot busy"></span>Reading game folders…</span>`
         : html`<span class="status-idle"><span class="dot"></span>Ready</span>`}
       ${open && s.jobs.length ? html`<div class="jobs-panel" role="dialog" aria-label="Background work">
-        ${s.jobs.map((j) => html`<div class="job" key=${j.id}><span>${j.label}${j.message ? html`<br /><small class="muted">${j.message}</small>` : null}</span><span class="muted"><${Elapsed} since=${j.started} /></span></div>`)}
+        ${s.jobs.map((j) => html`<div class="job" key=${j.id} data-job=${j.id}><span>${j.stopping ? `Stopping ${j.label}…` : j.label}${j.message ? html`<br /><small class="muted">${j.message}</small>` : null}</span><span class="muted"><${Elapsed} since=${j.started} /></span>
+          ${j.stoppable && !j.stopping ? html`<button type="button" class="ghost compact job-stop" title=${`Stop: ${j.label}`} onClick=${() => stopJob(j.id)}>${Icon.close(12)} Stop</button>` : null}</div>`)}
       </div>` : null}
     </span>
   </div>`;

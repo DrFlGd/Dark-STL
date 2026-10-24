@@ -2,12 +2,14 @@
 // right-click menu, a game's ⋯ menu and Settings.
 import { ui } from "./state.js";
 import { api, followJob, loadOverview, showInFolder, toast, plural } from "./api.js";
+import { forgetThumbs } from "./thumbs.js";
 
 export async function rescanFolder(path) {
   try {
     const { job } = await api("folder_rescan", { path });
     loadOverview();
     const r = await followJob(job, `Rescanning ${path.split(/[\\/]/).pop()}`);
+    forgetThumbs(); // the folder's previews are drawn again
     toast(`Found ${plural(r.count, "model")} in ${r.path}`);
   } catch (e) {
     toast(String(e.message || e));

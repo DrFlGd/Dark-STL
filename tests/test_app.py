@@ -182,6 +182,43 @@ def test_generated_models_are_kept(service, monkeypatch):
     assert not service.generated
 
 
+def test_displacement_settings_reuse_the_evened_out_mesh(service, monkeypatch):
+    from darkstl import pipeline
+
+    made = []
+    resample = pipeline.resample
+    monkeypatch.setattr(pipeline, "resample", lambda *a, **k: made.append(1) or resample(*a, **k))
+    item = service.call("models_query", {"game": "Dark Souls III", "category": "Weapons"})["items"][0]
+    m = service.call("model_open", {"id": item["id"]})
+
+    def generate(**settings):
+        return wait(service, service.call("enhance", {"sid": m["sid"], "settings": settings})["job"])
+
+    def kept(**settings):
+        return service.call("enhance_mesh", {"sid": m["sid"], "settings": settings})
+
+    assert kept(target_vertices=4000) == {"kept": False, "vertices": 0, "triangles": 0}
+    a = generate(target_vertices=4000, strength=1.0)
+    assert len(made) == 1 and not a["mesh_reused"]
+    assert kept(target_vertices=4000, strength=3.0)["vertices"] == a["stats"]["vertices"]
+    # step 2 only: the same mesh, displaced again
+    b = generate(target_vertices=4000, strength=3.0)
+    assert len(made) == 1 and b["mesh_reused"] and b["id"] != a["id"]
+    assert b["stats"]["vertices"] == a["stats"]["vertices"] and b["stats"]["faces"] == a["stats"]["faces"]
+    assert b["stats"]["max_displacement_mm"] > a["stats"]["max_displacement_mm"]
+    flat = generate(target_vertices=4000, source="none")
+    assert len(made) == 1 and flat["mesh_reused"] and flat["stats"]["max_displacement_mm"] == 0
+    # a step-1 setting: made again
+    assert not kept(target_vertices=4000, smooth=False)["kept"]
+    assert not generate(target_vertices=4000, smooth=False)["mesh_reused"] and len(made) == 2
+    # two are kept: the oldest goes
+    generate(target_vertices=5000)
+    assert len(made) == 3 and not kept(target_vertices=4000)["kept"]
+    # other texture folders let go of the meshes too (the model is read again)
+    service.call("settings_set", {"texture_dirs": []})
+    assert not service.meshes
+
+
 def test_a_model_file_can_be_opened_on_its_own(home, weapon_dir):  # noqa: F811
     s = make_service(home)
     path = weapon_dir / "chr" / "c1100.chrbnd.dcx"
@@ -301,3 +338,40 @@ def test_without_a_web_view_the_page_opens_in_the_browser(home, monkeypatch):
         port = s.getsockname()[1]
     assert desktop.run(port=port) == 0
     assert served == [(f"http://127.0.0.1:{port}/", 200)]
+
+
+def test_generating_can_be_stopped(service, monkeypatch):
+    import threading
+
+    from darkstl import pipeline
+
+    started, release = threading.Event(), threading.Event()
+
+    def slow(model, settings, progress, **k):
+        progress(0.1, "Building mesh")
+        started.set()
+        release.wait(10)
+        progress(0.5, "Subdividing")  # the next step: where a stopped job ends
+        raise AssertionError("should have stopped")
+
+    monkeypatch.setattr(pipeline, "enhance", slow)
+    item = service.call("models_query", {"game": "Dark Souls III", "category": "Weapons"})["items"][0]
+    m = service.call("model_open", {"id": item["id"]})
+    job_id = service.call("enhance", {"sid": m["sid"], "settings": {"target_vertices": 4000}})["job"]
+    assert started.wait(10)
+    job = service.call("job", {"id": job_id})
+    assert job["stoppable"] and job["state"] == "running"
+    stopped = service.call("job_stop", {"id": job_id})
+    assert stopped["stopping"] and stopped["message"] == "Stopping…"
+    release.set()
+    end = time.time() + 10
+    while service.call("job", {"id": job_id})["state"] == "running" and time.time() < end:
+        time.sleep(0.02)
+    job = service.call("job", {"id": job_id})
+    assert job["state"] == "stopped" and not job["stoppable"]
+    assert service.call("model_open", {"id": item["id"]})["enhanced"] is None  # nothing was kept
+    # the start-up read of the game folders can't be stopped (the library would be half read)
+    reading = service.load_folders()
+    with pytest.raises(AppError, match="can't be stopped"):
+        service.call("job_stop", {"id": reading.id})
+    wait(service, reading.id)

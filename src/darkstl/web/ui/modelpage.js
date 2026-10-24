@@ -10,7 +10,7 @@ import { ui, setPref, resolvedTheme } from "./state.js";
 import { routeHash, placeRoute, modelOf } from "./context.js";
 import { Icon } from "./icons.js";
 import { collectModelItem } from "./games.js";
-import { api, binUrl, info, plural, bytesText, followJob, toast, showInFolder, pickFolder, pickFile } from "./api.js";
+import { api, binUrl, info, plural, bytesText, followJob, stopJob, toast, showInFolder, pickFolder, pickFile } from "./api.js";
 import { CommandBar } from "./layout.js";
 import { Inspector, useWidth } from "./inspector.js";
 import { Viewer } from "../viewer.js";
@@ -359,11 +359,15 @@ function PoseTab({ m, pose, setPose, busy, call }) {
   </div>`;
 }
 
-/** A number box saved to the Generate settings. */
+/** A number box saved to the Generate settings. What's typed is kept while the tab draws again
+ * (a progress update, a toast going) until it's saved on leaving the box. */
 function NumberField({ id, label, value, step, min, max, unit, title, onChange }) {
+  const [typed, setTyped] = useState(null); // { over: the value it was typed over, text }
+  const shown = typed && typed.over === value ? typed.text : value;
   return html`<label class="field-block" title=${title}><span>${label}</span>
-    <span class="field-row"><input type="number" id=${id} value=${value} step=${step} min=${min} max=${max}
-      onChange=${(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onChange(v); }} />${unit ? html`<span class="muted unit">${unit}</span>` : null}</span></label>`;
+    <span class="field-row"><input type="number" id=${id} value=${shown} step=${step} min=${min} max=${max}
+      onInput=${(e) => setTyped({ over: value, text: e.target.value })}
+      onChange=${(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onChange(v); else setTyped(null); }} />${unit ? html`<span class="muted unit">${unit}</span>` : null}</span></label>`;
 }
 
 /** Generate: even out the vertices to the count chosen, then displace them by the detail in the textures. */
@@ -378,6 +382,14 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
   const [ai, setAi] = useState(null); // { folder, models, available } once asked for
   const [run, setRun] = useState(null); // { progress, message } while running
   const [error, setError] = useState(null);
+  const [meshKept, setMeshKept] = useState(null); // { kept, vertices } for step 1's settings as they are now
+  const meshDeps = [args.key, s.target_vertices, s.method, s.smooth, result?.rev, !!run]; // again after each Generate, stopped ones too
+  useEffect(() => {
+    let live = true;
+    call("enhance_mesh", { sid: m.sid, ...args.json, settings: { target_vertices: s.target_vertices, method: s.method, smooth: s.smooth } })
+      .then((r) => live && setMeshKept(r), () => live && setMeshKept(null));
+    return () => { live = false; };
+  }, meshDeps);
   const methods = info().methods || [];
   const have = m.textures.map((t) => t.key);
   const detailOf = (mat, i) => (i in over ? over[i] : (s.source === "height" ? mat.height : mat.normal) || "");
@@ -404,10 +416,12 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
       const now = { ...ENHANCE, ...(ui.get().enhance || {}) };
       const { job } = await call("enhance", { sid: m.sid, ...args.json, settings: { ...now, max_displacement_mm: now.max_displacement_mm || null,
         texture_overrides: overrides, material_strength: strengthsNow.current } });
-      const r = await followJob(job, `Generating ${m.entry?.label || variantName(m.variant) || m.name}`, (j) => setRun({ progress: j.progress, message: j.message }));
+      setRun({ progress: 0, message: "Starting", job });
+      const r = await followJob(job, `Generating ${m.entry?.label || variantName(m.variant) || m.name}`, (j) => setRun({ progress: j.progress, message: j.message, job, stopping: j.stopping }));
       onDone(r);
-      toast(r.kept ? "Already generated with these settings" : `Generated: ${plural(r.stats.vertices, "vertex", "vertices")}`);
-    } catch (e) { setError(msg(e)); }
+      toast(r.kept ? "Already generated with these settings"
+        : `Generated: ${plural(r.stats.vertices, "vertex", "vertices")}${r.mesh_reused ? " (step 2 only: the evened-out mesh was kept)" : ""}`);
+    } catch (e) { if (e.stopped) toast("Stopped generating"); else setError(msg(e)); }
     setRun(null);
   };
   return html`<div class="tab-pad" id="enhance-tab">
@@ -419,6 +433,7 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
         ${methods.map((x) => html`<option key=${x.id} value=${x.id} disabled=${!x.available}>${x.label}${x.available ? "" : ` (${x.missing || "not installed"})`}</option>`)}</select></label>
       <label class="check-row" title="New vertices follow the curve the model's shading describes, so low-poly cylinders and blades print round instead of faceted. Flat-shaded parts stay flat.">
         <input type="checkbox" id="smooth" checked=${s.smooth} onChange=${(e) => set({ smooth: e.target.checked })} /><span>Round off curved surfaces</span></label>
+      ${meshKept?.kept ? html`<p class="insp-note" id="mesh-kept">${Icon.check(14)} Evened out already (${num(meshKept.vertices)} vertices): changing only step 2 starts from this mesh, so Generate skips step 1.</p>` : null}
     </section>
     <section class="insp-section"><h3>2 · Raise the texture detail</h3>
       <label class="field-block"><span>From</span><select id="source" value=${s.source} onChange=${(e) => { setOver({}); set({ source: e.target.value }); }}>
@@ -472,7 +487,8 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
     <div class="insp-actions enhance-go">
       <button type="button" class="primary" id="enhance-run" disabled=${!!run || !stats.triangles} onClick=${go}>${run ? "Generating…" : result ? "Generate again" : "Generate"}</button>
     </div>
-    ${run ? html`<div class="job-progress" id="enhance-progress"><progress max="1" value=${run.progress}></progress><small class="muted">${run.message}</small></div>` : null}
+    ${run ? html`<div class="job-progress" id="enhance-progress"><progress max="1" value=${run.progress}></progress><small class="muted">${run.message}</small>
+      ${run.job ? html`<button type="button" class="ghost compact" id="enhance-stop" disabled=${!!run.stopping} title="Stop generating; the model shown stays as it is" onClick=${() => { setRun({ ...run, stopping: true, message: "Stopping…" }); stopJob(run.job); }}>${run.stopping ? "Stopping…" : "Stop"}</button>` : null}</div>` : null}
     ${error ? html`<p class="warn-note" role="alert" id="enhance-error">${error}</p>` : null}
     ${result ? html`<section class="insp-section" id="enhance-result"><h3>Enhanced</h3>
       ${stale ? html`<p class="insp-note">Made with other parts, options or pose than those chosen now: generate again to include the change.</p>` : null}
@@ -513,7 +529,7 @@ function ExportTab({ m, args, result, which: shownWhich, pose, call }) {
       const { job } = await call("export", { sid: m.sid, which, ...args.json, format: o.format, units: o.units, textures: o.textures, folder: folder || null, name: name.trim() || auto });
       const r = await followJob(job, `Exporting ${name.trim() || auto}${o.format}`);
       setDone(r);
-    } catch (e) { setError(msg(e)); }
+    } catch (e) { if (e.stopped) toast("Stopped exporting"); else setError(msg(e)); }
     setBusy(false);
   };
   return html`<div class="tab-pad" id="export-tab">

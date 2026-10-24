@@ -19,7 +19,7 @@ from ...errors import FormatError
 from ...model import BuildOption, CatalogEntry, Material, MeshOptions, Part, SourceModel, Texture
 from ...textures import dds
 from ..base import Importer, ScanProgress
-from . import catalog, files, materials
+from . import catalog, files, materials, texindex
 from . import games as profiles
 from .formats import binder, flver, tpf
 from .mesh import FlverMeshOptions, flver_to_trimesh
@@ -115,7 +115,11 @@ class FromSoftwareImporter(Importer):
         return profiles.detect_game(folder) or _game_from_archives(folder)
 
     def scan(self, folder: Path, game: str, progress: ScanProgress | None = None) -> list[CatalogEntry]:
-        return catalog.scan(folder, game, progress)
+        paths = texindex.walk(Path(folder))
+        entries = catalog.scan(folder, game, progress, paths)
+        # where every texture in the folder is, for the models whose textures aren't beside them
+        texindex.build(folder, paths, self.cache / "textures" if self.cache else None, progress)
+        return entries
 
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
         packed = []
@@ -203,7 +207,15 @@ class FromSoftwareImporter(Importer):
 
     def related_files(self, path: Path, textures: bool = True, animations: bool = True,
                       lod: bool = False) -> list[RelatedFile]:
-        return [RelatedFile(p, _kind_of(p)) for p in files.related_files(Path(path), textures, animations, lod)]
+        out = [RelatedFile(p, _kind_of(p)) for p in files.related_files(Path(path), textures, animations, lod)]
+        if textures:  # and those it takes from elsewhere in the game, each written out on its own
+            for name, file in files.located_textures(Path(path)):
+                index = texindex.index_for(file)
+                size, count = index.size_of(file) if index else (0, 1)
+                safe = "".join("_" if c in '<>:"/\\|?*' else c for c in name)
+                out.append(RelatedFile(file, "texture", f"_textures/{safe}.dds",
+                                       lambda f=file, n=name: files.extract_texture(f, n), size // count))
+        return out
 
     def shared_files(self, root: Path, game: str, player_animations: bool = False) -> list[RelatedFile]:
         return [RelatedFile(p, _kind_of(p)) for p in files.shared_files(Path(root), player_animations)]

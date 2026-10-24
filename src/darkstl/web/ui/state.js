@@ -30,6 +30,7 @@ export const ui = createStore({
   enhance: null,           // the Generate tab's settings, kept between models
   exportOpts: null,        // the Export tab's settings
   view: null,              // the 3D view's shading and edges
+  thumbGen: 0,             // counts the times every preview was let go (a rescan): see thumbs.js
 });
 
 let prefs = null;

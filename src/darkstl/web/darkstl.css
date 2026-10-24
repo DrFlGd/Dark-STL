@@ -123,3 +123,10 @@ a.chip-btn.on { background: var(--sel); }
 .collect-plan { display: grid; gap: 4px; padding: 10px 12px; border-radius: var(--radius-s); background: var(--panel); border: 1px solid var(--steel-2); font-size: 13.5px; }
 .collect-plan p { margin: 0; overflow-wrap: anywhere; }
 #library-status { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* the status bar's job: clicking it stops it (chrome.js) */
+.status-job.can-stop .status-stop { display: none; margin-left: 8px; align-items: center; gap: 3px; color: var(--danger); }
+.status-job.can-stop:hover .status-stop, .status-job.can-stop:focus-visible .status-stop { display: inline-flex; }
+.status-job.can-stop:hover .dot { animation: none; background: var(--danger); }
+.status-more { padding-left: 0; }
+.job .job-stop { color: var(--danger); }

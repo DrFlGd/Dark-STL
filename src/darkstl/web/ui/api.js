@@ -23,23 +23,31 @@ export async function loadOverview() {
   }
 }
 
-/** Follow a job in the status bar until it ends. Resolves with its result; rejects with its error. */
+/** Follow a job in the status bar until it ends. Resolves with its result; rejects with its error
+ *  (one with `stopped` set when the user stopped it: see stopJob). */
 export function followJob(id, label, onProgress) {
   const started = Date.now();
-  ui.set((s) => ({ jobs: [...s.jobs, { id, label, started, progress: 0, message: "" }] }));
+  ui.set((s) => ({ jobs: [...s.jobs, { id, label, started, progress: 0, message: "", stoppable: false, stopping: false }] }));
   const done = () => ui.set((s) => ({ jobs: s.jobs.filter((j) => j.id !== id) }));
   return new Promise((resolve, reject) => {
     const poll = async () => {
       let job;
       try { job = await api("job", { id }); } catch (e) { done(); reject(e); return; }
-      ui.set((s) => ({ jobs: s.jobs.map((j) => (j.id === id ? { ...j, progress: job.progress, message: job.message } : j)) }));
+      ui.set((s) => ({ jobs: s.jobs.map((j) => (j.id === id ? { ...j, progress: job.progress, message: job.message, stoppable: job.stoppable, stopping: job.stopping } : j)) }));
       onProgress?.(job);
       if (job.state === "running") { setTimeout(poll, 250); return; }
       done();
-      if (job.state === "done") resolve(job.result); else reject(new Error(job.error || "It didn't work."));
+      if (job.state === "done") resolve(job.result);
+      else reject(Object.assign(new Error(job.state === "stopped" ? "Stopped." : job.error || "It didn't work."), { stopped: job.state === "stopped" }));
     };
     poll();
   });
+}
+
+/** Stop a job the status bar shows (generating, exporting, scanning, collecting). It ends at its next step. */
+export async function stopJob(id) {
+  ui.set((s) => ({ jobs: s.jobs.map((j) => (j.id === id ? { ...j, stopping: true, message: "Stopping…" } : j)) }));
+  try { await api("job_stop", { id }); } catch (e) { toast(String(e.message || e)); }
 }
 
 /** Show a short message at the foot of the window. `opts`: how long (ms), or { ms, action: { label, run } }. */

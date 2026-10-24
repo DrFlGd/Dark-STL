@@ -213,12 +213,13 @@ fn engine_protocol(engine: Arc<Engine>, uri: String) -> impl std::future::Future
         let cmd = url.as_ref().and_then(|u| u.path().strip_prefix("/bin/").map(String::from)).unwrap_or_default();
         let args: Map<String, Value> =
             url.iter().flat_map(|u| u.query_pairs()).map(|(k, v)| (k.into_owned(), Value::String(v.into_owned()))).collect();
-        let cache = if cmd == "thumb" { "private, max-age=3600" } else { "no-store" };
         let (status, ctype, body) = match engine.call(&cmd, Value::Object(args), true).await {
             Answer::Bytes(b, t) => (200, t, b),
             Answer::Error(s, e) => (s, "text/plain; charset=utf-8".into(), e.into_bytes()),
             Answer::Json(_) => (500, "text/plain".into(), b"Not bytes".to_vec()),
         };
+        // a preview drawn already may be kept; an empty answer (not drawn yet) may not
+        let cache = if cmd == "thumb" && status == 200 && !body.is_empty() { "private, max-age=3600" } else { "no-store" };
         tauri::http::Response::builder()
             .status(status)
             .header("Content-Type", ctype)
