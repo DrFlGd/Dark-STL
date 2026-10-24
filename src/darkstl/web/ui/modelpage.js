@@ -1,9 +1,10 @@
 // A model's own page (model:<id>[@<variant>]): the 3D view with its textures,
-// and the inspector's Model (parts, options, size, file), Textures, Pose (an
-// animation and a frame to hold the model in), Generate (even out the
-// vertices, then displace them by the textures' detail) and Export tabs. A
-// file holding several models (a weapon and its sheath) gets a switch between
-// them in the command bar.
+// and the inspector's Model (parts, options, size, file), Textures (every texture,
+// and the normal maps cleaned up and upsampled for displacement, before and after),
+// Pose (an animation and a frame to hold the model in), Mesh (step 1: the vertices
+// evened out to a count), Displace (step 2: the vertices pushed by the textures'
+// detail) and Export tabs. A file holding several models (a weapon and its sheath)
+// gets a switch between them in the command bar.
 import { html, useState, useEffect, useLayoutEffect, useRef, useMemo } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui, setPref, resolvedTheme } from "./state.js";
@@ -17,7 +18,7 @@ import { Viewer } from "../viewer.js";
 
 const ENHANCE = { target_vertices: 1_000_000, method: "subdivide", smooth: true, source: "normal", strength: 1, height_range_mm: 1,
   green: "auto", detail_fraction: 0.0625, max_displacement_mm: 0, integration: "mesh", edge_keeping: 0, deblock: "off",
-  upsample: "off", ai_model: "", deblock_model: "", edge_hints: false, albedo_detail_mm: 0, detail_normals: false, detail_strength: 1 };
+  upsample: "off", upsample_factor: 0, ai_model: "", deblock_model: "", edge_hints: false, albedo_detail_mm: 0, detail_normals: false, detail_strength: 1 };
 const EXPORT = { format: ".stl", units: "mm", textures: true, folder: "" };
 const VIEW = { shading: "textured", edges: false };
 const KEEP_MESHES = 4; // built meshes a model page keeps (on the graphics card) to show again at once
@@ -98,6 +99,14 @@ function Workspace({ m, variant }) {
   const [which, setWhich] = useState(m.enhanced ? "enhanced" : "original");
   const [pose, setPose] = useState(null); // { anim, frame } or null for the bind pose
   const [busy, setBusy] = useState(false); // the 3D view is fetching a mesh
+  const [over, setOver] = useState({}); // material -> the detail texture chosen on the Displace tab ("" = none)
+  const [strengths, setStrengthState] = useState({}); // material -> strength multiplier
+  const strengthsNow = useRef({}); // the same, readable at once by a click that follows the change
+  const setStrengths = (v) => { strengthsNow.current = v; setStrengthState(v); };
+  const [run, setRun] = useState(null); // this page's job: { kind: "mesh" | "displace" | "upscale", progress, message, job, stopping }
+  const saved = useStore(ui, (st) => st.enhance);
+  const s = { ...ENHANCE, ...(saved || {}) };
+  const set = (patch) => setPref({ enhance: { ...s, ...patch } });
   const args = meshArgs(m, off, flags, pose);
   // the engine keeps a few models open; if this one was let go, open it again and retry
   const call = async (cmd, a) => {
@@ -118,16 +127,44 @@ function Workspace({ m, variant }) {
   const paneW = Math.max(260, Math.min(520, ui.get().inspectorWidth || 360));
   const crowded = !!room && room - paneW - RAIL < STAGE;
   const enhanced = (r) => { setResult({ ...r, rev: (result?.rev || 0) + 1 }); setResultKey(args.key); setWhich("enhanced"); };
+  const detailOf = (mat, i) => (i in over ? over[i] : (s.source === "height" ? mat.height : mat.normal) || "");
+  // the settings as stored now, as the engine takes them: a number typed and then a button clicked
+  // straight away is saved (on blur) just before the click, before the tab has drawn it again
+  const sendSettings = () => {
+    const now = { ...ENHANCE, ...(ui.get().enhance || {}) };
+    return { ...now, max_displacement_mm: now.max_displacement_mm || null,
+      texture_overrides: Object.fromEntries(m.materials.map((mat, i) => [i, detailOf(mat, i)])), material_strength: strengthsNow.current };
+  };
+  const name = m.entry?.label || variantName(m.variant) || m.name;
+  const follow = async (kind, start, label) => {
+    setRun({ kind, progress: 0, message: "Starting" });
+    try {
+      const { job } = await start();
+      setRun({ kind, progress: 0, message: "Starting", job });
+      return await followJob(job, label, (j) => setRun({ kind, progress: j.progress, message: j.message, job, stopping: j.stopping }));
+    } finally { setRun(null); }
+  };
+  /** Step 1 alone ("mesh"), or step 2 after it ("both"); the result is shown as the enhanced model. */
+  const generate = async (step) => {
+    const r = await follow(step === "mesh" ? "mesh" : "displace", () => call("enhance", { sid: m.sid, ...args.json, settings: sendSettings(), step }),
+      `${step === "mesh" ? "Evening out" : "Displacing"} ${name}`);
+    enhanced(r);
+    return r;
+  };
+  /** The Textures tab's step: the normal maps cleaned up and upsampled as the texture settings ask. */
+  const upscale = () => follow("upscale", () => call("texture_upscale", { sid: m.sid, ...args.json, settings: sendSettings() }), `Upscaling ${name}'s textures`);
+  const shared = { m, args, stats, s, set, run, setRun, call, sendSettings };
   return html`<div class="model-workspace" ref=${box}>
     <section class="workspace-viewing-area">
       <${Stage} m=${m} variant=${variant} which=${which} setWhich=${setWhich} args=${args} result=${result} stats=${stats} pose=${pose} onBusy=${setBusy} />
     </section>
     <${Inspector} page="model" crowded=${crowded} label="Panels" tabs=${[
       { id: "model", label: "Model", icon: "box", body: html`<${ModelTab} m=${m} off=${off} setOff=${setOff} flags=${flags} setFlags=${setFlags} stats=${stats} />` },
-      { id: "textures", label: "Textures", icon: "image", body: html`<${TexturesTab} m=${m} />` },
+      { id: "textures", label: "Textures", icon: "image", body: html`<${TexturesTab} ...${shared} over=${over} upscale=${upscale} />` },
       ...(m.animated ? [{ id: "pose", label: "Pose", icon: "play", body: html`<${PoseTab} m=${m} pose=${pose} setPose=${setPose} busy=${busy} call=${call} />` }] : []),
-      { id: "enhance", label: "Generate", icon: "layers", body: html`<${EnhanceTab} m=${m} args=${args} stats=${stats} result=${result} stale=${!!result && !!resultKey && resultKey !== args.key}
-        call=${call} onDone=${enhanced} />` },
+      { id: "mesh", label: "Mesh", icon: "grid", body: html`<${MeshTab} ...${shared} result=${result} generate=${generate} />` },
+      { id: "displace", label: "Displace", icon: "stack", body: html`<${DisplaceTab} ...${shared} result=${result} stale=${!!result && !!resultKey && resultKey !== args.key}
+        over=${over} setOver=${setOver} strengths=${strengths} setStrengths=${setStrengths} generate=${generate} />` },
       { id: "export", label: "Export", icon: "download", body: html`<${ExportTab} m=${m} args=${args} result=${result} which=${which} pose=${pose} call=${call} />` },
     ]} />
   </div>`;
@@ -219,7 +256,7 @@ function Stage({ m, variant, which, setWhich, args, result, stats, pose, onBusy 
       <div class="stage-bar">
         <span class="stage-what" id="stage-size" title="Width × depth × height, as exported in millimetres">${size?.triangles ? html`${sizeText([size.x, size.y, size.z])}<span class="muted"> · ${plural(size.triangles, "triangle")}</span>` : sizeText(stats?.size_mm)}${pose ? html`<span class="muted stage-pose" id="stage-pose" title="The pose shown (Pose tab)"> · ${pose.anim} frame ${pose.frame}</span>` : null}</span>
         <span class="stage-tools">
-          ${seg("show-which", "Show", [["original", "Original"], ["enhanced", "Enhanced", result ? "The enhanced model" : "Generate it first (Generate tab)", !result]], which, setWhich)}
+          ${seg("show-which", "Show", [["original", "Original"], ["enhanced", "Enhanced", result ? "The enhanced model" : "Make it first (Mesh or Displace tab)", !result]], which, setWhich)}
           ${seg("shading", "Shading", [["textured", "Textured", noTextures ? "No colour textures were found for this model" : "With the game's colour textures"], ["clay", "Clay"], ["wire", "Wireframe"]], view.shading, (v) => setView({ shading: v }))}
           <button type="button" class="ghost" id="edges-toggle" aria-pressed=${view.edges ? "true" : "false"} title="Show the triangles' sharp edges" onClick=${() => edges(!view.edges)}>Edges</button>
           ${seg("views", "View", [["iso", "3/4", "Three-quarter view"], ["top", "Top"], ["front", "Front"]], null, (v) => viewer.current?.view(v))}
@@ -262,8 +299,9 @@ function ModelTab({ m, off, setOff, flags, setFlags, stats }) {
   </div>`;
 }
 
-/** Textures: every texture found for the model, a bigger look at one with Save as PNG, and which each material uses. */
-function TexturesTab({ m }) {
+/** Textures: every texture found for the model, a bigger look at one with Save as PNG, the normal maps
+ *  cleaned up and upsampled for displacement (with before and after to zoom into), and which each material uses. */
+function TexturesTab({ m, args, s, set, run, setRun, call, sendSettings, over, upscale }) {
   const [sel, setSel] = useState(m.textures[0]?.key || null);
   const [about, setAbout] = useState(null);
   const tex = m.textures.find((t) => t.key === sel);
@@ -281,6 +319,31 @@ function TexturesTab({ m }) {
     } catch (e) { toast(msg(e)); }
   };
   const nameOf = (k) => m.textures.find((t) => t.key === k)?.name;
+  const [error, setError] = useState(null);
+  const [ai, setAi] = useState(null); // { folder, models, included, available } once asked for
+  const wantsAi = s.upsample === "ai" || s.deblock === "ai";
+  const loadAi = () => api("ai_models").then(setAi, (e) => setError(msg(e)));
+  useEffect(() => { if (wantsAi && !ai) loadAi(); }, [wantsAi]);
+  const addModel = async () => {
+    const path = await pickFile("Add an AI model", ["ONNX models (*.onnx)"]);
+    if (path) { try { setAi(await api("ai_model_add", { path })); } catch (e) { setError(msg(e)); } }
+  };
+  const included = (key) => key === "ai_model" && ai?.bundled?.length;
+  const modelSelect = (id, key, title) => html`<label class="field-block" title=${title}><span>${key === "ai_model" ? "Upscaling model" : "Deblocking model"}</span>
+    <select id=${id} value=${s[key]} onChange=${(e) => set({ [key]: e.target.value })}>
+      <option value="">${included(key) ? "Included (matched to each texture's compression)" : "Choose…"}</option>
+      ${(ai?.models || []).map((x) => html`<option key=${x} value=${x}>${x}</option>`)}</select></label>`;
+  const maps = useTextureMaps(call, m, args, s, over, run, sendSettings);
+  const list = maps?.maps || [];
+  const [compare, setCompare] = useState(null); // the map compared, when chosen by hand
+  const shownMap = list.find((x) => x.key === compare) || list.find((x) => x.key === sel) || list[0];
+  const go = async () => {
+    setError(null);
+    try {
+      const r = await upscale();
+      toast(`${plural(r.maps.length, "normal map")} ready for Displace`);
+    } catch (e) { if (e.stopped) toast("Stopped upscaling"); else setError(msg(e)); }
+  };
   if (!m.textures.length) {
     return html`<div class="tab-pad" id="textures-tab"><p>No textures were found for this model.</p>
       <p class="muted">Map pieces and some objects use textures kept elsewhere in the game. Add the folders that hold them under
@@ -295,12 +358,135 @@ function TexturesTab({ m }) {
         <img src=${binUrl("texture", { sid: m.sid, key: tex.key, max: 1024 })} alt=${tex.name} /></a>
       <dl class="insp-dl"><dt>Image</dt><dd id="texture-info">${about || "…"}</dd><dt>From</dt><dd class="note-path">${tex.source}</dd></dl>
       <div class="insp-actions"><button type="button" class="ghost" id="texture-save" onClick=${save}>${Icon.download(14)} Save as PNG</button></div></section>` : null}
+    <section class="insp-section" id="texture-upscale"><h3>Upscale for displacement</h3>
+      <p class="muted">Displace reads the normal maps below. Clean them up and upsample them here to see what the settings do, texel by texel, and change
+        them until the detail looks right; Displace then uses the maps as made here (and makes any it finds missing).</p>
+      <label class="field-block" title="Block compression leaves a faint 4-pixel grid. Smoothing melts it but also softens the finest detail; an AI model can remove it more cleanly."><span>Compression clean-up</span>
+        <select id="deblock" value=${s.deblock} onChange=${(e) => set({ deblock: e.target.value })}>
+          <option value="off">None</option><option value="smooth">Smooth it out</option><option value="ai">AI model</option></select></label>
+      <label class="field-block" title="More pixels in the normal map, so vertices closer together than its pixels still get detail of their own. Guided keeps edges where the colour texture has them; AI models invent plausible fine detail."><span>Upsample</span>
+        <select id="upsample" value=${s.upsample} onChange=${(e) => set({ upsample: e.target.value })}>
+          <option value="off">No</option><option value="guided">Guided by the colour texture</option><option value="ai">AI model</option></select></label>
+      ${s.upsample !== "off" ? html`<label class="field-block" title="How many times bigger the map gets. Automatic goes by the Mesh tab's vertex count: no more than the vertex spacing can use."><span>Factor</span>
+        <select id="upsample-factor" value=${String(s.upsample_factor || 0)} onChange=${(e) => set({ upsample_factor: Number(e.target.value) })}>
+          <option value="0">Automatic (for ${num(s.target_vertices)} vertices)</option><option value="2">2×</option><option value="4">4×</option></select></label>` : null}
+      ${wantsAi ? html`<div class="field-block" id="ai-models">
+        ${ai && !ai.available ? html`<p class="insp-note">AI models need ONNX Runtime, which this copy of the app doesn't have.</p>` : null}
+        ${s.upsample === "ai" ? modelSelect("ai-model", "ai_model", "A 2x or 4x model for normal maps in .onnx form. The app includes RunDevelopment's 4x-Normal-RG0 models (CC BY 4.0), one for each kind of block compression.") : null}
+        ${s.deblock === "ai" ? modelSelect("deblock-model", "deblock_model", "A 1x model that removes DDS block artifacts, in .onnx form.") : null}
+        <div class="insp-actions"><button type="button" class="ghost" id="ai-model-add" onClick=${addModel}>Add a model…</button>
+          ${ai ? html`<button type="button" class="ghost" id="ai-models-folder" onClick=${() => showInFolder(ai.folder)}>Open models folder</button>` : null}</div>
+        <small class="muted">${s.upsample === "ai" && ai?.bundled?.length ? "Included: 4x-Normal-RG0 by RunDevelopment (CC BY 4.0). " : ""}Without a graphics card it is slow (about half a minute per 512 px texture, several minutes at 2048 px). Check the licence of models you add before sharing prints made with them.</small></div>` : null}
+      ${s.source !== "normal" ? html`<p class="insp-note">Displace is set to read ${s.source === "height" ? "height maps" : "nothing"} (Displace › From), so normal maps aren't used.</p>` : null}
+      <div class="insp-actions"><button type="button" class="primary compact" id="upscale-run" disabled=${!!run || !list.length} onClick=${go}>${run?.kind === "upscale" ? "Upscaling…" : `Upscale ${plural(list.length, "map")}`}</button></div>
+      <${JobProgress} run=${run?.kind === "upscale" ? run : null} setRun=${setRun} id="upscale-progress" />
+      ${error ? html`<p class="warn-note" role="alert" id="upscale-error">${error}</p>` : null}
+      ${list.length ? html`<ul class="ls-list upscale-maps" id="upscale-maps">${list.map((x) => html`<li key=${x.key} data-map=${x.key} data-ready=${x.ready ? "1" : "0"}>
+        <span>${x.name}<small class="muted">${x.materials.join(", ")} · ${x.size[0]} × ${x.size[1]} px · ${x.texel_mm.toFixed(2)} mm per texel</small>
+          ${x.ready && x.steps.length ? html`<small class="muted">${x.steps.join(" · ")}</small>` : null}
+          ${x.warnings.map((w, i) => html`<small class="warn-text" key=${i}>${w}</small>`)}</span>
+        <span class=${x.ready ? "" : "muted"}>${x.ready ? `${x.factor > 1 ? `${x.factor}× · ` : ""}${x.up_size[0]} × ${x.up_size[1]}` : "not made yet"}</span></li>`)}</ul>`
+        : maps ? html`<p class="muted" id="upscale-none">${s.source === "normal" ? "No normal map is read for the parts shown." : ""}</p>` : null}
+      ${shownMap ? html`${list.length > 1 ? html`<label class="field-block"><span>Compare</span><select id="compare-map" value=${shownMap.key} onChange=${(e) => setCompare(e.target.value)}>
+          ${list.map((x) => html`<option key=${x.key} value=${x.key}>${x.name}</option>`)}</select></label>` : null}
+        <${TextureCompare} m=${m} args=${args} map=${shownMap} sendSettings=${sendSettings} />` : null}
+    </section>
     <section class="insp-section" id="materials"><h3>Materials</h3>${m.materials.map((mat, i) => html`<div class="material" key=${i} title=${mat.details.join("\n")}>
       <p class="material-name">${mat.name}${mat.guessed ? html` <small class="muted" title="Matched by the textures' names: the material didn't say">(guessed)</small>` : null}</p>
       <dl class="insp-dl">
         <dt>Colour</dt><dd>${nameOf(mat.albedo) || html`<span class="muted">none</span>`}</dd>
         <dt>Normals</dt><dd>${nameOf(mat.normal) || html`<span class="muted">none</span>`}</dd>
         ${mat.height ? html`<dt>Height</dt><dd>${nameOf(mat.height)}</dd>` : null}</dl></div>`)}</section>
+  </div>`;
+}
+
+/** The normal maps Displace reads with the settings as they are, and whether each is made ready: { maps, spacing_mm }. */
+function useTextureMaps(call, m, args, s, over, run, sendSettings) {
+  const [maps, setMaps] = useState(null);
+  useEffect(() => {
+    let live = true;
+    call("texture_maps", { sid: m.sid, ...args.json, settings: sendSettings() }).then((r) => live && setMaps(r), () => live && setMaps(null));
+    return () => { live = false; };
+  }, [args.key, s.target_vertices, s.source, s.green, s.deblock, s.deblock_model, s.upsample, s.ai_model, s.upsample_factor, JSON.stringify(over), !!run]);
+  return maps;
+}
+
+/** A normal map before and after the texture settings, one over the other with a line to drag between them;
+ *  dragged to pan and zoomed with the wheel or the buttons. The engine draws each view at the pixels shown
+ *  (texture_crop), so texels stay crisp however far in. */
+function TextureCompare({ m, args, map, sendSettings }) {
+  const box = useRef(null);
+  const width = useWidth(box);
+  const H = 260;
+  const [tw, th] = map.size;
+  const fit = width ? Math.min(width / tw, H / th) : 0;
+  const [view, setView] = useState(null); // { key, cx, cy (fractions of the map), scale (px per texel), split, mode }
+  useEffect(() => { if (fit && (!view || view.key !== map.key)) setView({ key: map.key, cx: 0.5, cy: 0.5, scale: fit, split: 0.5, mode: "split" }); }, [fit, map.key]);
+  const [src, setSrc] = useState(null); // { before, after, view } drawn for a view
+  const settingsJson = JSON.stringify(sendSettings());
+  useEffect(() => {
+    if (!view || !width || !map.ready) { setSrc(null); return undefined; }
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    const half = { x: width / 2 / (view.scale * tw), y: H / 2 / (view.scale * th) };
+    const rect = { x0: view.cx - half.x, x1: view.cx + half.x, y0: view.cy - half.y, y1: view.cy + half.y };
+    const url = (which) => binUrl("texture_crop", { sid: m.sid, ...args.url, key: map.key, which, ...rect, w: Math.round(width * dpr), h: Math.round(H * dpr),
+      settings: settingsJson, v: map.factor });
+    let live = true;
+    const t = setTimeout(() => {
+      const load = (which) => new Promise((ok) => { const i = new Image(); i.onload = () => ok(i.src); i.onerror = () => ok(null); i.src = url(which); });
+      Promise.all([load("before"), load("after")]).then(([before, after]) => { if (live) setSrc({ before, after, view }); });
+    }, 120);
+    return () => { live = false; clearTimeout(t); };
+  }, [view, width, map.key, map.ready, settingsJson]);
+  const zoomBy = (f, at) => setView((v) => {
+    if (!v) return v;
+    const scale = Math.max(fit / 2, Math.min(64, v.scale * f));
+    let { cx, cy } = v;
+    if (at) { // the texel under the pointer stays where it is
+      const tx = v.cx + (at.x - width / 2) / (v.scale * tw), ty = v.cy + (at.y - H / 2) / (v.scale * th);
+      cx = tx - (at.x - width / 2) / (scale * tw); cy = ty - (at.y - H / 2) / (scale * th);
+    }
+    return { ...v, scale, cx, cy };
+  });
+  const at = (e) => { const r = box.current.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  const onWheel = (e) => { e.preventDefault(); zoomBy(e.deltaY < 0 ? 1.25 : 0.8, at(e)); };
+  const drag = useRef(null);
+  const onDown = (e) => {
+    if (e.button !== 0 || !view) return;
+    const p = at(e);
+    drag.current = { x: e.clientX, y: e.clientY, handle: view.mode === "split" && Math.abs(p.x - view.split * width) < 10 };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onMove = (e) => {
+    const d = drag.current;
+    if (!d) return;
+    if (d.handle) { const p = at(e); setView((v) => ({ ...v, split: Math.max(0, Math.min(1, p.x / width)) })); return; }
+    const dx = e.clientX - d.x, dy = e.clientY - d.y;
+    drag.current = { ...d, x: e.clientX, y: e.clientY };
+    setView((v) => ({ ...v, cx: v.cx - dx / (v.scale * tw), cy: v.cy - dy / (v.scale * th) }));
+  };
+  const onUp = () => { drag.current = null; };
+  // until the engine has drawn the view asked for, the last drawing is moved and scaled to where it belongs
+  const tf = src && view ? `translate(${((src.view.cx - view.cx) * view.scale * tw).toFixed(1)}px, ${((src.view.cy - view.cy) * view.scale * th).toFixed(1)}px) scale(${(view.scale / src.view.scale).toFixed(4)})` : "none";
+  const mode = view?.mode || "split";
+  const scaleText = !view ? "" : view.scale >= 1 ? `${view.scale >= 10 ? Math.round(view.scale) : view.scale.toFixed(1)} px per texel` : `1 px per ${(1 / view.scale).toFixed(1)} texels`;
+  return html`<div class="compare" id="compare" data-map=${map.key}>
+    <div class="compare-bar">
+      <div class="seg" role="group" aria-label="Show" id="compare-mode">${[["split", "Split"], ["before", "Before"], ["after", "After"]].map(([v, l]) => html`<button type="button" key=${v} data-value=${v}
+        aria-pressed=${mode === v ? "true" : "false"} onClick=${() => setView((x) => ({ ...x, mode: v }))}>${l}</button>`)}</div>
+      <span class="compare-zoom"><button type="button" class="ghost compact" id="compare-zoom-out" title="Zoom out" aria-label="Zoom out" onClick=${() => zoomBy(0.5)}>−</button>
+        <span class="muted" id="compare-scale">${scaleText}</span>
+        <button type="button" class="ghost compact" id="compare-zoom-in" title="Zoom in" aria-label="Zoom in" onClick=${() => zoomBy(2)}>+</button>
+        <button type="button" class="ghost compact" id="compare-fit" onClick=${() => setView((v) => ({ ...v, cx: 0.5, cy: 0.5, scale: fit }))}>Fit</button></span></div>
+    <div class="compare-box" ref=${box} style=${{ height: `${H}px` }} data-mode=${mode} onWheel=${onWheel} onPointerDown=${onDown} onPointerMove=${onMove} onPointerUp=${onUp} onPointerCancel=${onUp}>
+      ${!map.ready ? html`<p class="muted compare-empty">Upscale first to see before and after.</p>`
+        : src ? html`${mode !== "after" ? html`<div class="compare-layer"><img src=${src.before} alt="Before" data-which="before" draggable="false" style=${{ transform: tf }} /></div>` : null}
+          ${mode !== "before" ? html`<div class="compare-layer" style=${{ clipPath: mode === "split" ? `inset(0 0 0 ${(view.split * 100).toFixed(2)}%)` : "none" }}>
+            <img src=${src.after} alt="After" data-which="after" draggable="false" style=${{ transform: tf }} /></div>` : null}
+          ${mode === "split" ? html`<div class="compare-divider" style=${{ left: `${(view.split * 100).toFixed(2)}%` }}><span>Before</span><span>After</span></div>` : null}`
+        : html`<p class="muted compare-empty">Drawing…</p>`}
+    </div>
+    <small class="muted">Drag to pan, wheel to zoom, drag the line to compare.${map.ready && map.factor > 1 ? ` After has ${map.factor} × ${map.factor} texels for each of Before's.` : ""}</small>
   </div>`;
 }
 
@@ -370,80 +556,82 @@ function NumberField({ id, label, value, step, min, max, unit, title, onChange }
       onChange=${(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onChange(v); else setTyped(null); }} />${unit ? html`<span class="muted unit">${unit}</span>` : null}</span></label>`;
 }
 
-/** Generate: even out the vertices to the count chosen, then displace them by the detail in the textures. */
-function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
-  const saved = useStore(ui, (s) => s.enhance);
-  const s = { ...ENHANCE, ...(saved || {}) };
-  const set = (patch) => setPref({ enhance: { ...s, ...patch } });
-  const [over, setOver] = useState({});
-  const [strengths, setStrengthState] = useState({}); // material -> strength multiplier
-  const strengthsNow = useRef({}); // the same, readable at once by a click that follows the change
-  const setStrengths = (v) => { strengthsNow.current = v; setStrengthState(v); };
-  const [ai, setAi] = useState(null); // { folder, models, available } once asked for
-  const [run, setRun] = useState(null); // { progress, message } while running
-  const [error, setError] = useState(null);
-  const [meshKept, setMeshKept] = useState(null); // { kept, vertices } for step 1's settings as they are now
-  const meshDeps = [args.key, s.target_vertices, s.method, s.smooth, result?.rev, !!run]; // again after each Generate, stopped ones too
+/** Whether step 1's mesh for the mesh settings as they are is kept by the engine: { kept, vertices, triangles }. */
+function useMeshKept(call, m, args, s, run) {
+  const [kept, setKept] = useState(null);
   useEffect(() => {
     let live = true;
     call("enhance_mesh", { sid: m.sid, ...args.json, settings: { target_vertices: s.target_vertices, method: s.method, smooth: s.smooth } })
-      .then((r) => live && setMeshKept(r), () => live && setMeshKept(null));
+      .then((r) => live && setKept(r), () => live && setKept(null));
     return () => { live = false; };
-  }, meshDeps);
+  }, [args.key, s.target_vertices, s.method, s.smooth, !!run]); // again after each job of this page's, stopped ones too
+  return kept;
+}
+
+/** A job's progress with its Stop button. */
+function JobProgress({ run, setRun, id }) {
+  if (!run) return null;
+  return html`<div class="job-progress" id=${id}><progress max="1" value=${run.progress}></progress><small class="muted">${run.message}</small>
+    ${run.job ? html`<button type="button" class="ghost compact danger-text" id=${`${id}-stop`} disabled=${!!run.stopping} title="Stop; the model shown stays as it is"
+      onClick=${() => { setRun({ ...run, stopping: true, message: "Stopping…" }); stopJob(run.job); }}>${run.stopping ? "Stopping…" : "Stop"}</button>` : null}</div>`;
+}
+
+/** Mesh: step 1, the model's vertices evened out to the count chosen (upsampled, or decimated by isotropic remeshing). */
+function MeshTab({ m, args, stats, s, set, run, setRun, call, result, generate }) {
+  const [error, setError] = useState(null);
   const methods = info().methods || [];
-  const have = m.textures.map((t) => t.key);
-  const detailOf = (mat, i) => (i in over ? over[i] : (s.source === "height" ? mat.height : mat.normal) || "");
+  const kept = useMeshKept(call, m, args, s, run);
   const spacing = spacingMm(stats.area_m2, s.target_vertices);
-  const wantsAi = s.source === "normal" && (s.upsample === "ai" || s.deblock === "ai");
-  const loadAi = () => api("ai_models").then(setAi, (e) => setError(msg(e)));
-  useEffect(() => { if (wantsAi && !ai) loadAi(); }, [wantsAi]);
-  const addModel = async () => {
-    const path = await pickFile("Add an AI model", ["ONNX models (*.onnx)"]);
-    if (path) { try { setAi(await api("ai_model_add", { path })); } catch (e) { setError(msg(e)); } }
-  };
-  const included = (key) => key === "ai_model" && ai?.bundled?.length;
-  const modelSelect = (id, key, title) => html`<label class="field-block" title=${title}><span>${key === "ai_model" ? "Upscaling model" : "Deblocking model"}</span>
-    <select id=${id} value=${s[key]} onChange=${(e) => set({ [key]: e.target.value })}>
-      <option value="">${included(key) ? "Included (matched to each texture's compression)" : "Choose…"}</option>
-      ${(ai?.models || []).map((x) => html`<option key=${x} value=${x}>${x}</option>`)}</select></label>`;
-  // step "mesh": step 1 alone (the evened-out model, shown and kept); "both": step 2, after step 1
-  // when its mesh isn't kept yet
-  const go = async (step) => {
+  const go = async () => {
     setError(null);
-    setRun({ progress: 0, message: "Starting", step });
     try {
-      const overrides = Object.fromEntries(m.materials.map((mat, i) => [i, detailOf(mat, i)]));
-      // the settings as stored now: a number typed and then Generate clicked straight away is saved
-      // (on blur) just before the click, before this tab has drawn it again
-      const now = { ...ENHANCE, ...(ui.get().enhance || {}) };
-      const { job } = await call("enhance", { sid: m.sid, ...args.json, settings: { ...now, max_displacement_mm: now.max_displacement_mm || null,
-        texture_overrides: overrides, material_strength: strengthsNow.current }, step });
-      setRun({ progress: 0, message: "Starting", job, step });
-      const name = m.entry?.label || variantName(m.variant) || m.name;
-      const r = await followJob(job, `${step === "mesh" ? "Evening out" : "Generating"} ${name}`, (j) => setRun({ progress: j.progress, message: j.message, job, step, stopping: j.stopping }));
-      onDone(r);
-      toast(step === "mesh" ? `Step 1 done: ${plural(r.stats.vertices, "vertex", "vertices")}. Now Displace adds the texture detail.`
-        : r.kept ? "Already generated with these settings"
-        : `Generated: ${plural(r.stats.vertices, "vertex", "vertices")}${r.mesh_reused ? " (step 2 only: the evened-out mesh was kept)" : ""}`);
-    } catch (e) { if (e.stopped) toast(step === "mesh" ? "Stopped evening out" : "Stopped generating"); else setError(msg(e)); }
-    setRun(null);
+      const r = await generate("mesh");
+      toast(r.kept ? "Evened out with these settings already: shown" : `Evened out: ${plural(r.stats.vertices, "vertex", "vertices")}. Displace adds the texture detail.`);
+    } catch (e) { if (e.stopped) toast("Stopped evening out"); else setError(msg(e)); }
   };
-  return html`<div class="tab-pad" id="enhance-tab">
-    <section class="insp-section"><h3>1 · Even out the vertices</h3>
+  return html`<div class="tab-pad" id="mesh-tab">
+    <section class="insp-section"><h3>Even out the vertices</h3>
+      <p class="muted">Step 1: the model's triangles are remade at one even size, so the texture detail has vertices to move and large flat areas get no
+        more than they need. Above the model's own count that upsamples it; below it, isotropic remeshing decimates it.</p>
       <${NumberField} id="target-vertices" label="Vertices" value=${s.target_vertices} step=${250000} min=${1000} max=${50000000}
-        title="How many vertices the enhanced model gets. More keeps finer texture detail and makes a bigger file." onChange=${(v) => set({ target_vertices: Math.round(v) })} />
+        title="How many vertices the model gets. More keeps finer texture detail and makes a bigger file." onChange=${(v) => set({ target_vertices: Math.round(v) })} />
       <small class="muted" id="spacing">About ${spacing ? `${spacing < 1 ? spacing.toFixed(2) : spacing.toFixed(1)} mm` : "–"} between vertices (now ${num(stats.vertices)} vertices).</small>
       <label class="field-block"><span>Method</span><select id="method" value=${s.method} onChange=${(e) => set({ method: e.target.value })}>
         ${methods.map((x) => html`<option key=${x.id} value=${x.id} disabled=${!x.available}>${x.label}${x.available ? "" : ` (${x.missing || "not installed"})`}</option>`)}</select></label>
       <label class="check-row" title="New vertices follow the curve the model's shading describes, so low-poly cylinders and blades print round instead of faceted. Flat-shaded parts stay flat.">
         <input type="checkbox" id="smooth" checked=${s.smooth} onChange=${(e) => set({ smooth: e.target.checked })} /><span>Round off curved surfaces</span></label>
-      ${meshKept?.kept ? html`<p class="insp-note" id="mesh-kept">${Icon.check(14)} Step 1 is done (${num(meshKept.vertices)} vertices). Displace starts from this mesh, so you can try step 2's settings without evening out again.</p>` : null}
-      <div class="insp-actions"><button type="button" class="ghost" id="mesh-run" disabled=${!!run || !stats.triangles} onClick=${() => go("mesh")}
-        title="Only even out the vertices, and show that model, so step 2 can be tried on it">${run?.step === "mesh" ? "Evening out…" : meshKept?.kept ? "Show the evened-out mesh" : "Run step 1 only"}</button></div>
+      ${s.method === "subdivide" && s.target_vertices <= stats.vertices ? html`<p class="insp-note" id="mesh-fewer">Adaptive subdivision only adds vertices: to go below the model's ${num(stats.vertices)}, choose isotropic remeshing.</p>` : null}
+      ${kept?.kept ? html`<p class="insp-note" id="mesh-kept">${Icon.check(14)} Done: ${num(kept.vertices)} vertices, ${num(kept.triangles)} triangles. Kept while you work on the textures and the displacement.</p>` : null}
+      <div class="insp-actions enhance-go"><button type="button" class="primary" id="mesh-run" disabled=${!!run || !stats.triangles} onClick=${go}>${run?.kind === "mesh" ? "Evening out…" : kept?.kept ? "Show the evened-out model" : "Even out the vertices"}</button></div>
+      <${JobProgress} run=${run?.kind === "mesh" ? run : null} setRun=${setRun} id="mesh-progress" />
+      ${error ? html`<p class="warn-note" role="alert" id="mesh-error">${error}</p>` : null}
     </section>
-    <section class="insp-section"><h3>2 · Raise the texture detail</h3>
+    ${result && result.displaced === false ? html`<section class="insp-section" id="mesh-shown"><h3>Shown</h3>
+      <p class="muted">The 3D view's Enhanced model is the evened-out one, not displaced yet: ${num(result.stats.vertices)} vertices, ${num(result.stats.faces)} triangles.</p></section>` : null}
+  </div>`;
+}
+
+/** Displace: step 2, the evened-out mesh's vertices pushed by the detail in the textures. */
+function DisplaceTab({ m, args, stats, s, set, run, setRun, call, sendSettings, result, stale, over, setOver, strengths, setStrengths, generate }) {
+  const [error, setError] = useState(null);
+  const kept = useMeshKept(call, m, args, s, run);
+  const maps = useTextureMaps(call, m, args, s, over, run, sendSettings);
+  const have = m.textures.map((t) => t.key);
+  const detailOf = (mat, i) => (i in over ? over[i] : (s.source === "height" ? mat.height : mat.normal) || "");
+  const ready = (maps?.maps || []).filter((x) => x.ready).length, total = (maps?.maps || []).length;
+  const go = async () => {
+    setError(null);
+    try {
+      const r = await generate("both");
+      toast(r.kept ? "Already generated with these settings" : `Displaced: ${plural(r.stats.vertices, "vertex", "vertices")}${r.mesh_reused ? "" : " (evened out first)"}`);
+    } catch (e) { if (e.stopped) toast("Stopped displacing"); else setError(msg(e)); }
+  };
+  return html`<div class="tab-pad" id="displace-tab">
+    <section class="insp-section"><h3>Raise the texture detail</h3>
+      <p class="muted">Step 2: the evened-out mesh's vertices are pushed in and out by the relief the textures describe. Change these and displace
+        again as often as you like; step 1 and the upscaled textures are kept.</p>
       <label class="field-block"><span>From</span><select id="source" value=${s.source} onChange=${(e) => { setOver({}); set({ source: e.target.value }); }}>
-        <option value="normal">Normal maps (turned into height)</option><option value="height">Height or grayscale maps</option><option value="none">Nothing (even out only)</option></select></label>
+        <option value="normal">Normal maps (turned into height)</option><option value="height">Height or grayscale maps</option><option value="none">Nothing (the evened-out mesh as it is)</option></select></label>
       ${s.source === "normal" ? html`<${NumberField} id="strength" label="Strength" value=${s.strength} step=${0.25} min=${0} max=${50}
         title="1 makes the relief the normal map describes; more exaggerates it." onChange=${(v) => set({ strength: v })} />` : null}
       ${s.source === "height" ? html`<${NumberField} id="height-range" label="Height range" value=${s.height_range_mm} step=${0.1} min=${0} max=${100} unit="mm"
@@ -465,19 +653,6 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
             <option value="mesh">On the model's surface</option><option value="texture">On each texture (v0.1)</option></select></label>
         ${s.integration === "mesh" ? html`<${NumberField} id="edge-keeping" label="Edge keeping" value=${s.edge_keeping} step=${0.25} min=${0} max=${1}
           title="0 to 1. Stops slopes that no real surface could have (hand-painted detail, compression noise) from smearing into their surroundings. Slower; on clean maps it can soften relief." onChange=${(v) => set({ edge_keeping: v })} />` : null}
-        <label class="field-block" title="Block compression leaves a faint 4-pixel grid. Smoothing melts it but also softens the finest detail; an AI model can remove it more cleanly."><span>Compression clean-up</span>
-          <select id="deblock" value=${s.deblock} onChange=${(e) => set({ deblock: e.target.value })}>
-            <option value="off">None</option><option value="smooth">Smooth it out</option><option value="ai">AI model</option></select></label>
-        <label class="field-block" title="More pixels in the normal map when the model's vertices are closer together than its pixels. Guided keeps edges where the colour texture has them; AI models invent plausible fine detail."><span>Upsample the normal map</span>
-          <select id="upsample" value=${s.upsample} onChange=${(e) => set({ upsample: e.target.value })}>
-            <option value="off">No</option><option value="guided">Guided by the colour texture</option><option value="ai">AI model</option></select></label>
-        ${wantsAi ? html`<div class="field-block" id="ai-models">
-          ${ai && !ai.available ? html`<p class="insp-note">AI models need ONNX Runtime, which this copy of the app doesn't have.</p>` : null}
-          ${s.upsample === "ai" ? modelSelect("ai-model", "ai_model", "A 2x or 4x model for normal maps. The app includes RunDevelopment's 4x-Normal-RG0 models (CC BY 4.0), picking the one trained for each texture's compression; add your own in .onnx form.") : null}
-          ${s.deblock === "ai" ? modelSelect("deblock-model", "deblock_model", "A 1x model that removes DDS block artifacts, in .onnx form.") : null}
-          <div class="insp-actions"><button type="button" class="ghost" id="ai-model-add" onClick=${addModel}>Add a model…</button>
-            ${ai ? html`<button type="button" class="ghost" id="ai-models-folder" onClick=${() => showInFolder(ai.folder)}>Open models folder</button>` : null}</div>
-          <small class="muted">${s.upsample === "ai" && ai?.bundled?.length ? "Included: 4x-Normal-RG0 by RunDevelopment (CC BY 4.0). " : ""}Without a graphics card it is slow (about half a minute per 512 px texture, several minutes at 2048 px), and it only runs where the vertices are closer together than the texels. Check the licence of models you add before sharing prints made with them.</small></div>` : null}
         <label class="check-row" title="Where the specular or metallic mask changes sharply (a gem in its setting, trim on leather), the surfaces either side are allowed to sit at their own heights.">
           <input type="checkbox" id="edge-hints" checked=${s.edge_hints} onChange=${(e) => set({ edge_hints: e.target.checked })} /><span>Use specular/metallic edges</span></label>
         <${NumberField} id="albedo-detail" label="Detail from the colour texture" value=${s.albedo_detail_mm} step=${0.05} min=${0} max=${5} unit="mm (0: off)"
@@ -488,17 +663,20 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
           onChange=${(v) => set({ detail_strength: v })} />` : null}` : null}
         <${NumberField} id="clamp" label="Most displacement" value=${s.max_displacement_mm} step=${0.1} min=${0} max=${100} unit="mm (0: no limit)"
           title="No vertex moves further than this." onChange=${(v) => set({ max_displacement_mm: v })} />
+        <p class="muted">Cleaning up and upsampling the normal maps is on the <a href="#" onClick=${(e) => { e.preventDefault(); ui.set({ inspectorAsk: { page: "model", tab: "textures" } }); }}>Textures tab</a>.</p>
       </details>` : null}
     </section>
-    <div class="insp-actions enhance-go">
-      <button type="button" class="primary" id="enhance-run" disabled=${!!run || !stats.triangles} onClick=${() => go("both")}
-        title=${meshKept?.kept ? "Displace the evened-out mesh by the texture detail (step 2)" : "Even out the vertices (step 1), then displace them by the texture detail (step 2)"}>${run?.step === "both" ? "Generating…" : meshKept?.kept ? "Displace (step 2)" : "Generate (steps 1 + 2)"}</button>
-    </div>
-    ${run ? html`<div class="job-progress" id="enhance-progress"><progress max="1" value=${run.progress}></progress><small class="muted">${run.message}</small>
-      ${run.job ? html`<button type="button" class="ghost compact danger-text" id="enhance-stop" disabled=${!!run.stopping} title="Stop; the model shown stays as it is" onClick=${() => { setRun({ ...run, stopping: true, message: "Stopping…" }); stopJob(run.job); }}>${run.stopping ? "Stopping…" : "Stop"}</button>` : null}</div>` : null}
-    ${error ? html`<p class="warn-note" role="alert" id="enhance-error">${error}</p>` : null}
-    ${result ? html`<section class="insp-section" id="enhance-result"><h3>${result.displaced === false ? "Evened out (step 1)" : "Enhanced"}</h3>
-      ${stale ? html`<p class="insp-note">Made with other parts, options or pose than those chosen now: generate again to include the change.</p>` : null}
+    <section class="insp-section">
+      <ul class="ls-list" id="displace-status">
+        <li><span>Step 1 · Mesh</span><span class=${kept?.kept ? "" : "muted"} id="displace-mesh-state">${kept?.kept ? `${num(kept.vertices)} vertices, kept` : "runs first, with the Mesh tab's settings"}</span></li>
+        ${s.source === "normal" && total ? html`<li><span>Textures</span><span class=${ready === total ? "" : "muted"} id="displace-maps-state">${ready === total ? `${plural(total, "normal map")} ready` : `${ready} of ${total} ready; the rest are made first`}</span></li>` : null}
+      </ul>
+      <div class="insp-actions enhance-go"><button type="button" class="primary" id="displace-run" disabled=${!!run || !stats.triangles} onClick=${go}>${run?.kind === "displace" ? "Displacing…" : result && result.displaced !== false ? "Displace again" : "Displace"}</button></div>
+      <${JobProgress} run=${run?.kind === "displace" ? run : null} setRun=${setRun} id="displace-progress" />
+      ${error ? html`<p class="warn-note" role="alert" id="enhance-error">${error}</p>` : null}
+    </section>
+    ${result ? html`<section class="insp-section" id="enhance-result"><h3>${result.displaced === false ? "Evened out, not displaced yet" : "Enhanced"}</h3>
+      ${stale ? html`<p class="insp-note">Made with other parts, options or pose than those chosen now: displace again to include the change.</p>` : null}
       <dl class="insp-dl">
         <dt>Vertices</dt><dd>${num(result.stats.vertices)} <span class="muted">from ${num(result.stats.source_vertices)}</span></dd>
         <dt>Triangles</dt><dd>${num(result.stats.faces)}</dd>
@@ -541,9 +719,9 @@ function ExportTab({ m, args, result, which: shownWhich, pose, call }) {
   };
   return html`<div class="tab-pad" id="export-tab">
     <div class="field-block"><span>Model</span><div class="seg" role="group" aria-label="Which model" id="export-which">
-      <button type="button" aria-pressed=${which === "enhanced" ? "true" : "false"} disabled=${!result} title=${result ? "The enhanced model" : "Generate it first (Generate tab)"} onClick=${() => setWhich("enhanced")}>Enhanced</button>
+      <button type="button" aria-pressed=${which === "enhanced" ? "true" : "false"} disabled=${!result} title=${result ? "The enhanced model" : "Make it first (Mesh or Displace tab)"} onClick=${() => setWhich("enhanced")}>Enhanced</button>
       <button type="button" aria-pressed=${which === "original" ? "true" : "false"} onClick=${() => setWhich("original")}>Original</button></div>
-      ${!result ? html`<small class="muted">Generate it first (Generate tab) to export the detailed version.</small>` : null}</div>
+      ${!result ? html`<small class="muted">Make it first (Mesh or Displace tab) to export the detailed version.</small>` : null}</div>
     <label class="field-block"><span>Format</span><select id="export-format" value=${o.format} onChange=${(e) => set({ format: e.target.value })}>
       ${formats.map((f) => html`<option key=${f.ext} value=${f.ext}>${f.label} (${f.ext})</option>`)}</select></label>
     <label class="field-block"><span>Units</span><select id="export-units" value=${o.units} onChange=${(e) => set({ units: e.target.value })}>

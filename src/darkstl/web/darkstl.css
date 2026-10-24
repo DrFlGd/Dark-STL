@@ -131,3 +131,19 @@ a.chip-btn.on { background: var(--sel); }
 .status-job.can-stop:hover .dot { animation: none; background: var(--danger); }
 .status-more { padding-left: 0; }
 .job .job-stop { color: var(--danger); }
+
+/* the Textures tab: the normal maps made ready, and before/after one of them (modelpage.js TextureCompare) */
+.upscale-maps li > span:first-child { display: grid; }
+.upscale-maps small { font-size: 11.5px; }
+.compare { display: grid; gap: 6px; }
+.compare-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.compare-zoom { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+.compare-box { position: relative; overflow: hidden; border-radius: var(--radius-s); background: #343438; touch-action: none; cursor: grab; user-select: none; }
+.compare-box:active { cursor: grabbing; }
+.compare-layer { position: absolute; inset: 0; overflow: hidden; }
+.compare-layer img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; transform-origin: center; }
+.compare-divider { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .45); cursor: ew-resize; }
+.compare-divider span { position: absolute; top: 6px; font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 999px; background: rgba(0, 0, 0, .55); color: #fff; white-space: nowrap; }
+.compare-divider span:first-child { right: 6px; }
+.compare-divider span:last-child { left: 6px; }
+.compare-empty { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; text-align: center; padding: 12px; }

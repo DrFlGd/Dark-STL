@@ -239,6 +239,49 @@ def test_step_one_can_run_on_its_own(service, monkeypatch):
     assert again["kept"] and again["id"] == a["id"] and len(made) == 1
 
 
+def test_textures_are_made_ready_once_and_displacement_uses_them(service, monkeypatch):
+    import io
+    import json
+
+    from PIL import Image
+
+    from darkstl import pipeline
+
+    made = []
+    real = pipeline.upscale_normal_map
+    monkeypatch.setattr(pipeline, "upscale_normal_map", lambda *a, **k: made.append(a[8]) or real(*a, **k))
+    item = service.call("models_query", {"game": "Dark Souls III", "category": "Weapons"})["items"][0]
+    m = service.call("model_open", {"id": item["id"]})
+    settings = {"target_vertices": 4000, "upsample": "guided", "upsample_factor": 2}
+    before = service.call("texture_maps", {"sid": m["sid"], "settings": settings})
+    (mp,) = before["maps"]
+    assert not mp["ready"] and mp["size"] == [128, 128] and mp["name"].endswith("_n") and before["spacing_mm"] > 0
+    r = wait(service, service.call("texture_upscale", {"sid": m["sid"], "settings": settings})["job"])
+    (mp,) = r["maps"]
+    assert mp["ready"] and mp["factor"] == 2 and mp["up_size"] == [256, 256] and any("2x" in s for s in mp["steps"])
+    assert made == [mp["key"]]
+    # before and after, drawn at the size asked: the whole map, and a corner magnified
+    crop = {"sid": m["sid"], "key": mp["key"], "settings": json.dumps(settings)}
+    png = service.call("texture_crop", {**crop, "w": "64", "h": "48"})
+    assert Image.open(io.BytesIO(png)).size == (64, 48)
+    corner = service.call("texture_crop", {**crop, "which": "before", "x0": "0", "y0": "0", "x1": "0.125", "y1": "0.125", "w": "128", "h": "128"})
+    assert Image.open(io.BytesIO(corner)).size == (128, 128)
+    assert service.call("texture_maps", {"sid": m["sid"], "settings": settings})["maps"][0]["ready"]
+    # displacement reads the map made here, instead of making it again
+    r2 = wait(service, service.call("enhance", {"sid": m["sid"], "settings": settings})["job"])
+    assert made == [mp["key"]] and any("2x" in s for s in r2["fields"][0]["steps"]) and r2["displaced"]
+    # other texture settings: not ready, so Displace makes the map itself
+    other = {**settings, "upsample_factor": 4}
+    assert not service.call("texture_maps", {"sid": m["sid"], "settings": other})["maps"][0]["ready"]
+    with pytest.raises(AppError, match="hasn't been upscaled"):
+        service.call("texture_crop", {**crop, "settings": json.dumps(other)})
+    r3 = wait(service, service.call("enhance", {"sid": m["sid"], "settings": other})["job"])
+    assert len(made) == 2 and any("4x" in s for s in r3["fields"][0]["steps"])
+    assert service.call("texture_maps", {"sid": m["sid"], "settings": other})["maps"][0]["ready"]
+    # nothing to read when displacement is off
+    assert service.call("texture_maps", {"sid": m["sid"], "settings": {**settings, "source": "none"}})["maps"] == []
+
+
 def test_a_model_file_can_be_opened_on_its_own(home, weapon_dir):  # noqa: F811
     s = make_service(home)
     path = weapon_dir / "chr" / "c1100.chrbnd.dcx"

@@ -88,15 +88,18 @@ darkstl            # or darkstl-gui; darkstl gui --browser opens it in your brow
    the game folder they are (a map's texture packs, shared packs, another model's archive);
    *Model* lists its parts and options, *Textures* every texture found. A file that holds several
    models (a weapon and its sheath) has a switch at the top.
-4. **Generate** sets the vertex count (it shows the spacing that gives on this model) and where
-   the detail comes from, then makes the detailed model. Show *Original* or *Enhanced* under
-   the view: both stay loaded, so switching is instant. The last three models generated are
-   kept too, so generating again with settings you've already used is instant. The two steps
-   have their own buttons: *Run step 1 only* evens out the vertices and shows that model;
-   *Displace (step 2)* adds the texture detail to it, and can be run again with other settings
-   without evening out again; *Generate (steps 1 + 2)* does both. Click **Stop** in the status
-   bar (or under the progress bar) to stop a job.
-5. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default.
+4. **Mesh** evens out the vertices (step 1): set the count (it shows the spacing that gives on this
+   model) and the method, then *Even out the vertices*. The model is shown, not displaced yet, and
+   the mesh is kept while you work on the next two tabs.
+5. **Textures** also cleans up and upsamples the normal maps for displacement: pick the clean-up,
+   the upsampling and the factor, *Upscale*, and compare **Before / After** (drag the line, zoom
+   into single texels), then change the settings and upscale again until the detail looks right.
+6. **Displace** raises the texture detail on the evened-out mesh (step 2): the strength, a detail
+   texture for each material and the finer settings. Whatever the Mesh and Textures tabs haven't
+   made yet is made first. Show *Original* or *Enhanced* under the view: both stay loaded, so
+   switching is instant, and the last three models generated are kept too. Click **Stop** in the
+   status bar (or under a progress bar) to stop a job.
+7. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default.
 
 ![A game's library](docs/images/library.png)
 
