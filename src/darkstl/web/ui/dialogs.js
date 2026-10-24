@@ -53,8 +53,9 @@ function GamePicker({ value, onChange, id }) {
   </div>`;
 }
 
-function AddFolder({ game: forGame }) {
+function AddFolder({ game: forGame, collected = false }) {
   const [path, setPath] = useState("");
+  const [useHere, setUseHere] = useState(null); // collect new files into the folder added (null: not asked yet)
   const [check, setCheck] = useState(null);
   const [game, setGame] = useState(forGame || "");
   const [touched, setTouched] = useState(!!forGame);
@@ -67,26 +68,28 @@ function AddFolder({ game: forGame }) {
     try {
       const c = await api("folder_check", { path: p });
       setCheck(c);
-      if (!touched && c.game) setGame(c.game);
+      if ((!touched || c.collection) && c.game) setGame(c.game);
+      if (c.collection || c.collections.length) setUseHere(!c.library_has_files); // the first collection added: collect into it
     } catch (e) { setError(String(e.message || e)); }
   };
   useEffect(() => { const t = setTimeout(() => look(path), 350); return () => clearTimeout(t); }, [path]);
   const browse = async () => {
-    const p = await pickFolder("Choose the game's folder", path || undefined);
+    const p = await pickFolder(collected ? "Choose the folder of collected files" : "Choose the game's folder", path || undefined);
     if (p) setPath(p);
   };
   const submit = async () => {
     if (!check?.exists) { setError(path.trim() ? "There's no folder there." : "Choose a folder first."); return; }
+    const several = check.collections.length > 0;
     const name = (game || check.game || "").trim();
-    if (!name) { setError("Choose which game these files are from."); return; }
+    if (!name && !several) { setError("Choose which game these files are from."); return; }
     setBusy(true); setError(null);
     try {
-      const { job } = await api("folder_add", { path: check.path, game: name });
+      const { job } = await api("folder_add", { path: check.path, game: several ? null : name, library: !!(useHere && (check.collection || several)) });
       loadOverview();
       const r = await followJob(job, `Scanning ${check.path.split(/[\\/]/).filter(Boolean).pop()}`, (j) => setProgress(j.message || ""));
       await loadOverview();
       close();
-      toast(`Found ${plural(r.count, "model")} for ${r.game}`);
+      toast(r.games.length > 1 ? `Found ${plural(r.count, "model")} for ${r.games.join(", ")}` : `Found ${plural(r.count, "model")} for ${r.game}`);
       location.hash = routeHash(placeRoute(r.game));
     } catch (e) {
       setBusy(false);
@@ -94,9 +97,14 @@ function AddFolder({ game: forGame }) {
     }
   };
   const dialogs = info().dialogs;
-  return html`<${Dialog} title="Add a game folder" id="add-folder-dialog" onSubmit=${submit} busy=${busy} error=${error} submitLabel=${busy ? "Scanning…" : "Add folder"}>
-    <p class="muted">Choose the game's install folder (once it is unpacked), or any folder of model files you extracted from it.
-      Dark STL lists what it finds by game and type; nothing in the folder is changed.</p>
+  const several = check?.collections?.length > 0;
+  const ours = check?.collection || several;
+  const where = check?.collection_root || "";
+  return html`<${Dialog} title=${collected ? "Add collected files" : "Add a game folder"} id="add-folder-dialog" onSubmit=${submit} busy=${busy} error=${error} submitLabel=${busy ? "Scanning…" : several ? `Add ${plural(check.collections.length, "game")}` : "Add folder"}>
+    ${collected ? html`<p class="muted">Choose the folder Dark STL collected models into (Settings, App library), or one game's folder inside it.
+      The models are listed from there, so the games themselves don't need to be installed.</p>`
+    : html`<p class="muted">Choose the game's install folder (once it is unpacked), any folder of model files you extracted from it,
+      or a folder of models Dark STL collected before. Dark STL lists what it finds by game and type; nothing in the folder is changed.</p>`}
     <div class="field-block"><label class="field-label" for="folder-path">Folder</label>
       <div class="field-row"><input type="text" id="folder-path" placeholder=${dialogs ? "Choose with Browse…, or paste a path" : "Paste the folder's path, e.g. D:\\Steam\\steamapps\\common\\DARK SOULS REMASTERED"}
         value=${path} onInput=${(e) => setPath(e.target.value)} disabled=${busy} />
@@ -106,10 +114,16 @@ function AddFolder({ game: forGame }) {
       ${check?.added ? html`<small class="muted">This folder is already in the library; adding it again rescans it.</small>` : null}
       ${check?.contains?.length ? html`<small class="muted">It holds ${plural(check.contains.length, "folder")} already in the library; they become part of this one.</small>` : null}
     </div>
-    <div class="field-block"><label class="field-label" for="folder-game">Game</label>
+    ${several ? html`<div class="field-block" id="folder-collections"><span class="field-label">Collected files for</span>
+      <ul class="ls-list">${check.collections.map((c) => html`<li key=${c.path}><span>${c.game}</span><span class="muted">${plural(c.models, "model")} collected</span></li>`)}</ul></div>`
+    : html`<div class="field-block"><label class="field-label" for="folder-game">Game</label>
       <${GamePicker} id="folder-game" value=${game} onChange=${(g) => { setGame(g); setTouched(true); }} />
-      <small class="muted">${check?.game ? `Recognised as ${check.game}.` : check?.exists ? "Not recognised: choose the game, or another name for a folder of other models." : "Dark STL recognises Dark Souls, Bloodborne, Dark Souls III, Sekiro and Elden Ring folders by their files."}</small>
-    </div>
+      <small class="muted" id="folder-recognised">${check?.collection ? `Files Dark STL collected for ${check.collection.game} (${plural(check.collection.models, "model")}).`
+        : check?.game ? `Recognised as ${check.game}.` : check?.exists ? "Not recognised: choose the game, or another name for a folder of other models." : "Dark STL recognises Dark Souls, Bloodborne, Dark Souls III, Sekiro and Elden Ring folders by their files."}</small>
+    </div>`}
+    ${ours && where !== check.library_dir ? html`<label class="check-row" title=${`Now: ${check.library_dir}`}>
+      <input type="checkbox" id="folder-use-library" checked=${!!useHere} disabled=${busy} onChange=${(e) => setUseHere(e.target.checked)} />
+      <span>Collect new files into this folder too<small class="muted">${where}</small></span></label>` : null}
     ${busy ? html`<p class="muted" id="folder-progress">${progress || "Looking for models…"}</p>` : null}
   <//>`;
 }
@@ -237,7 +251,7 @@ function Collect({ game, category, group, model }) {
       : html`<p id="collect-plan-text"><b>${plural(plan.models, "model")}</b> · ${plural(plan.files, "file")} · ${bytesText(plan.bytes)}
           ${plan.present ? html`<span class="muted"> · ${plan.to_copy ? `${plural(plan.present, "file")} already there, ${bytesText(plan.bytes_to_copy)} to copy` : "all already there"}</span>` : null}</p>
         <p class="muted" id="collect-plan-kinds">${kinds.join(" · ")}</p>
-        <p class="muted">Into <span class="note-path" id="collect-folder">${plan.folder}</span></p>`}
+        <p class="muted">Into <span class="note-path" id="collect-folder">${plan.folder}</span> · <a href=${routeHash("settings")} id="collect-change-folder" onClick=${close}>change where</a></p>`}
     </div>
     ${busy ? html`<p class="muted" id="collect-progress">${progress || "Copying…"}</p>` : null}
   <//>`;
@@ -256,7 +270,7 @@ function ConfirmDialog({ title, text, button, run }) {
 export function Dialogs() {
   const dialog = useStore(ui, (s) => s.dialog);
   if (!dialog) return null;
-  if (dialog.type === "add-folder") return html`<${AddFolder} game=${dialog.game} />`;
+  if (dialog.type === "add-folder") return html`<${AddFolder} game=${dialog.game} collected=${!!dialog.collected} />`;
   if (dialog.type === "change-game") return html`<${ChangeGame} key=${dialog.path} path=${dialog.path} game=${dialog.game} />`;
   if (dialog.type === "open-file") return html`<${OpenFile} />`;
   if (dialog.type === "confirm") return html`<${ConfirmDialog} ...${dialog} />`;

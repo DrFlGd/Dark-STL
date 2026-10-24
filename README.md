@@ -76,7 +76,9 @@ darkstl            # or darkstl-gui; darkstl gui --browser opens it in your brow
 1. **Add your games.** *Add game folder…* takes a game's folder (once unpacked) or any folder
    of extracted model files. Dark STL recognises the game from its files and lists it in the
    menu. Add as many games and folders as you like; *Settings* lists them, with Rescan,
-   Change game and Remove. Nothing in your folders is ever changed.
+   Change game and Remove. Nothing in your folders is ever changed. Models you *Collect into
+   the app* are copied into Dark STL's library folder (movable in *Settings*); on a fresh
+   install, *Add collected files…* lists them from there without the games.
 2. **Browse a game.** Each game has its own library: its kinds of model (weapons, armour,
    characters, objects, map pieces) as tiles, then each kind's models with a preview, in
    groups. Previews are drawn once and kept until you rescan the folder. Search with the box

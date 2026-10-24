@@ -4,7 +4,7 @@
 import { html, useState, useEffect } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui, THEMES, SKINS, setTheme, setSkin } from "./state.js";
-import { api, info, plural, bytesText, toast, showInFolder, pickFolder } from "./api.js";
+import { api, info, plural, bytesText, toast, showInFolder, pickFolder, followJob, loadOverview } from "./api.js";
 import { CommandBar } from "./layout.js";
 import { Icon } from "./icons.js";
 import { GameBadge } from "./gameicons.js";
@@ -50,6 +50,22 @@ function Engine() {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => { api("settings_get").then(setS, (e) => setError(msg(e))); }, []);
+  const [moveToo, setMoveToo] = useState(true);
+  const [moving, setMoving] = useState("");
+  const moveLibrary = async (path) => {
+    if (!path) { save({ library_dir: "" }, "Back to the app's own folder."); return; }
+    setBusy(true); setError(null);
+    try {
+      const r = await api("library_move", { path, move: moveToo });
+      if (r.job) {
+        await followJob(r.job, "Moving collected files", (j) => setMoving(j.message || ""));
+        await loadOverview();
+        toast("Moved the collected files; they're listed from there now.");
+      } else toast(s.library_files && !moveToo ? "Saved. Files collected so far stay where they are; new ones go here." : "Saved.");
+      setS(await api("settings_get"));
+    } catch (e) { setError(msg(e)); }
+    setMoving(""); setBusy(false);
+  };
   const save = async (patch, said) => {
     setBusy(true); setError(null);
     try { setS(await api("settings_set", patch)); if (said) toast(said); } catch (e) { setError(msg(e)); }
@@ -69,7 +85,11 @@ function Engine() {
         laid out like the game's folder, one folder per game. Collected models stay listed when the game's folder is removed or the game uninstalled.</p>
       <p id="library-status">${s.library_files ? html`${Icon.inbox(14)} ${plural(s.library_files, "file")} · ${bytesText(s.library_bytes)}` : html`<span class="muted">Nothing collected yet. Each game's ⋯ menu, a model's right-click menu and the model page's ⋯ menu have Collect into the app.</span>`}</p>
       <${PathRow} id="library-dir" value=${s.library_dir} placeholder="Folder for the copies" busy=${busy} browse=${(v) => pickFolder("Keep collected files in", v || undefined)}
-        onSave=${(p) => save({ library_dir: p }, "Saved. Files collected so far stay where they were; collect them again to copy them here.")} />
+        onSave=${moveLibrary} />
+      ${s.library_files ? html`<label class="check-row" title="Moves each game's collected files to the new folder and lists them from there. Otherwise they stay listed where they are, and only new collections go to the new folder.">
+        <input type="checkbox" id="library-move" checked=${moveToo} disabled=${busy} onChange=${(e) => setMoveToo(e.target.checked)} /><span>Move the files collected so far there too</span></label>` : null}
+      <p class="muted">Each game's folder in it holds a note of what it is (darkstl-collection.json), so on another computer or a fresh install you can add the folder (or one game's folder in it) with <i>Add game folder…</i> instead of the games.</p>
+      ${moving ? html`<p class="muted" id="library-moving">${moving}</p>` : null}
       <div><button type="button" class="ghost" id="library-show" onClick=${() => showInFolder(s.library_dir)}>${Icon.folder(14)} Show in folder</button></div>
     </section>
     <section class="ls-section" id="settings-textures">

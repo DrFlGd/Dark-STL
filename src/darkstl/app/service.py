@@ -410,6 +410,8 @@ class Service:
                 job.report(i / len(folders), f"Reading {path.name}")
                 if path.is_dir():
                     lib.add_root(path, game)
+                    if _is_under(path, self.config.library_folder) and collect.read_manifest(path) is None:
+                        collect.write_manifest(path, game or path.name)  # collected before version 0.4.1
                 else:
                     lib.roots[path] = game or path.name
                     lib.notes[path] = [f"This folder isn't there any more: {path}"]
@@ -435,10 +437,9 @@ class Service:
     def cmd_overview(self, args: dict) -> dict:
         with self.lock:
             games = self.library.overview(bool(args.get("lod")))
-        library = self.config.library_folder
         for g in games:
             for f in g["folders"]:
-                f["collected"] = _is_under(Path(f["path"]), library)
+                f["collected"] = self._is_collection(Path(f["path"]))
         return {"scanning": self.scanning > 0, "games": games, "total": sum(g["count"] for g in games)}
 
     def cmd_folder_check(self, args: dict) -> dict:
@@ -449,9 +450,17 @@ class Service:
         with self.lock:
             roots = dict(self.library.roots)
         outer, inner = folder_relation(path, roots)
-        return {"path": str(path), "exists": path.is_dir(), "game": detect_game(path) if path.is_dir() else None,
+        found = collect.collections_in(path) if path.is_dir() else []
+        own = next((data for p, data in found if p == path), None)  # a game's folder of collected files
+        game = own["game"] if own else detect_game(path) if path.is_dir() and not found else None
+        return {"path": str(path), "exists": path.is_dir(), "game": game,
                 "games": known_games(), "added": path in roots, "inside": str(outer) if outer else None,
-                "inside_game": roots.get(outer) if outer else None, "contains": [str(p) for p in inner]}
+                "inside_game": roots.get(outer) if outer else None, "contains": [str(p) for p in inner],
+                "collection": _collection_json(path, own) if own else None,
+                "collections": [] if own else [_collection_json(p, d) for p, d in found],  # a whole library folder
+                "collection_root": str(path.parent if own else path) if found else None,  # its library folder
+                "library_dir": str(self.config.library_folder),
+                "library_has_files": bool(collect.collections_in(self.config.library_folder))}
 
     def cmd_folder_add(self, args: dict) -> dict:
         check = self.cmd_folder_check(args)
@@ -461,8 +470,19 @@ class Service:
         if check["inside"]:
             raise AppError(f"That folder is already in the library, as part of {check['inside_game']} "
                            f"({check['inside']}).")
+        if args.get("library"):  # collect into this library folder from now on
+            self.config.library_dir = str(path.parent if check["collection"] else path)
+            self.config.save()
+        if check["collections"]:  # a whole library folder: each game's folder in it
+            with self.lock:
+                added = dict(self.library.roots)
+            todo = [(Path(c["path"]), c["game"]) for c in check["collections"]
+                    if Path(c["path"]) not in added and not folder_relation(Path(c["path"]), added)[0]]
+            if not todo:
+                raise AppError("Every game in that folder is in the library already.")
+            return {"job": self._scan(todo, None, f"Reading collected files in {path.name}").id}
         game = str(args.get("game") or check["game"] or path.name).strip()
-        return {"job": self._scan(path, game, f"Scanning {path.name}").id}
+        return {"job": self._scan([(path, game)], None, f"Scanning {path.name}").id}
 
     def cmd_folder_rescan(self, args: dict) -> dict:
         path = Path(str(args.get("path") or ""))
@@ -472,27 +492,37 @@ class Service:
             raise AppError(f"{path} isn't one of the game folders.")
         if not path.is_dir():
             raise AppError(f"This folder isn't there any more: {path}")
-        return {"job": self._scan(path, game, f"Rescanning {path.name}", redraw=True).id}
+        return {"job": self._scan([(path, game)], None, f"Rescanning {path.name}", redraw=True).id}
 
-    def _scan(self, path: Path, game: str, label: str, redraw: bool = False) -> Job:
-        """Scan a folder into the library; ``redraw`` (a rescan) draws its models' previews again."""
-        def run(job: Job):
-            lib = Library()
+    def _scan(self, folders: list[tuple[Path, str]], replace: list[Path] | None, label: str,
+              redraw: bool = False) -> Job:
+        """Scan folders (each with its game) into the library; ``replace``: folders they take the place of
+        (moved); ``redraw`` (a rescan) draws their models' previews again."""
+        return self._scan_job(label, lambda job: self._scan_into(job, folders, replace, redraw))
+
+    def _scan_into(self, job: Job, folders: list[tuple[Path, str]], replace: list[Path] | None = None,
+                   redraw: bool = False) -> dict:
+        """The work of a scan job (see _scan), in ``job``."""
+        lib = Library()
+        for path, game in folders:
             lib.add_root(path, game, lambda i, name: job.report(0.0, name if i < 0 else f"{i:,} files: {name}"))
-            job.check()
-            if redraw:
-                with self.lock:
-                    before = [e.path for e in self.library.entries if _is_under(e.path, path)]
-                self.thumbs.forget(set(before) | {e.path for e in lib.entries})
+        job.check()
+        if redraw:
             with self.lock:
+                before = [e.path for e in self.library.entries if any(_is_under(e.path, p) for p, _g in folders)]
+            self.thumbs.forget(set(before) | {e.path for e in lib.entries})
+        with self.lock:
+            for old in replace or []:
+                self.library.remove_root(old)
+            for path, _game in folders:
                 for inner in folder_relation(path, self.library.roots)[1]:  # now part of this folder
                     self.library.remove_root(inner)
-                self.library.merge(lib)
-                self._save_folders()
-            count = sum(1 for e in lib.entries if not lib.hides(e))  # as the library lists them
-            return {"game": game, "path": str(path), "count": count, "notes": lib.notes.get(path, [])}
-
-        return self._scan_job(label, run)
+            self.library.merge(lib)
+            self._save_folders()
+        count = sum(1 for e in lib.entries if not lib.hides(e))  # as the library lists them
+        path, game = folders[0]
+        return {"game": game, "games": list(dict.fromkeys(g for _p, g in folders)), "path": str(path),
+                "count": count, "notes": lib.notes.get(path, [])}
 
     def cmd_folder_remove(self, args: dict) -> dict:
         path = Path(str(args.get("path") or ""))
@@ -514,6 +544,44 @@ class Service:
             self.library.set_game(path, game)
             self._save_folders()
         return {}
+
+    def _is_collection(self, folder: Path) -> bool:
+        """Whether a folder holds copies Dark STL collected (in the library folder, or brought from elsewhere)."""
+        return _is_under(folder, self.config.library_folder) or (folder / collect.MANIFEST).is_file()
+
+    def cmd_library_move(self, args: dict) -> dict:
+        """Keep collected files in another folder: move what's collected so far there (``move``, the
+        default), and list the games from their new place."""
+        target = Path(os.path.abspath(os.path.expanduser(str(args.get("path") or "").strip().strip('"'))))
+        if not str(args.get("path") or "").strip():
+            raise AppError("Choose a folder first.")
+        old = self.config.library_folder
+        if target == old:
+            return {"job": None, "library_dir": str(old)}
+        if _is_under(target, old):
+            raise AppError(f"Choose a folder outside the one it's in now ({old}).")
+        with self.lock:
+            moving = [(r, g) for r, g in self.library.roots.items() if _is_under(r, old) and r.is_dir()]
+        if not args.get("move", True) or not moving:
+            self.config.library_dir = str(target)
+            self.config.save()
+            return {"job": None, "library_dir": str(target)}
+
+        def run(job: Job):
+            moved = []
+            for i, (root, game) in enumerate(moving):
+                job.report(i / len(moving), f"Moving {game}")
+                dest = target / root.relative_to(old)
+                if not (root / collect.MANIFEST).is_file():
+                    collect.write_manifest(root, game)
+                collect.move_folder(root, dest)
+                moved.append((dest, game))
+            self.config.library_dir = str(target)
+            self.config.save()
+            return self._scan_into(job, moved, [r for r, _g in moving])
+
+        job = self._scan_job(f"Moving collected files to {target.name}", run, stoppable=False)  # half moved: no
+        return {"job": job.id, "library_dir": str(target)}
 
     def _save_folders(self) -> None:
         self.config.game_folders = [{"path": str(p), "game": g} for p, g in self.library.roots.items()]
@@ -540,7 +608,7 @@ class Service:
                 entries = self.library.query(str(args["game"]), args.get("category") or None, args.get("group") or None,
                                              str(args.get("q") or ""), bool(args.get("lod")))
             roots = [r for r, g in self.library.roots.items()]
-        entries = [e for e in entries if not _is_under(e.path, self.config.library_folder)]
+        entries = [e for e in entries if not self._is_collection(self.library.root_of(e) or e.path.parent)]
         if not entries:
             raise AppError("Nothing to collect: choose a model, a kind or a game.")
         games = sorted({e.game for e in entries})
@@ -858,6 +926,11 @@ class Service:
             self.sessions.clear()
             self.textures_png.clear()
             self.generated.clear()
+
+
+def _collection_json(path: Path, data: dict) -> dict:
+    return {"path": str(path), "game": str(data["game"]), "models": len(data.get("models") or []),
+            "updated": data.get("updated"), "sources": data.get("sources") or []}
 
 
 def _is_under(path: Path, root: Path) -> bool:

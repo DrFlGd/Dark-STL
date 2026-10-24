@@ -205,3 +205,109 @@ def test_the_collect_dialog_on_the_page(home, weapon_dir, tmp_path):  # noqa: F8
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_collections_carry_a_note_move_and_come_back_on_a_fresh_install(home, weapon_dir, tmp_path, monkeypatch):  # noqa: F811
+    s = Service(Config.load(), home / "cache")
+    wait(s, s.call("folder_add", {"path": str(weapon_dir)})["job"])
+    wait(s, s.call("collect_run", {"game": "Dark Souls III", "category": "Weapons"})["job"])
+    folder = home / "library" / "Dark Souls III"
+    note = collect.read_manifest(folder)
+    assert note["game"] == "Dark Souls III" and note["models"] == ["wp_a_0300", "wp_a_0400"]
+    assert note["sources"] == [str(weapon_dir)]
+    assert s.call("settings_get", {})["library_files"] == 3  # the note isn't counted
+
+    # moved: the files go, the game is listed from the new place, and new collections go there
+    elsewhere = tmp_path / "Prints" / "Dark STL"
+    r = s.call("library_move", {"path": str(elsewhere)})
+    moved = wait(s, r["job"])
+    assert moved["games"] == ["Dark Souls III"] and not folder.exists()
+    assert (elsewhere / "Dark Souls III" / "parts" / "wp_a_0300.partsbnd.dcx").is_file()
+    assert collect.read_manifest(elsewhere / "Dark Souls III")["models"] == ["wp_a_0300", "wp_a_0400"]
+    ds3 = next(g for g in s.call("overview", {})["games"] if g["name"] == "Dark Souls III")
+    assert [(f["path"], f["collected"]) for f in ds3["folders"]] == [(str(weapon_dir), False), (str(elsewhere / "Dark Souls III"), True)]
+    assert s.call("settings_get", {})["library_dir"] == str(elsewhere)
+    assert Path(s.call("collect_plan", {"game": "Dark Souls III", "category": "Armor"})["folder"]) == elsewhere / "Dark Souls III"
+    with pytest.raises(AppError, match="outside the one"):
+        s.call("library_move", {"path": str(elsewhere / "inner")})
+    # without moving: only where new ones go
+    assert s.call("library_move", {"path": str(tmp_path / "new"), "move": False})["job"] is None
+    assert s.call("settings_get", {})["library_dir"] == str(tmp_path / "new")
+    assert (elsewhere / "Dark Souls III").is_dir()
+
+    # a fresh install: no settings, no game; the collected folder (or one game's folder in it) is enough
+    monkeypatch.setenv("DARKSTL_HOME", str(tmp_path / "fresh"))
+    fresh = Service(Config.load(), tmp_path / "fresh" / "cache")
+    one = fresh.call("folder_check", {"path": str(elsewhere / "Dark Souls III")})
+    assert one["game"] == "Dark Souls III" and one["collection"]["models"] == 2 and one["collections"] == []
+    whole = fresh.call("folder_check", {"path": str(elsewhere)})
+    assert whole["game"] is None and [c["game"] for c in whole["collections"]] == ["Dark Souls III"]
+    assert whole["collection_root"] == str(elsewhere) and not whole["library_has_files"]
+    added = wait(fresh, fresh.call("folder_add", {"path": str(elsewhere), "library": True})["job"])
+    assert added["games"] == ["Dark Souls III"] and added["count"] == 2
+    assert fresh.call("settings_get", {})["library_dir"] == str(elsewhere)
+    (game,) = fresh.call("overview", {})["games"]
+    assert game["folders"][0]["collected"] and game["count"] == 2
+    with pytest.raises(AppError, match="in the library already"):
+        fresh.call("folder_add", {"path": str(elsewhere)})
+
+
+def test_collections_made_before_the_note_get_one(home, weapon_dir):  # noqa: F811
+    s = Service(Config.load(), home / "cache")
+    wait(s, s.call("folder_add", {"path": str(weapon_dir)})["job"])
+    wait(s, s.call("collect_run", {"game": "Dark Souls III", "category": "Armor"})["job"])
+    note = home / "library" / "Dark Souls III" / collect.MANIFEST
+    note.unlink()
+    again = Service(Config.load(), home / "cache")
+    wait(again, again.load_folders().id)
+    assert collect.read_manifest(note.parent)["game"] == "Dark Souls III"
+
+
+def test_moving_and_adding_collected_files_on_the_page(home, weapon_dir, tmp_path, monkeypatch):  # noqa: F811
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    from darkstl.app.server import AppServer
+    from test_page import launch
+
+    s = Service(Config.load(), home / "cache")
+    wait(s, s.call("folder_add", {"path": str(weapon_dir)})["job"])
+    wait(s, s.call("collect_run", {"game": "Dark Souls III", "category": "Weapons"})["job"])
+    elsewhere = tmp_path / "Prints"
+    servers = [AppServer(s, 0).start()]
+    try:
+        with sync_playwright() as p:
+            browser = launch(p)
+            page = browser.new_page(viewport={"width": 1400, "height": 900})
+            # Settings: a new place for the collected files, and they move there
+            page.goto(servers[0].url + "#/settings")
+            page.wait_for_selector("#library-move")
+            assert page.is_checked("#library-move")
+            page.fill("#library-dir", str(elsewhere))
+            page.press("#library-dir", "Enter")
+            page.wait_for_selector("text=Moved the collected files", timeout=60000)
+            assert (elsewhere / "Dark Souls III" / collect.MANIFEST).is_file()
+            assert page.locator("#folder-list li", has_text=str(elsewhere)).count() == 1
+
+            # a fresh install: add the collected files instead of the game
+            monkeypatch.setenv("DARKSTL_HOME", str(tmp_path / "fresh"))
+            servers.append(AppServer(Service(Config.load(), tmp_path / "fresh" / "cache"), 0).start())
+            page.goto(servers[1].url)
+            page.wait_for_selector("#first-run")
+            page.click("#first-add-collected")
+            page.wait_for_selector("text=Add collected files")
+            page.fill("#folder-path", str(elsewhere))
+            page.wait_for_selector("#folder-collections li", timeout=30000)
+            assert "Dark Souls III" in page.inner_text("#folder-collections")
+            assert page.is_checked("#folder-use-library")
+            assert page.text_content("#add-folder-dialog-ok") == "Add 1 game"
+            page.click("#add-folder-dialog-ok")
+            page.wait_for_selector('#kind-tiles [data-sub="Weapons"]', timeout=60000)
+            assert page.inner_text("#browse-count") == "2 models"
+            assert page.evaluate("window.__errors") == []
+            browser.close()
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+    assert json.loads((tmp_path / "fresh" / "settings.json").read_text())["library_dir"] == str(elsewhere)

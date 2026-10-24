@@ -111,6 +111,7 @@ function FirstRun({ error }) {
     ${error ? html`<p class="warn-note" role="alert">${error}</p>` : null}
     <div class="home-actions">
       <button type="button" class="primary" id="first-add-folder" onClick=${addFolder}>${Icon.plus(15)} Add a game folder…</button>
+      <button type="button" class="ghost" id="first-add-collected" title="A folder of models Dark STL collected before, on this computer or another" onClick=${() => ui.set({ dialog: { type: "add-folder", collected: true } })}>${Icon.inbox(15)} Add collected files…</button>
       <button type="button" class="ghost" id="first-open-file" onClick=${openFile}>Open one model file…</button>
     </div>
     <div class="home-card first-tips">
@@ -119,6 +120,7 @@ function FirstRun({ error }) {
         Dark Souls II, Dark Souls III, Sekiro and Elden Ring pack them in archives: unpack those first with UXM Selective Unpacker
         (UDSFM for Dark Souls: Prepare to Die Edition). For Bloodborne, choose the folder of files extracted from the game.</p>
       <p><b>Or any folder of extracted files</b>, such as .partsbnd, .chrbnd, .objbnd, .flver or .obj files you've pulled out with other tools.</p>
+      <p><b>Or models Dark STL collected before</b> (on this computer or another): choose its library folder, or one game's folder in it, with <i>Add collected files</i>. Each game can come from either its own folder or its collected files.</p>
       ${games.length ? html`<p class="muted">Recognised: ${games.join(", ")}. Other folders can be added under a name you choose.</p>` : null}
     </div>
   </div></div>`;

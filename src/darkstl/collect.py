@@ -12,8 +12,10 @@ be removed from the library, or the game uninstalled, and the copies stay.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -21,6 +23,7 @@ from typing import Callable
 from .model import CatalogEntry
 
 KINDS = ("model", "texture", "animation", "other")
+MANIFEST = "darkstl-collection.json"
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,7 @@ class Plan:
     folder: Path  # <library>/<game>
     models: list[str]
     files: list[PlannedFile] = field(default_factory=list)
+    roots: list[Path] = field(default_factory=list)  # the game folders the files come from
 
     @property
     def to_copy(self) -> list[PlannedFile]:
@@ -103,7 +107,7 @@ def plan(library: Path, game: str, entries: list[CatalogEntry], roots: list[Path
          extras: Callable[[Path], list[RelatedFile]] | None = None) -> Plan:
     """What collecting ``entries`` would copy, and what is already there."""
     folder = Path(library) / _folder_name(game)
-    out = Plan(game, folder, [e.stem for e in entries])
+    out = Plan(game, folder, [e.stem for e in entries], roots=[Path(r) for r in roots if not _is_under(Path(r), folder)])
     seen: set[Path] = set()
 
     def add(f: RelatedFile, model: str) -> None:
@@ -160,17 +164,87 @@ def run(plan: Plan, progress: Callable[[float, str], None] | None = None) -> dic
         os.replace(tmp, f.target)
         done += f.size
         copied += 1
+    write_manifest(plan.folder, plan.game, plan.models, sorted({str(r) for r in plan.roots}))
     if progress:
         progress(1.0, "Done")
     return {"game": plan.game, "folder": str(plan.folder), "models": len(plan.models), "copied": copied,
             "bytes": sum(f.size for f in todo), "present": len(plan.files) - len(todo)}
 
 
+def read_manifest(folder: Path) -> dict | None:
+    """What a folder of collected files says about itself, or None for any other folder."""
+    try:
+        data = json.loads((Path(folder) / MANIFEST).read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("kind") != "collection" or not str(data.get("game") or "").strip():
+        return None
+    return data
+
+
+def write_manifest(folder: Path, game: str, models: list[str] = (), sources: list[str] = ()) -> dict:
+    """Record (or bring up to date) which game a folder of copies belongs to and what it holds."""
+    from . import __version__
+
+    folder = Path(folder)
+    old = read_manifest(folder) or {}
+    data = {"kind": "collection", "app": "Dark STL", "format": 1, "game": game,
+            "models": sorted(set(old.get("models") or []) | set(models), key=str.lower),
+            "sources": sorted(set(old.get("sources") or []) | set(sources)),
+            "created": old.get("created") or time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "updated": time.strftime("%Y-%m-%dT%H:%M:%S"), "version": __version__}
+    folder.mkdir(parents=True, exist_ok=True)
+    tmp = folder / f"{MANIFEST}.part"
+    tmp.write_text(json.dumps(data, indent=2), "utf-8")
+    os.replace(tmp, folder / MANIFEST)
+    return data
+
+
+def collections_in(folder: Path) -> list[tuple[Path, dict]]:
+    """The folders of collected files at ``folder``: itself, or else the game folders directly inside it
+    (a whole library folder, one folder per game)."""
+    folder = Path(folder)
+    own = read_manifest(folder)
+    if own is not None:
+        return [(folder, own)]
+    out = []
+    try:
+        subs = sorted(p for p in folder.iterdir() if p.is_dir())
+    except OSError:
+        return []
+    for sub in subs:
+        data = read_manifest(sub)
+        if data is not None:
+            out.append((sub, data))
+    return out
+
+
+def move_folder(src: Path, dst: Path) -> None:
+    """Move a game's folder of copies to ``dst``; into what's there already when it exists."""
+    src, dst = Path(src), Path(dst)
+    if not dst.exists():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src), str(dst))  # a rename on the same drive
+        return
+    for dirpath, _dirs, names in os.walk(src):
+        rel = Path(dirpath).relative_to(src)
+        (dst / rel).mkdir(parents=True, exist_ok=True)
+        for name in names:
+            if name == MANIFEST:
+                continue
+            shutil.move(str(Path(dirpath) / name), str(dst / rel / name))  # replaces an older copy
+    data = read_manifest(src) or {}
+    write_manifest(dst, data.get("game") or dst.name, data.get("models") or [], data.get("sources") or [])
+    shutil.rmtree(src, ignore_errors=True)
+
+
 def folder_size(folder: Path) -> tuple[int, int]:
-    """(files, bytes) under a folder."""
+    """(files, bytes) under a folder (the copies: not the notes of what they are)."""
     files = total = 0
     for dirpath, _dirs, names in os.walk(folder):
         for name in names:
+            if name == MANIFEST:
+                continue
             try:
                 total += (Path(dirpath) / name).stat().st_size
                 files += 1
@@ -192,4 +266,5 @@ def _is_under(path: Path, root: Path) -> bool:
         return False
 
 
-__all__ = ["KINDS", "CollectOptions", "Plan", "PlannedFile", "RelatedFile", "folder_size", "plan", "run"]
+__all__ = ["KINDS", "MANIFEST", "CollectOptions", "Plan", "PlannedFile", "RelatedFile", "collections_in", "folder_size",
+           "move_folder", "plan", "read_manifest", "run", "write_manifest"]
