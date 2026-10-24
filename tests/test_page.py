@@ -18,18 +18,21 @@ sync_api = pytest.importorskip("playwright.sync_api")
 GL = ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"]
 
 
+def launch(p):
+    """Playwright's own Chromium, or the one DARKSTL_CHROMIUM / /opt/pw-browsers names; skips without one."""
+    tries = [{}] + [{"executable_path": exe} for exe in (os.environ.get("DARKSTL_CHROMIUM"), "/opt/pw-browsers/chromium") if exe]
+    for extra in tries:
+        try:
+            return p.chromium.launch(args=GL, **extra)
+        except Exception:  # noqa: BLE001 - try the next, then skip
+            continue
+    pytest.skip("no Chromium for Playwright")
+
+
 @pytest.fixture(scope="module")
 def browser():
     with sync_api.sync_playwright() as p:
-        tries = [{}] + [{"executable_path": exe} for exe in (os.environ.get("DARKSTL_CHROMIUM"), "/opt/pw-browsers/chromium") if exe]
-        for extra in tries:
-            try:
-                b = p.chromium.launch(args=GL, **extra)
-                break
-            except Exception:  # noqa: BLE001 - try the next, then skip
-                continue
-        else:
-            pytest.skip("no Chromium for Playwright")
+        b = launch(p)
         yield b
         b.close()
 

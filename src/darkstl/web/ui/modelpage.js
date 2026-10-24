@@ -1,14 +1,16 @@
 // A model's own page (model:<id>[@<variant>]): the 3D view with its textures,
-// and the inspector's Model (parts, options, size, file), Textures, Generate
-// (even out the vertices, then displace them by the textures' detail) and
-// Export tabs. A file holding several models (a weapon and its sheath) gets a
-// switch between them in the command bar.
+// and the inspector's Model (parts, options, size, file), Textures, Pose (an
+// animation and a frame to hold the model in), Generate (even out the
+// vertices, then displace them by the textures' detail) and Export tabs. A
+// file holding several models (a weapon and its sheath) gets a switch between
+// them in the command bar.
 import { html, useState, useEffect, useLayoutEffect, useRef, useMemo } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui, setPref, resolvedTheme } from "./state.js";
 import { routeHash, placeRoute, modelOf } from "./context.js";
 import { Icon } from "./icons.js";
-import { api, binUrl, info, plural, followJob, toast, showInFolder, pickFolder, pickFile } from "./api.js";
+import { collectModelItem } from "./games.js";
+import { api, binUrl, info, plural, bytesText, followJob, toast, showInFolder, pickFolder, pickFile } from "./api.js";
 import { CommandBar } from "./layout.js";
 import { Inspector, useWidth } from "./inspector.js";
 import { Viewer } from "../viewer.js";
@@ -27,20 +29,22 @@ const msg = (e) => String(e?.message || e);
 const num = (n) => Math.round(n).toLocaleString();
 const mm = (v) => (v >= 100 ? Math.round(v) : v >= 10 ? v.toFixed(1) : v.toFixed(2));
 const sizeText = (s) => (s ? `${mm(s[0])} × ${mm(s[1])} × ${mm(s[2])} mm` : "");
-const bytes = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 const variantName = (v) => (v || "").replace(/\.(flver|flv)$/i, "");
 /** Where new vertices will be on average, for a mesh of `area` m² with `n` vertices: equilateral triangles, about 2 per vertex. */
 const spacingMm = (area, n) => (area > 0 && n > 0 ? Math.sqrt((2 * area) / (Math.sqrt(3) * n)) * 1000 : 0);
 
-/** The parts and options as the mesh commands take them, JSON and in a URL. */
-function meshArgs(m, off, flags) {
+/** The parts, options and pose as the mesh commands take them, JSON and in a URL. */
+function meshArgs(m, off, flags, pose) {
   const parts = off.size ? m.parts.map((_, i) => i).filter((i) => !off.has(i)) : null;
+  const p = pose ? [pose.anim, pose.frame] : null;
   return {
-    json: { parts, flags },
-    url: { parts: parts ? parts.join(",") : "all", flags: Object.entries(flags).map(([k, v]) => `${k}:${v ? 1 : 0}`).join(",") },
-    key: JSON.stringify([parts, flags]),
+    json: { parts, flags, pose: p },
+    url: { parts: parts ? parts.join(",") : "all", flags: Object.entries(flags).map(([k, v]) => `${k}:${v ? 1 : 0}`).join(","), pose: p ? `${p[0]}@${p[1]}` : "" },
+    key: JSON.stringify([parts, flags, p]),
   };
 }
+/** The pose as part of a file name: a000_003000_f12. */
+const poseSuffix = (pose) => (pose ? `_${pose.anim}_f${pose.frame}` : "");
 
 export function ModelPage({ route }) {
   const { id, variant } = modelOf(route);
@@ -69,6 +73,8 @@ export function ModelPage({ route }) {
     { id: "show", label: "Show in folder", icon: "folder", run: () => showInFolder(m.file) },
     { id: "copy-path", label: "Copy file path", icon: "copy", run: () => navigator.clipboard?.writeText(m.file).then(() => toast("Copied the file's path")) },
     { sep: true },
+    collectModelItem({ id: m.id, file: m.file, label: entry?.label || m.name, category: entry?.category, group: entry?.group }, entry?.game),
+    { sep: true },
     { id: "open-file", label: "Open another model file…", icon: "file", run: () => ui.set({ dialog: { type: "open-file" } }) },
   ];
   return html`<${CommandBar} ...${bar} up=${up.filter(([, href]) => href)} title=${html`<h1 id="mp-name" title=${entry?.label || m.name}>${entry?.label || m.name}</h1>`}
@@ -90,7 +96,9 @@ function Workspace({ m, variant }) {
   const [result, setResult] = useState(m.enhanced ? { ...m.enhanced, rev: 1 } : null);
   const [resultKey, setResultKey] = useState(null);
   const [which, setWhich] = useState(m.enhanced ? "enhanced" : "original");
-  const args = meshArgs(m, off, flags);
+  const [pose, setPose] = useState(null); // { anim, frame } or null for the bind pose
+  const [busy, setBusy] = useState(false); // the 3D view is fetching a mesh
+  const args = meshArgs(m, off, flags, pose);
   // the engine keeps a few models open; if this one was let go, open it again and retry
   const call = async (cmd, a) => {
     try { return await api(cmd, a); } catch (e) {
@@ -100,7 +108,7 @@ function Workspace({ m, variant }) {
     }
   };
   useEffect(() => {
-    if (args.key === meshArgs(m, new Set(), Object.fromEntries(m.options.map((o) => [o.key, o.default]))).key) { setStats(m.stats); return; }
+    if (args.key === meshArgs(m, new Set(), Object.fromEntries(m.options.map((o) => [o.key, o.default])), null).key) { setStats(m.stats); return; }
     let live = true;
     call("model_stats", { sid: m.sid, ...args.json }).then((s) => { if (live) setStats(s); }, () => {});
     return () => { live = false; };
@@ -112,20 +120,21 @@ function Workspace({ m, variant }) {
   const enhanced = (r) => { setResult({ ...r, rev: (result?.rev || 0) + 1 }); setResultKey(args.key); setWhich("enhanced"); };
   return html`<div class="model-workspace" ref=${box}>
     <section class="workspace-viewing-area">
-      <${Stage} m=${m} variant=${variant} which=${which} setWhich=${setWhich} args=${args} result=${result} stats=${stats} />
+      <${Stage} m=${m} variant=${variant} which=${which} setWhich=${setWhich} args=${args} result=${result} stats=${stats} pose=${pose} onBusy=${setBusy} />
     </section>
     <${Inspector} page="model" crowded=${crowded} label="Panels" tabs=${[
       { id: "model", label: "Model", icon: "box", body: html`<${ModelTab} m=${m} off=${off} setOff=${setOff} flags=${flags} setFlags=${setFlags} stats=${stats} />` },
       { id: "textures", label: "Textures", icon: "image", body: html`<${TexturesTab} m=${m} />` },
+      ...(m.animated ? [{ id: "pose", label: "Pose", icon: "play", body: html`<${PoseTab} m=${m} pose=${pose} setPose=${setPose} busy=${busy} call=${call} />` }] : []),
       { id: "enhance", label: "Generate", icon: "layers", body: html`<${EnhanceTab} m=${m} args=${args} stats=${stats} result=${result} stale=${!!result && !!resultKey && resultKey !== args.key}
         call=${call} onDone=${enhanced} />` },
-      { id: "export", label: "Export", icon: "download", body: html`<${ExportTab} m=${m} args=${args} result=${result} which=${which} call=${call} />` },
+      { id: "export", label: "Export", icon: "download", body: html`<${ExportTab} m=${m} args=${args} result=${result} which=${which} pose=${pose} call=${call} />` },
     ]} />
   </div>`;
 }
 
 /** The 3D view: the model with its textures, clay or wireframe, its size, and the views. */
-function Stage({ m, variant, which, setWhich, args, result, stats }) {
+function Stage({ m, variant, which, setWhich, args, result, stats, pose, onBusy }) {
   const canvas = useRef(null);
   const viewer = useRef(null);
   // the meshes shown lately, built, the newest last: showing the original and the enhanced model in
@@ -162,6 +171,7 @@ function Stage({ m, variant, which, setWhich, args, result, stats }) {
       kept.current.delete(key);
       if (!built) {
         setState((s) => ({ ...s, loading: true, error: null }));
+        onBusy?.(true);
         const url = () => binUrl("model_mesh", { sid: m.sid, which, uv: 1, ...args.url });
         let res = await fetch(url());
         if (res.status === 400) {
@@ -188,7 +198,8 @@ function Stage({ m, variant, which, setWhich, args, result, stats }) {
       viewer.current.setEdges(view.edges);
       shown.current = true;
       setState({ loading: false, error: null, size, key });
-    })().catch((e) => { if (live) setState({ loading: false, error: msg(e), size: null, key }); });
+      onBusy?.(false);
+    })().catch((e) => { if (live) { setState({ loading: false, error: msg(e), size: null, key }); onBusy?.(false); } });
     return () => { live = false; };
   }, [key, view.shading]);
   const setView = (patch) => setPref({ view: { ...view, ...patch } });
@@ -206,7 +217,7 @@ function Stage({ m, variant, which, setWhich, args, result, stats }) {
         ${!state.loading && !state.error && size && !size.triangles ? html`<div class="stage-note muted">No parts are switched on (Model tab).</div>` : null}
       </div>
       <div class="stage-bar">
-        <span class="stage-what" id="stage-size" title="Width × depth × height, as exported in millimetres">${size?.triangles ? html`${sizeText([size.x, size.y, size.z])}<span class="muted"> · ${plural(size.triangles, "triangle")}</span>` : sizeText(stats?.size_mm)}</span>
+        <span class="stage-what" id="stage-size" title="Width × depth × height, as exported in millimetres">${size?.triangles ? html`${sizeText([size.x, size.y, size.z])}<span class="muted"> · ${plural(size.triangles, "triangle")}</span>` : sizeText(stats?.size_mm)}${pose ? html`<span class="muted stage-pose" id="stage-pose" title="The pose shown (Pose tab)"> · ${pose.anim} frame ${pose.frame}</span>` : null}</span>
         <span class="stage-tools">
           ${seg("show-which", "Show", [["original", "Original"], ["enhanced", "Enhanced", result ? "The enhanced model" : "Generate it first (Generate tab)", !result]], which, setWhich)}
           ${seg("shading", "Shading", [["textured", "Textured", noTextures ? "No colour textures were found for this model" : "With the game's colour textures"], ["clay", "Clay"], ["wire", "Wireframe"]], view.shading, (v) => setView({ shading: v }))}
@@ -290,6 +301,61 @@ function TexturesTab({ m }) {
         <dt>Colour</dt><dd>${nameOf(mat.albedo) || html`<span class="muted">none</span>`}</dd>
         <dt>Normals</dt><dd>${nameOf(mat.normal) || html`<span class="muted">none</span>`}</dd>
         ${mat.height ? html`<dt>Height</dt><dd>${nameOf(mat.height)}</dd>` : null}</dl></div>`)}</section>
+  </div>`;
+}
+
+/** Pose: hold the model at a frame of one of its animations. The pose shown is what Generate and Export use. */
+function PoseTab({ m, pose, setPose, busy, call }) {
+  const [list, setList] = useState(null); // the animations, once asked for
+  const [error, setError] = useState(null);
+  const [filter, setFilter] = useState("");
+  const [playing, setPlaying] = useState(false);
+  const [draft, setDraft] = useState(null); // the frame box while it is being typed in
+  useEffect(() => {
+    let live = true;
+    call("model_animations", { sid: m.sid }).then((r) => { if (live) setList(r.animations); }, (e) => { if (live) setError(msg(e)); });
+    return () => { live = false; };
+  }, [m.sid]);
+  const anim = pose && list ? list.find((a) => a.name === pose.anim) : null;
+  const last = anim ? Math.max(0, anim.frames - 1) : 0;
+  const goTo = (frame) => setPose({ anim: pose.anim, frame: Math.min(last, Math.max(0, Math.round(frame))) });
+  const choose = (name) => { setPlaying(false); setPose(name ? { anim: name, frame: 0 } : null); };
+  // playing steps a frame on, at the animation's own rate, once the view has drawn the last one
+  const tick = useRef(null);
+  tick.current = () => { if (!busy && pose && anim) setPose({ anim: pose.anim, frame: pose.frame >= last ? 0 : pose.frame + 1 }); };
+  useEffect(() => {
+    if (!playing || !anim) return;
+    const t = setInterval(() => tick.current(), Math.max(40, 1000 / (anim.fps || 30)));
+    return () => clearInterval(t);
+  }, [playing, anim?.name]);
+  const q = filter.trim().toLowerCase();
+  const shown = (list || []).filter((a) => !q || a.name.toLowerCase().includes(q));
+  const readable = (list || []).filter((a) => a.frames > 0);
+  const seconds = (f) => (anim && anim.fps ? (f / anim.fps).toFixed(2) : "0.00");
+  return html`<div class="tab-pad" id="pose-tab">
+    ${error ? html`<p class="warn-note" role="alert" id="pose-error">${error}</p>` : null}
+    ${!list && !error ? html`<p class="muted" id="pose-loading">Reading the animations…</p>` : null}
+    ${list && !list.length ? html`<p id="pose-none">No animations were found for this model.</p>` : null}
+    ${list && list.length ? html`<section class="insp-section" id="pose-pick"><h3>Animation</h3>
+      <input type="search" id="pose-filter" placeholder=${`Find among ${plural(list.length, "animation")}…`} value=${filter} onInput=${(e) => setFilter(e.target.value)} aria-label="Find an animation" />
+      <select id="pose-anim" size="8" value=${pose?.anim || ""} onChange=${(e) => choose(e.target.value)} aria-label="Animation">
+        ${shown.map((a) => html`<option key=${a.name} value=${a.name} disabled=${!a.frames} title=${a.source || ""}>${a.name}${a.frames ? ` · ${plural(a.frames, "frame")}, ${a.duration.toFixed(2)} s` : " · can't be read"}</option>`)}</select>
+      <small class="muted">${readable.length < list.length ? `${list.length - readable.length} couldn't be read. ` : ""}Animations come from the model's anibnd file (${m.name}.anibnd), read from beside the model.</small>
+    </section>` : null}
+    ${anim ? html`<section class="insp-section" id="pose-frame-section"><h3>Frame</h3>
+      <input type="range" id="pose-frame" min="0" max=${last} step="1" value=${pose.frame} onInput=${(e) => { setPlaying(false); goTo(parseInt(e.target.value, 10)); }} aria-label="Frame" />
+      <div class="field-row pose-controls">
+        <button type="button" class="ghost" id="pose-prev" title="Previous frame" disabled=${pose.frame <= 0} onClick=${() => { setPlaying(false); goTo(pose.frame - 1); }}>◀</button>
+        <input type="number" id="pose-frame-number" min="0" max=${last} step="1" value=${draft ?? pose.frame} aria-label="Frame number"
+          onInput=${(e) => setDraft(e.target.value)} onChange=${(e) => { setDraft(null); const v = parseInt(e.target.value, 10); if (Number.isFinite(v)) { setPlaying(false); goTo(v); } }} />
+        <span class="muted unit">of ${last}</span>
+        <button type="button" class="ghost" id="pose-next" title="Next frame" disabled=${pose.frame >= last} onClick=${() => { setPlaying(false); goTo(pose.frame + 1); }}>▶</button>
+        <button type="button" class="ghost" id="pose-play" aria-pressed=${playing ? "true" : "false"} title=${playing ? "Stop" : "Play through the frames"} onClick=${() => setPlaying(!playing)}>${playing ? "Stop" : "Play"}</button>
+      </div>
+      <small class="muted" id="pose-time">${seconds(pose.frame)} s of ${anim.duration.toFixed(2)} s · ${anim.fps ? `${Math.round(anim.fps)} frames per second` : ""}</small>
+    </section>` : null}
+    ${list && list.length ? html`<div class="insp-actions"><button type="button" class="ghost" id="pose-reset" disabled=${!pose} onClick=${() => choose("")}>Back to the bind pose</button></div>` : null}
+    <p class="muted export-note">The pose shown is what Generate works on and Export writes; each pose generated is kept, so switching back to one doesn't generate it again. Cloth and hair bones the animation doesn't move stay as in the bind pose.</p>
   </div>`;
 }
 
@@ -407,7 +473,7 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
     ${run ? html`<div class="job-progress" id="enhance-progress"><progress max="1" value=${run.progress}></progress><small class="muted">${run.message}</small></div>` : null}
     ${error ? html`<p class="warn-note" role="alert" id="enhance-error">${error}</p>` : null}
     ${result ? html`<section class="insp-section" id="enhance-result"><h3>Enhanced</h3>
-      ${stale ? html`<p class="insp-note">Made with other parts or options than those chosen now: generate again to include the change.</p>` : null}
+      ${stale ? html`<p class="insp-note">Made with other parts, options or pose than those chosen now: generate again to include the change.</p>` : null}
       <dl class="insp-dl">
         <dt>Vertices</dt><dd>${num(result.stats.vertices)} <span class="muted">from ${num(result.stats.source_vertices)}</span></dd>
         <dt>Triangles</dt><dd>${num(result.stats.faces)}</dd>
@@ -421,7 +487,7 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
 }
 
 /** Export: the enhanced (or original) model as STL, OBJ, PLY or GLB, in a folder. */
-function ExportTab({ m, args, result, which: shownWhich, call }) {
+function ExportTab({ m, args, result, which: shownWhich, pose, call }) {
   const saved = useStore(ui, (s) => s.exportOpts);
   const o = { ...EXPORT, ...(saved || {}) };
   const set = (patch) => setPref({ exportOpts: { ...o, ...patch } });
@@ -435,7 +501,7 @@ function ExportTab({ m, args, result, which: shownWhich, call }) {
   const [error, setError] = useState(null);
   useEffect(() => { api("settings_get").then((r) => setFallback(r.export_dir), () => {}); }, []);
   const base = variantName(m.variant) || m.name;
-  const auto = `${base}${which === "enhanced" ? "_enhanced" : ""}`;
+  const auto = `${base}${poseSuffix(pose)}${which === "enhanced" ? "_enhanced" : ""}`;
   const formats = info().formats || [];
   const textured = o.format === ".obj" || o.format === ".glb";
   const browse = async () => { const p = await pickFolder("Export to", folder || fallback); if (p) { setFolder(p); set({ folder: p }); } };
@@ -465,7 +531,7 @@ function ExportTab({ m, args, result, which: shownWhich, call }) {
       ${info().dialogs ? html`<button type="button" class="ghost" id="export-browse" onClick=${browse}>Browse…</button>` : null}</div></div>
     <div class="insp-actions"><button type="button" class="primary" id="export-run" disabled=${busy} onClick=${go}>${Icon.download(15)} ${busy ? "Exporting…" : "Export"}</button></div>
     ${error ? html`<p class="warn-note" role="alert" id="export-error">${error}</p>` : null}
-    ${done ? html`<div class="export-done" id="export-done" role="status"><p><b>Saved</b> ${done.path.split(/[\\/]/).pop()} <span class="muted">· ${bytes(done.bytes)}</span></p>
+    ${done ? html`<div class="export-done" id="export-done" role="status"><p><b>Saved</b> ${done.path.split(/[\\/]/).pop()} <span class="muted">· ${bytesText(done.bytes)}</span></p>
       <p class="note-path muted">${done.path}</p>
       <div class="insp-actions"><button type="button" class="ghost" onClick=${() => showInFolder(done.path)}>${Icon.folder(14)} Show in folder</button></div></div>` : null}
     <p class="muted export-note">STL and PLY are written Z-up, as slicers expect; OBJ and GLB Y-up. Game models often aren't watertight, so check them in your slicer before printing.</p>

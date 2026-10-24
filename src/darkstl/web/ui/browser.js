@@ -14,7 +14,7 @@ import { Inspector } from "./inspector.js";
 import { openMenu, usePageKeys } from "./actions.js";
 import { Thumb } from "./thumbs.js";
 import { GameBadge, CategoryIcon } from "./gameicons.js";
-import { gameMenu, rescanFolder } from "./games.js";
+import { gameMenu, rescanFolder, collectItem, collectModelItem } from "./games.js";
 
 const PAGE = 300;
 const VIEWS = [["grid", "Grid", "grid"], ["list", "List", "list"]];
@@ -35,6 +35,8 @@ function modelMenu(m) {
     { id: "open", label: "Open", icon: "eye", key: "Enter", run: () => openModel(m) },
     { id: "show", label: "Show in folder", icon: "folder", run: () => showInFolder(m.file) },
     { id: "copy-path", label: "Copy file path", icon: "copy", run: () => navigator.clipboard?.writeText(m.file) },
+    { sep: true },
+    collectModelItem(m),
   ];
 }
 
@@ -104,10 +106,12 @@ function GameFolders({ game }) {
 /** Nothing selected: what the place holds. */
 function PlaceSummary({ game, cat, group, total }) {
   const groups = cat?.groups || [];
+  const collect = collectItem(game, { category: cat?.name, group });
   return html`<div class="place-summary" id="place-summary">
     <section class="insp-section"><h3>${group || cat?.name || game.name}</h3>
       <p>${plural(total ?? (cat ? cat.count : game.count), "model")}${!cat ? ` in ${plural(game.categories.length, "kind")}` : ""}.</p>
-      <p class="muted">Click a model to see it here; double-click (or Enter) opens it.</p></section>
+      <p class="muted">Click a model to see it here; double-click (or Enter) opens it.</p>
+      ${game.count ? html`<div class="insp-actions"><button type="button" class="ghost" id="place-collect" disabled=${!!collect.disabled} title=${collect.disabled || "Copy the files these models need into Dark STL's own folder, so the game's folder isn't required"} onClick=${collect.run}>${Icon.inbox(14)} Collect into the app…</button></div>` : null}</section>
     ${!cat && game.categories.length ? html`<section class="insp-section"><h3>Kinds</h3><ul class="ls-list">${game.categories.map((c) => html`<li key=${c.name}>
       <a href=${routeHash(placeRoute(game.name, c.name))}>${c.name}</a><span class="muted">${c.count.toLocaleString()}</span></li>`)}</ul></section>` : null}
     ${cat && !group && groups.length > 1 ? html`<section class="insp-section"><h3>Groups</h3><ul class="ls-list">${groups.map((g) => html`<li key=${g.name}>
@@ -118,12 +122,14 @@ function PlaceSummary({ game, cat, group, total }) {
 
 /** One model selected: its preview, where it is, and Open. */
 function ModelSummary({ m }) {
+  const collect = collectModelItem(m);
   return html`<div class="place-summary model-summary" id="model-summary" data-model=${m.id}>
     <button type="button" class="insp-thumb" title="Open" onClick=${() => openModel(m)}><${Thumb} id=${m.id} category=${m.category} /></button>
     <h3 class="insp-title" id="summary-name">${m.label}</h3>
     <div class="insp-actions">
       <button type="button" class="primary compact" id="summary-open" onClick=${() => openModel(m)}>${Icon.eye(15)} Open</button>
       <button type="button" class="ghost" id="summary-show" onClick=${() => showInFolder(m.file)}>${Icon.folder(14)} Show in folder</button>
+      <button type="button" class="ghost" id="summary-collect" disabled=${!!collect.disabled} title=${collect.disabled || "Copy this model's files into Dark STL's own folder"} onClick=${collect.run}>${Icon.inbox(14)} Collect…</button>
     </div>
     <dl class="insp-dl">
       <dt>File</dt><dd>${m.name}</dd>
@@ -131,6 +137,7 @@ function ModelSummary({ m }) {
       <dt>Game</dt><dd>${m.game}</dd>
       <dt>Folder</dt><dd class="note-path">${m.file.slice(0, m.file.length - m.name.length - 1)}</dd>
       ${m.lod ? html`<dt>Detail</dt><dd>Low-detail copy (seen from afar in the game)</dd>` : null}
+      ${collect.disabled ? html`<dt>Kept</dt><dd>A copy Dark STL keeps in its own library folder</dd>` : null}
     </dl>
   </div>`;
 }
@@ -195,7 +202,7 @@ export function Browser({ route }) {
   const name = place.group || place.category || game.name;
   const icon = place.category ? html`<${CategoryIcon} name=${place.category} size=${20} />` : html`<${GameBadge} name=${game.name} size=${20} />`;
   const total = tiles ? game.count : result?.total;
-  const more = [...gameMenu(game), { sep: true },
+  const more = [...gameMenu(game, place), { sep: true },
     { id: "lod", label: s.lod ? "Hide low-detail copies" : "Show low-detail copies", sub: "the _l models the game shows from afar", icon: s.lod ? "check" : null, run: toggleLod }];
   const View = s.layout === "list" ? Row : Card;
   const fresh = result && result.q === s.q ? result : null;

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ...collect import RelatedFile
 from ...errors import FormatError
 from ...model import BuildOption, CatalogEntry, Material, MeshOptions, Part, SourceModel, Texture
 from ...textures import dds
@@ -92,6 +93,18 @@ def _game_from_archives(folder: Path, archives: int = 3, max_files: int = 5000,
     return None
 
 
+def _kind_of(path: Path) -> str:
+    low = files.strip_dcx(path.name.lower())
+    if files.ANIBND_FILE.search(path.name) or files.ANIBND_FOLDER.search(path.name):
+        return "animation"
+    if low.endswith((".tpf", ".tpfbhd", ".tpfbdt", ".chrtpfbhd", ".chrtpfbdt", ".texbnd", ".dds")) or \
+            re.search(r"-(tpf|texbnd)(-dcx)?$", path.name, re.I):
+        return "texture"
+    if _OPENABLE.search(path.name) or re.search(r"-(partsbnd|chrbnd|objbnd|geombnd|mapbnd)(-dcx)?$", path.name, re.I):
+        return "model"
+    return "other"
+
+
 class FromSoftwareImporter(Importer):
     key = "fromsoft"
     name = "FromSoftware (FLVER)"
@@ -137,10 +150,20 @@ class FromSoftwareImporter(Importer):
                          f"({len(f.bones)} bone{'s' if len(f.bones) != 1 else ''}). FromSoftware uses these for "
                          "variants that borrow another model; this file only carries textures.")
         game = profiles.game_from_archive_path(asset.inner_name) or profiles.detect_game(Path(path).parent)
+        animations = files.find_animations(Path(path), asset.name, asset.binder) if f.bones else None
 
         def build(options: MeshOptions):
+            bone_world = None
+            if options.pose is not None:
+                if animations is None:
+                    raise FormatError(f"{asset.name} has no animations to pose it with")
+                anim, frame = options.pose
+                bone_world = animations.pose_bones([b.name for b in f.bones], np.array([b.parent for b in f.bones]),
+                                                   np.array([b.local_matrix() for b in f.bones]), anim,
+                                                   animations.clamp(anim, frame))
             return flver_to_trimesh(f, FlverMeshOptions(include_meshes=options.parts,
-                                                        apply_bone_transforms=options.flags.get("bones", True)))
+                                                        apply_bone_transforms=options.flags.get("bones", True),
+                                                        bone_world=bone_world))
 
         return SourceModel(
             name=asset.name, path=Path(path), importer=self.key, build=build,
@@ -150,7 +173,7 @@ class FromSoftwareImporter(Importer):
             options=[BuildOption("bones", "Place rigid parts using their bones", True,
                                  "Moves non-skinned meshes (blades, guards, armour plates) to where their bone "
                                  "holds them. Turn off if parts end up out of place.")],
-            info=flver_summary(f), notes=notes,
+            info=flver_summary(f), notes=notes, animations=animations,
         )
 
     def describe(self, path: Path) -> list[str] | None:
@@ -177,6 +200,13 @@ class FromSoftwareImporter(Importer):
             info = dds.parse_dds(data)
             return [f"DDS {info.width}x{info.height} {info.codec} mips={info.mipmaps}"]
         return None
+
+    def related_files(self, path: Path, textures: bool = True, animations: bool = True,
+                      lod: bool = False) -> list[RelatedFile]:
+        return [RelatedFile(p, _kind_of(p)) for p in files.related_files(Path(path), textures, animations, lod)]
+
+    def shared_files(self, root: Path, game: str, player_animations: bool = False) -> list[RelatedFile]:
+        return [RelatedFile(p, _kind_of(p)) for p in files.shared_files(Path(root), player_animations)]
 
     @staticmethod
     def texture_pack(path: Path) -> dict[str, Texture]:

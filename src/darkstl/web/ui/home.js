@@ -106,7 +106,8 @@ function FirstRun({ error }) {
     <h1>Add your games</h1>
     <p>Dark STL lists the models in your FromSoftware games by game and kind (weapons, armour, characters and more),
       shows them with their textures, and turns them into detailed meshes you can 3D print.</p>
-    <p>Add a game's folder to start. Dark STL only reads it; nothing in it is changed.</p>
+    <p>Add a game's folder to start. Dark STL only reads it; nothing in it is changed. Once a game is listed, the models you want
+      can be collected into the app, so the game's folder isn't needed afterwards.</p>
     ${error ? html`<p class="warn-note" role="alert">${error}</p>` : null}
     <div class="home-actions">
       <button type="button" class="primary" id="first-add-folder" onClick=${addFolder}>${Icon.plus(15)} Add a game folder…</button>

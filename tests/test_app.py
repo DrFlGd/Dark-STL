@@ -61,7 +61,7 @@ def test_add_folder_lists_the_game(home, weapon_dir):  # noqa: F811
     (game,) = ov["games"]
     assert game["name"] == "Dark Souls III"
     assert [c["name"] for c in game["categories"]] == ["Weapons", "Armor", "Characters"]
-    assert game["folders"] == [{"path": str(weapon_dir), "count": 4, "notes": [], "missing": False}]
+    assert game["folders"] == [{"path": str(weapon_dir), "count": 4, "notes": [], "missing": False, "collected": False}]
     # the low-detail copy is left out unless asked for
     assert s.call("overview", {"lod": True})["total"] == 5
     weapons = s.call("models_query", {"game": "Dark Souls III", "category": "Weapons"})

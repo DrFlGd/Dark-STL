@@ -31,12 +31,44 @@ export function removeFolder(path, game) {
 
 export const changeGame = (path, game) => ui.set({ dialog: { type: "change-game", path, game } });
 
-/** The game's menu: add a folder to it, and each of its folders' actions. */
-export function gameMenu(game) {
-  const items = [{ id: "game-add-folder", label: "Add another folder to this game…", icon: "plus", run: () => ui.set({ dialog: { type: "add-folder", game: game.name } }) }];
+/** Open the Collect dialog for a game, a place in it ({ game, category, group }) or one model ({ game, model }). */
+export const collectInto = (scope) => ui.set({ dialog: { type: "collect", ...scope } });
+
+const under = (file, folder) => {
+  const f = folder.replace(/[\\/]+$/, "");
+  return file.startsWith(f) && /[\\/]/.test(file.charAt(f.length));
+};
+
+/** Whether a model file is one of the copies Dark STL keeps in its own library folder. */
+export function isCollected(file) {
+  if (!file) return false;
+  return (ui.get().overview?.games || []).some((g) => g.folders.some((f) => f.collected && under(file, f.path)));
+}
+
+const COLLECTED = "These are already the copies Dark STL keeps.";
+
+/** The menu item that collects a game, or a place in it when `place` is given. */
+export function collectItem(game, place) {
+  const inApp = game.folders.length > 0 && game.folders.every((f) => f.collected);
+  return { id: "game-collect", label: "Collect into the app…", sub: "copy the files its models need, so the game's folder isn't required", icon: "inbox",
+    run: () => collectInto({ game: game.name, category: place?.category || null, group: place?.group || null }), disabled: inApp ? COLLECTED : false };
+}
+
+/** The menu item that collects one model (a catalog entry or an opened file). */
+export function collectModelItem(m, game = m.game) {
+  return { id: "collect", label: "Collect into the app…", icon: "inbox", disabled: isCollected(m.file) ? "This is already the copy Dark STL keeps." : false,
+    run: () => collectInto({ game: game || null, model: { id: m.id, label: m.label || m.name, category: m.category || null, group: m.group || null } }) };
+}
+
+/** The game's menu: add a folder to it, collect it, and each of its folders' actions. */
+export function gameMenu(game, place) {
+  const items = [
+    { id: "game-add-folder", label: "Add another folder to this game…", icon: "plus", run: () => ui.set({ dialog: { type: "add-folder", game: game.name } }) },
+    collectItem(game, place),
+  ];
   for (const f of game.folders) {
     const name = f.path.split(/[\\/]/).filter(Boolean).pop();
-    items.push({ sep: true }, { head: name });
+    items.push({ sep: true }, { head: f.collected ? `${name} (kept by Dark STL)` : name });
     items.push({ id: "folder-show", label: "Show in folder", icon: "folder", run: () => showInFolder(f.path), disabled: f.missing ? "This folder isn't there any more." : false });
     items.push({ id: "folder-rescan", label: "Rescan", sub: "after unpacking or adding files", icon: "refresh", run: () => rescanFolder(f.path), disabled: f.missing ? "This folder isn't there any more." : false });
     items.push({ id: "folder-game", label: "Change game…", icon: "edit", run: () => changeGame(f.path, game.name) });

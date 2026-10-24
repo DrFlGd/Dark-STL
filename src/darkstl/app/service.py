@@ -26,6 +26,7 @@ from typing import Any, Callable
 import numpy as np
 
 from .. import __version__
+from .. import collect
 from ..export import FORMATS, ExportOptions, export_mesh
 from ..geometry.mesh import TriMesh
 from ..library import Library, detect_game, folder_relation, known_games
@@ -154,7 +155,8 @@ class Session:
 
 
 def _options_key(options: MeshOptions) -> tuple:
-    return (None if options.parts is None else tuple(sorted(options.parts)), tuple(sorted(options.flags.items())))
+    return (None if options.parts is None else tuple(sorted(options.parts)), tuple(sorted(options.flags.items())),
+            options.pose)
 
 
 def generated_key(session: Session, options: MeshOptions, settings: dict) -> tuple:
@@ -175,7 +177,24 @@ def _file_id(path: Path) -> tuple:
 def mesh_options(args: dict) -> MeshOptions:
     parts = args.get("parts")
     flags = args.get("flags") or {}
-    return MeshOptions(None if parts is None else {int(p) for p in parts}, {str(k): bool(v) for k, v in flags.items()})
+    return MeshOptions(None if parts is None else {int(p) for p in parts}, {str(k): bool(v) for k, v in flags.items()},
+                       parse_pose(args.get("pose")))
+
+
+def parse_pose(value) -> tuple[str, int] | None:
+    """A pose as the page sends it: ``["a000_003000", 12]`` in JSON or ``a000_003000@12`` in a URL."""
+    if value is None or value == "" or value == []:
+        return None
+    if isinstance(value, str):
+        name, _, frame = value.rpartition("@")
+        if not name:
+            raise AppError("A pose is written as animation@frame.")
+        value = [name, frame]
+    try:
+        name, frame = value
+        return str(name), int(frame)
+    except (TypeError, ValueError):
+        raise AppError("A pose is an animation name and a frame number.") from None
 
 
 def entry_json(e: CatalogEntry) -> dict:
@@ -194,7 +213,7 @@ def model_json(m: SourceModel, mesh: TriMesh) -> dict:
                        "specular": x.specular, "detail_normal": x.detail_normal,
                        "guessed": x.guessed, "details": x.details} for x in m.materials],
         "textures": [{"key": k, "name": t.name, "source": t.source} for k, t in sorted(m.textures.items())],
-        "info": m.info, "notes": m.notes, "stats": mesh_stats(mesh),
+        "info": m.info, "notes": m.notes, "stats": mesh_stats(mesh), "animated": m.animations is not None,
     }
 
 
@@ -266,8 +285,11 @@ class Service:
         from ..importers.fromsoft.formats import oodle
 
         found = oodle.located()
+        lib = self.config.library_folder
+        files, size = collect.folder_size(lib) if lib.is_dir() else (0, 0)
         return {"texture_dirs": list(self.config.texture_dirs), "oodle": self.config.oodle,
                 "oodle_found": str(found) if found else None, "export_dir": str(self.config.export_folder),
+                "library_dir": str(lib), "library_files": files, "library_bytes": size,
                 "previews": str(self.thumbs.folder), "settings_file": str(self.config.path or "")}
 
     def cmd_settings_set(self, args: dict) -> dict:
@@ -283,6 +305,8 @@ class Service:
                 self._use_oodle(path)
         if "export_dir" in args:
             self.config.export_dir = str(args["export_dir"] or "").strip()
+        if "library_dir" in args:
+            self.config.library_dir = str(args["library_dir"] or "").strip()
         self.config.save()
         return self.cmd_settings_get({})
 
@@ -373,7 +397,11 @@ class Service:
     def cmd_overview(self, args: dict) -> dict:
         with self.lock:
             games = self.library.overview(bool(args.get("lod")))
-            return {"scanning": self.scanning > 0, "games": games, "total": sum(g["count"] for g in games)}
+        library = self.config.library_folder
+        for g in games:
+            for f in g["folders"]:
+                f["collected"] = _is_under(Path(f["path"]), library)
+        return {"scanning": self.scanning > 0, "games": games, "total": sum(g["count"] for g in games)}
 
     def cmd_folder_check(self, args: dict) -> dict:
         raw = str(args.get("path") or "").strip().strip('"')
@@ -446,6 +474,75 @@ class Service:
     def _save_folders(self) -> None:
         self.config.game_folders = [{"path": str(p), "game": g} for p, g in self.library.roots.items()]
         self.config.save()
+
+    # ------------------------------------------------------------ collecting into the app's library
+
+    def _collect_plan(self, args: dict) -> collect.Plan:
+        """What collecting the chosen models (``ids``, ``paths``, or a game/category/group/search) would copy."""
+        from ..importers import importer_for
+        from ..importers.fromsoft.files import file_stem
+
+        with self.lock:
+            entries: list[CatalogEntry] = []
+            for model_id in args.get("ids") or []:
+                e = self._entry(str(model_id))
+                if e is None and str(model_id) in self.opened:
+                    p = self.opened[str(model_id)]
+                    e = CatalogEntry(str(args.get("game") or detect_game(p.parent) or "Other models"), "Models", "",
+                                     file_stem(p.name), p.name, p, importer_for(p).key, packed=True)
+                if e is not None:
+                    entries.append(e)
+            if not args.get("ids") and args.get("game"):
+                entries = self.library.query(str(args["game"]), args.get("category") or None, args.get("group") or None,
+                                             str(args.get("q") or ""), bool(args.get("lod")))
+            roots = [r for r, g in self.library.roots.items()]
+        entries = [e for e in entries if not _is_under(e.path, self.config.library_folder)]
+        if not entries:
+            raise AppError("Nothing to collect: choose a model, a kind or a game.")
+        games = sorted({e.game for e in entries})
+        if len(games) > 1:
+            raise AppError("Collect one game at a time.")
+        options = collect.CollectOptions(textures=bool(args.get("textures", True)),
+                                         animations=bool(args.get("animations", True)),
+                                         player_animations=bool(args.get("player_animations", False)),
+                                         lod=bool(args.get("lod_copies", False)), extras=bool(args.get("extras", True)))
+        importers = {e.importer or importer_for(e.path).key for e in entries}
+        from ..importers import IMPORTERS
+
+        by_key = {imp.key: imp for imp in IMPORTERS}
+
+        def related(e: CatalogEntry) -> list[collect.RelatedFile]:
+            imp = by_key.get(e.importer) or importer_for(e.path)
+            return imp.related_files(e.path, options.textures, options.animations, options.lod)
+
+        def extras(root: Path) -> list[collect.RelatedFile]:
+            return [f for key in importers for f in by_key[key].shared_files(root, games[0], options.player_animations)]
+
+        game_roots = [r for r in roots if self.library.roots.get(r) == games[0]]
+        return collect.plan(self.config.library_folder, games[0], entries, game_roots, options, related, extras)
+
+    def cmd_collect_plan(self, args: dict) -> dict:
+        return self._collect_plan(args).summary()
+
+    def cmd_collect_run(self, args: dict) -> dict:
+        """Copy the chosen models' files into the app's library and list them from there."""
+        plan = self._collect_plan(args)
+
+        def run(job: Job):
+            result = collect.run(plan, job.report)
+            folder = plan.folder
+            if folder.is_dir():
+                job.report(1.0, f"Reading {folder.name}")
+                lib = Library()
+                lib.add_root(folder, plan.game)
+                with self.lock:
+                    self.library.merge(lib)
+                    self._save_folders()
+                result["count"] = len(lib.entries)
+            return result
+
+        return {"job": self._scan_job(f"Collecting {len(plan.models)} model{'s' if len(plan.models) != 1 else ''} "
+                                      f"from {plan.game}", run).id}
 
     def cmd_models_query(self, args: dict) -> dict:
         with self.lock:
@@ -523,6 +620,19 @@ class Service:
     def cmd_model_stats(self, args: dict) -> dict:
         session = self._session(args)
         return mesh_stats(session.build(mesh_options(args)))
+
+    def cmd_model_animations(self, args: dict) -> dict:
+        """The animations that can pose the model: name, frames, duration and frame rate of each."""
+        session = self._session(args)
+        anims = session.model.animations
+        if anims is None:
+            return {"animations": [], "bones": 0}
+        try:
+            infos = anims.list()
+            bones = len(anims.skeleton)
+        except Exception as exc:  # noqa: BLE001 - a broken archive is reported, not fatal
+            raise AppError(f"The animations couldn't be read: {exc}") from exc
+        return {"animations": [i.as_dict() for i in infos], "bones": bones}
 
     def cmd_model_mesh(self, args: dict) -> bytes:
         session = self._session(args)
@@ -701,6 +811,14 @@ class Service:
             self.sessions.clear()
             self.textures_png.clear()
             self.generated.clear()
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    try:
+        Path(path).relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def _key_id(key: tuple) -> str:

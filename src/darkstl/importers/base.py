@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
+from ..collect import RelatedFile
 from ..model import CatalogEntry, SourceModel
 
 ScanProgress = Callable[[int, str], None]
@@ -48,3 +49,14 @@ class Importer:
     def describe(self, path: Path) -> list[str] | None:
         """Description of a file that is not a model (texture pack, archive...), or None."""
         return None
+
+    def related_files(self, path: Path, textures: bool = True, animations: bool = True,
+                      lod: bool = False) -> list[RelatedFile]:
+        """The files a model needs when it is copied somewhere else: itself, and with it the textures,
+        animations and low-detail copies kept beside it. Folders stand for everything in them."""
+        return [RelatedFile(Path(path), "model")]
+
+    def shared_files(self, root: Path, game: str, player_animations: bool = False) -> list[RelatedFile]:
+        """Files a game folder holds that every model from it may need (a compression library, the
+        player's animations for armour)."""
+        return []

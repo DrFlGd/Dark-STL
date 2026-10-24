@@ -1,12 +1,12 @@
 // Dialogs: adding a game folder, changing a folder's game, opening one model
-// file, and confirming. Which one is open is `ui.dialog`
-// ({ type: "add-folder" | "change-game" | "open-file" | "confirm", ... }).
+// file, collecting models into the app, and confirming. Which one is open is
+// `ui.dialog` ({ type: "add-folder" | "change-game" | "open-file" | "collect" | "confirm", ... }).
 import { html, useState, useLayoutEffect, useRef, useEffect } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui } from "./state.js";
 import { routeHash, placeRoute } from "./context.js";
 import { Icon } from "./icons.js";
-import { api, info, followJob, loadOverview, pickFolder, toast, plural } from "./api.js";
+import { api, info, followJob, loadOverview, pickFolder, showInFolder, toast, plural, bytesText } from "./api.js";
 
 export const close = () => ui.set({ dialog: null });
 
@@ -165,6 +165,84 @@ function OpenFile() {
   <//>`;
 }
 
+const SCOPE_NAMES = { model: "This model", group: "This group", kind: "This kind", game: "The whole game" };
+
+/** Copy the files chosen models need into the app's own library folder, so the game's folder
+ *  isn't needed afterwards. `game`, `category`, `group` say where the dialog was opened from;
+ *  `model` ({ id, label, category, group }) when it was opened for one model. */
+function Collect({ game, category, group, model }) {
+  const scopes = [];
+  if (model) scopes.push({ key: "model", label: model.label, args: { ids: [model.id], game: game || undefined } });
+  const cat = model ? model.category : category;
+  const grp = model ? model.group : group;
+  if (game && cat && grp) scopes.push({ key: "group", label: `${grp} (${cat})`, args: { game, category: cat, group: grp } });
+  if (game && cat) scopes.push({ key: "kind", label: `All ${cat}`, args: { game, category: cat } });
+  if (game) scopes.push({ key: "game", label: `All of ${game}`, args: { game } });
+  const [scope, setScope] = useState(scopes[0].key);
+  const [opts, setOpts] = useState({ textures: true, animations: true, player_animations: false, lod: false });
+  const [plan, setPlan] = useState(null);
+  const [planError, setPlanError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [progress, setProgress] = useState("");
+  const seq = useRef(0);
+  const args = { ...(scopes.find((s) => s.key === scope) || scopes[0]).args, textures: opts.textures, animations: opts.animations,
+    player_animations: opts.player_animations, lod: opts.lod, lod_copies: opts.lod };
+  const argsKey = JSON.stringify(args);
+  useEffect(() => {
+    const n = ++seq.current;
+    const t = setTimeout(() => {
+      api("collect_plan", args).then((p) => { if (n === seq.current) { setPlan(p); setPlanError(null); } },
+        (e) => { if (n === seq.current) { setPlan(null); setPlanError(String(e.message || e)); } });
+    }, 200);
+    return () => clearTimeout(t);
+  }, [argsKey]);
+  const submit = async () => {
+    if (!plan) { setError(planError || "Still working out what to copy…"); return; }
+    setBusy(true); setError(null);
+    try {
+      const { job } = await api("collect_run", args);
+      const r = await followJob(job, `Collecting from ${plan.game}`, (j) => setProgress(j.message || ""));
+      await loadOverview();
+      close();
+      toast(r.copied ? `Copied ${plural(r.copied, "file")} (${bytesText(r.bytes)}) into the app's library`
+        : "Everything was already in the app's library", { ms: 6000, action: { label: "Show in folder", run: () => showInFolder(r.folder) } });
+    } catch (e) {
+      setBusy(false);
+      setError(String(e.message || e));
+    }
+  };
+  const kinds = plan ? Object.entries(plan.kinds).filter(([, v]) => v.files).map(([k, v]) => `${plural(v.files, k === "other" ? "other file" : `${k} file`)}`) : [];
+  const check = (key, label, sub) => html`<label class="check-row">
+    <input type="checkbox" data-collect=${key} checked=${!!opts[key]} disabled=${busy} onChange=${(e) => setOpts({ ...opts, [key]: e.target.checked })} />
+    <span>${label}${sub ? html`<small class="muted">${sub}</small>` : null}</span></label>`;
+  return html`<${Dialog} title="Collect into the app" id="collect-dialog" onSubmit=${submit} busy=${busy || !plan} error=${error}
+      submitLabel=${busy ? "Copying…" : plan && !plan.to_copy && plan.files ? "Already collected" : "Copy"}>
+    <p class="muted">Copies the files these models need (the model itself, its textures and animations) into Dark STL's own
+      library folder, laid out like the game's folder. Afterwards the game's folder can be removed from the library, or
+      the game uninstalled, and the models stay.</p>
+    ${scopes.length > 1 ? html`<div class="field-block"><label class="field-label" for="collect-scope">What to collect</label>
+      <select id="collect-scope" value=${scope} disabled=${busy} onChange=${(e) => setScope(e.target.value)}>
+        ${scopes.map((s) => html`<option key=${s.key} value=${s.key}>${SCOPE_NAMES[s.key]}: ${s.label}</option>`)}
+      </select></div>` : html`<p><b>${scopes[0].label}</b></p>`}
+    <div class="field-block"><span class="field-label">With</span>
+      ${check("textures", "Textures", "the texture archives beside each model, and the shared texture packs map pieces use")}
+      ${check("animations", "Animations", "each model's own skeleton and animations (its .anibnd)")}
+      ${check("player_animations", "Player animations", "the player character's animations, which armour pieces and weapons are animated with; large")}
+      ${check("lod", "Low-detail copies", "the _l models the game shows from afar")}
+    </div>
+    <div class="collect-plan" id="collect-plan" aria-live="polite">
+      ${planError ? html`<p class="warn-text" id="collect-plan-error">${planError}</p>`
+      : !plan ? html`<p class="muted">Working out what to copy…</p>`
+      : html`<p id="collect-plan-text"><b>${plural(plan.models, "model")}</b> · ${plural(plan.files, "file")} · ${bytesText(plan.bytes)}
+          ${plan.present ? html`<span class="muted"> · ${plan.to_copy ? `${plural(plan.present, "file")} already there, ${bytesText(plan.bytes_to_copy)} to copy` : "all already there"}</span>` : null}</p>
+        <p class="muted" id="collect-plan-kinds">${kinds.join(" · ")}</p>
+        <p class="muted">Into <span class="note-path" id="collect-folder">${plan.folder}</span></p>`}
+    </div>
+    ${busy ? html`<p class="muted" id="collect-progress">${progress || "Copying…"}</p>` : null}
+  <//>`;
+}
+
 function ConfirmDialog({ title, text, button, run }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -182,5 +260,6 @@ export function Dialogs() {
   if (dialog.type === "change-game") return html`<${ChangeGame} key=${dialog.path} path=${dialog.path} game=${dialog.game} />`;
   if (dialog.type === "open-file") return html`<${OpenFile} />`;
   if (dialog.type === "confirm") return html`<${ConfirmDialog} ...${dialog} />`;
+  if (dialog.type === "collect") return html`<${Collect} ...${dialog} />`;
   return null;
 }

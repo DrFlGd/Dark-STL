@@ -81,6 +81,7 @@ class ModelAsset:
     textures: dict[str, TextureRef] = field(default_factory=dict)  # lower-case name -> ref
     notes: list[str] = field(default_factory=list)
     variants: list[str] = field(default_factory=list)  # every model in the file, when it holds several
+    binder: bnd.Binder | None = field(default=None, repr=False)  # the archive the model came from
 
     def texture(self, name: str) -> TextureRef | None:
         return self.textures.get(name.lower())
@@ -202,6 +203,7 @@ def load_model(path: str | os.PathLike, inner_name: str | None = None,
     notes: list[str] = []
     variants: list[str] = []
     stem = file_stem(path.name)
+    binder = None
 
     if flver.is_flver(data):
         model = flver.read_flver(data)
@@ -250,7 +252,7 @@ def load_model(path: str | os.PathLike, inner_name: str | None = None,
             for d in extra_texture_dirs:
                 _add_from_texture_dir(textures, Path(d), missing)
 
-    return ModelAsset(stem, path, inner, model, textures, notes, variants)
+    return ModelAsset(stem, path, inner, model, textures, notes, variants, binder)
 
 
 def _add_from_texture_dir(textures: dict[str, TextureRef], directory: Path, wanted: set[str]) -> None:
@@ -266,3 +268,182 @@ def _add_from_texture_dir(textures: dict[str, TextureRef], directory: Path, want
                 add_texture_file(textures, Path(root) / name)
         if not (wanted - set(textures)):
             return
+
+
+# ---------------------------------------------------------------------------
+# Animations
+
+# a00_0000.hkx (Dark Souls), a000_003000.hkx (Bloodborne, Dark Souls III, Elden Ring)
+ANIMATION_FILE = re.compile(r"^a\d{2,3}[_-]\d{3,6}\.hkx$", re.I)
+SKELETON_FILE = re.compile(r"^skeleton\.hkx$", re.I)
+ANIBND_FILE = re.compile(r"\.anibnd(\.dcx)?$", re.I)
+ANIBND_FOLDER = re.compile(r"-anibnd(-dcx)?$", re.I)
+
+
+@dataclass
+class _HkxFile:
+    name: str  # base name, e.g. a000_003000.hkx
+    source: str  # the archive or folder it came from, for display
+    read: Callable[[], bytes] = field(repr=False)
+
+
+def _hkx_in_binder(binder: bnd.Binder, source: str) -> list[_HkxFile]:
+    out = []
+    for f in binder.files:
+        low = f.basename.lower()
+        if low.endswith((".hkx", ".compendium")):
+            out.append(_HkxFile(f.basename, source, lambda f=f: f.data))
+        elif ANIBND_FILE.search(low):  # an object's anibnd packed inside its objbnd
+            try:
+                out += _hkx_in_binder(bnd.read_binder(f.data), f"{source} > {f.basename}")
+            except FormatError:
+                continue
+    return out
+
+
+def _hkx_in_folder(folder: Path) -> list[_HkxFile]:
+    out = []
+    for entry in sorted(_dir_listing(folder).values()):
+        low = entry.name.lower()
+        if entry.is_file() and low.endswith((".hkx", ".hkx.dcx", ".compendium")):
+            name = strip_dcx(entry.name)
+            out.append(_HkxFile(name, str(folder), lambda p=entry: read_bytes(p)))
+    return out
+
+
+def animation_archives(path: Path, stem: str) -> list[Path]:
+    """The anibnd files and unpacked anibnd folders that belong to the model at ``path``.
+
+    ``c1120.anibnd.dcx`` beside ``c1120.chrbnd.dcx``, plus the split ``c1120_div00.anibnd.dcx`` /
+    ``c0000_a0x.anibnd.dcx`` archives of the later games, and ``c1120-anibnd-dcx/`` folders.
+    """
+    found = []
+    folders = [path.parent]
+    if ANIBND_FOLDER.search(path.parent.name) or re.search(r"-(chrbnd|objbnd|partsbnd)(-dcx)?$", path.parent.name, re.I):
+        folders.append(path.parent.parent)  # a loose FLVER inside an unpacked archive folder
+    s = stem.lower()
+    for folder in folders:
+        for low, entry in sorted(_dir_listing(folder).items()):
+            base = strip_dcx(low)
+            if entry.is_dir():
+                if ANIBND_FOLDER.search(low) and re.match(rf"^{re.escape(s)}(_div\d+|_a\d+)?-anibnd", low):
+                    found.append(entry)
+            elif base.endswith(".anibnd") and re.match(rf"^{re.escape(s)}(_div\d+|_a\d+)?\.anibnd$", base):
+                found.append(entry)
+    return found
+
+
+def find_animations(path: Path, stem: str, binder: bnd.Binder | None):
+    """An :class:`~darkstl.importers.fromsoft.animation.AnimationSet` for the model, or None when no
+    animation files are there. Archives are read when the animations are first listed or used."""
+    from ..fromsoft.animation import AnimationSet, Skeleton
+    from .formats.havok import is_compendium, is_hkx, read_hkx
+
+    path = Path(path)
+    archives = animation_archives(path, stem)
+    own: list[_HkxFile] = _hkx_in_binder(binder, path.name) if binder is not None else []
+    has_anims = bool(archives) or any(ANIMATION_FILE.match(f.name) for f in own)
+    if not has_anims:
+        return None
+
+    def load():
+        hkx_files = list(own)
+        for arc in archives:
+            if arc.is_dir():
+                hkx_files += _hkx_in_folder(arc)
+            else:
+                try:
+                    hkx_files += _hkx_in_binder(bnd.read_binder(read_bytes(arc)), arc.name)
+                except (FormatError, OSError):
+                    continue
+        compendium = next((f for f in hkx_files if f.name.lower().endswith(".compendium")), None)
+        comp_bytes = compendium.read() if compendium else None
+        skeleton = None
+        for f in hkx_files:  # the anibnd's Skeleton.HKX first, else the model's own HKX (ragdoll + skeleton)
+            if SKELETON_FILE.match(f.name):
+                skeleton = Skeleton.from_hkx(read_hkx(f.read(), comp_bytes))
+                break
+        if skeleton is None:
+            for f in hkx_files:
+                if f.name.lower() == f"{stem.lower()}.hkx" or (not ANIMATION_FILE.match(f.name) and f.name.lower().endswith(".hkx")):
+                    try:
+                        data = f.read()
+                        if is_hkx(data) and not is_compendium(data):
+                            skeleton = Skeleton.from_hkx(read_hkx(data, comp_bytes))
+                    except FormatError:
+                        skeleton = None
+                    if skeleton is not None:
+                        break
+        if skeleton is None:
+            raise FormatError("No skeleton (Skeleton.HKX) was found with this model's animations")
+        sources: dict[str, Callable[[], bytes]] = {}
+        labels: dict[str, str] = {}
+        for f in hkx_files:
+            if ANIMATION_FILE.match(f.name) and f.name[:-4] not in sources:
+                sources[f.name[:-4]] = f.read
+                labels[f.name[:-4]] = f.source
+        return skeleton, sources, labels, comp_bytes
+
+    return AnimationSet(loader=load)
+
+
+# ---------------------------------------------------------------------------
+# What a model needs when it is copied out of the game
+
+
+def _map_texture_files(directory: Path, stem: str) -> list[Path]:
+    """A map piece's texture packs: the files beside it that share its map's name (``m10_00_00_00_0001.tpfbhd``
+    and its ``.tpfbdt``, ``m10_0000.tpf.dcx``...)."""
+    m = re.match(r"^(m\d\d)(_\d\d_\d\d_\d\d)?", stem, re.I)
+    if not m:
+        return []
+    prefixes = {m.group(0).lower(), m.group(1).lower()}
+    out = []
+    for low, entry in sorted(_dir_listing(directory).items()):
+        base = strip_dcx(low)
+        if any(low.startswith(p) for p in prefixes) and base.endswith((".tpf", ".tpfbhd", ".tpfbdt", ".texbnd")):
+            out.append(entry)
+    return out
+
+
+def related_files(path: Path, textures: bool = True, animations: bool = True, lod: bool = False) -> list[Path]:
+    """The model file and, beside it, what it needs: texture archives (and split pairs), unpacked texture
+    folders, animation archives, and low-detail copies when asked. Folders stand for everything in them."""
+    path = Path(path)
+    stem = file_stem(path.name)
+    out: list[Path] = [path]
+    folder = path.parent
+    if folder.name.lower().endswith(("-partsbnd-dcx", "-chrbnd-dcx", "-objbnd-dcx", "-geombnd-dcx", "-mapbnd-dcx",
+                                     "-partsbnd", "-chrbnd", "-objbnd", "-geombnd", "-mapbnd")):
+        out = [folder]  # a loose FLVER inside an unpacked archive folder: take the whole folder
+        folder = folder.parent
+    listing = _dir_listing(folder)
+    s = stem.lower()
+    if textures:
+        out += _sibling_texture_files(folder, stem)
+        for ext in (".chrtpfbhd", ".chrtpfbdt", ".tpfbhd", ".tpfbdt"):
+            if f"{s}{ext}" in listing:
+                out.append(listing[f"{s}{ext}"])
+        out += _map_texture_files(folder, stem)
+    if animations:
+        out += animation_archives(path, stem)
+    if lod:
+        for low, entry in listing.items():
+            if re.match(rf"^{re.escape(s)}(_l|_lod\d*)\.", low) and strip_dcx(low).endswith(MODEL_EXTENSIONS):
+                out += related_files(entry, textures, animations, False)
+    seen: set[Path] = set()
+    return [p for p in out if not (p in seen or seen.add(p))]
+
+
+def shared_files(root: Path, player_animations: bool = False) -> list[Path]:
+    """What a game folder holds that any model from it may need: the Oodle library (Sekiro, Elden Ring),
+    and the player's animations when asked for (armour has none of its own)."""
+    out = []
+    for low, entry in sorted(_dir_listing(root).items()):
+        if re.match(r"^(lib)?oo2core.*\.(dll|so|dylib)$", low):
+            out.append(entry)
+    if player_animations:
+        chr_dir = root / "chr"
+        if chr_dir.is_dir():
+            out += animation_archives(chr_dir / "c0000.chrbnd.dcx", "c0000")
+    return out
