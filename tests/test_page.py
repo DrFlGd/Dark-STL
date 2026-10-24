@@ -174,3 +174,38 @@ def test_settings_and_themes(page, app, weapon_dir):  # noqa: F811
     assert page.evaluate("document.documentElement.dataset.theme") == "night"
     page.goto(app.url + "#/about")
     page.wait_for_selector("#about-head")
+
+
+def test_previews_stay_shown_and_a_job_stops_from_the_status_bar(page, app, weapon_dir):  # noqa: F811
+    app.service.call("folder_add", {"path": str(weapon_dir)})
+    page.goto(app.url + "#/browse/Dark%20Souls%20III/Weapons")
+    page.wait_for_selector('.results [data-thumb="ok"]', timeout=30000)
+    page.wait_for_function("document.querySelectorAll('.results [data-thumb=\"ok\"], .results [data-thumb=\"none\"]').length === 2")
+    weapons = page.eval_on_selector_all(".results [data-model]", "els => els.map((e) => e.dataset.model)")
+    # back to the game's page and into the kind again (or another view): shown at once, not asked for again
+    asked = []
+    page.on("request", lambda r: "/bin/thumb" in r.url and asked.append(r.url))
+    page.goto(app.url + "#/browse/Dark%20Souls%20III")
+    page.wait_for_selector('#kind-tiles [data-sub="Weapons"]')
+    page.click('[data-sub="Weapons"]')
+    page.wait_for_selector(".results [data-model]")
+    assert page.locator('.results [data-thumb="wait"]').count() == 0
+    page.click('#layout-switch [data-view="list"]')
+    page.wait_for_selector(".results.list-view [data-model]")
+    assert page.locator('.results [data-thumb="wait"]').count() == 0
+    page.click('#layout-switch [data-view="grid"]')
+    assert [u for u in asked if any(f"id={w}&" in u for w in weapons)] == []  # (the game's page shows others too)
+
+    # a long Generate, stopped by clicking its status at the foot of the window
+    page.click(".results [data-model]")
+    page.click("#summary-open")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    page.click("#rail-enhance")
+    page.fill("#target-vertices", "20000000")
+    page.press("#target-vertices", "Tab")
+    page.click("#enhance-run")
+    page.wait_for_selector("#status-job.can-stop", timeout=10000)
+    page.click("#status-job")
+    page.wait_for_selector("text=Stopped generating", timeout=120000)
+    assert page.locator("#enhance-error").count() == 0 and page.locator("#enhance-result").count() == 0
+    assert page.text_content("#enhance-run") == "Generate"

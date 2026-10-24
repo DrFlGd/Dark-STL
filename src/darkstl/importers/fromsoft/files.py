@@ -8,8 +8,9 @@ A model can be given as:
 
 Textures are collected from the container itself, from sibling texture
 archives (``c2010.texbnd.dcx``, ``c2010_h.texbnd.dcx``, ``*.chrtpfbdt``), from
-loose ``.tpf``/``.dds`` files next to a loose FLVER, and from any extra
-texture folders the user configured.
+loose ``.tpf``/``.dds`` files next to a loose FLVER, then from wherever else
+in the game folder they are (the index :mod:`.texindex` makes as the folder
+is scanned), and from any extra texture folders the user configured.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from ...textures import dds
 from .formats import binder as bnd
 from .formats import dcx, flver, oodle, tpf
 from .formats.binary import FormatError
+from .texindex import texture_name
 
 MODEL_EXTENSIONS = (".partsbnd", ".chrbnd", ".objbnd", ".geombnd", ".mapbnd", ".flver", ".flv")
 TEXTURE_CONTAINER_EXTENSIONS = (".texbnd", ".tpf", ".tpfbhd", ".chrtpfbhd")
@@ -82,6 +84,7 @@ class ModelAsset:
     notes: list[str] = field(default_factory=list)
     variants: list[str] = field(default_factory=list)  # every model in the file, when it holds several
     binder: bnd.Binder | None = field(default=None, repr=False)  # the archive the model came from
+    located: list[tuple[str, Path]] = field(default_factory=list)  # textures found elsewhere in the game folder
 
     def texture(self, name: str) -> TextureRef | None:
         return self.textures.get(name.lower())
@@ -103,20 +106,24 @@ def _add_tpf(textures: dict[str, TextureRef], data: bytes, source: str) -> None:
 
 
 def _add_binder_textures(textures: dict[str, TextureRef], binder: bnd.Binder, source: str,
-                         sibling_dir: Path | None = None) -> None:
+                         sibling_dir: Path | None = None, only: set[str] | None = None) -> None:
+    """``only``: the textures wanted (lower case), so that a split pack (a map's) reads just their entries."""
+    split = binder.kind.startswith("BXF")
     for f in binder.files:
         low = f.basename.lower()
         if low.endswith((".tpf", ".tpf.dcx")):
+            if split and only is not None and texture_name(f.basename).lower() not in only:
+                continue
             _add_tpf(textures, f.data, f"{source} > {f.basename}")
         elif low.endswith((".chrtpfbhd", ".tpfbhd")) and sibling_dir is not None:
             bdt_name = re.sub(r"bhd$", "bdt", f.basename, flags=re.I)
             bdt_path = _find_file(sibling_dir, bdt_name)
             if bdt_path is not None:
                 try:
-                    split = bnd.read_binder(f.data, lambda p=bdt_path: p.read_bytes())
+                    pair = bnd.read_binder(f.data, bdt_path)
                 except FormatError:
                     continue
-                _add_binder_textures(textures, split, f"{source} > {f.basename}")
+                _add_binder_textures(textures, pair, f"{source} > {f.basename}", only=only)
         elif low.endswith((".texbnd", ".texbnd.dcx")):
             try:
                 _add_binder_textures(textures, bnd.read_binder(f.data), f"{source} > {f.basename}")
@@ -135,8 +142,9 @@ def _find_file(directory: Path, name: str) -> Path | None:
     return _dir_listing(directory).get(name.lower())
 
 
-def add_texture_file(textures: dict[str, TextureRef], path: Path) -> None:
-    """Add textures from a .tpf/.texbnd/.dds (optionally .dcx) file or split .tpfbhd/.tpfbdt pair."""
+def add_texture_file(textures: dict[str, TextureRef], path: Path, only: set[str] | None = None) -> None:
+    """Add textures from a .tpf/.texbnd/.dds (optionally .dcx) file or split .tpfbhd/.tpfbdt pair
+    (of which only the entries ``only`` names are read, when it's given)."""
     low = path.name.lower()
     try:
         if low.endswith(".dds"):
@@ -146,14 +154,13 @@ def add_texture_file(textures: dict[str, TextureRef], path: Path) -> None:
         if low.endswith((".tpfbhd", ".chrtpfbhd")):
             bdt = _find_file(path.parent, re.sub(r"bhd$", "bdt", path.name, flags=re.I))
             if bdt is not None:
-                _add_binder_textures(textures, bnd.read_binder(path.read_bytes(), lambda p=bdt: p.read_bytes()),
-                                     str(path))
+                _add_binder_textures(textures, bnd.read_binder(path.read_bytes(), bdt), str(path), only=only)
             return
         data = read_bytes(path)
         if tpf.is_tpf(data):
             _add_tpf(textures, data, str(path))
         elif bnd.is_binder(data):
-            _add_binder_textures(textures, bnd.read_binder(data), str(path), path.parent)
+            _add_binder_textures(textures, bnd.read_binder(data), str(path), path.parent, only)
     except (FormatError, OSError):
         return
 
@@ -245,6 +252,15 @@ def load_model(path: str | os.PathLike, inner_name: str | None = None,
             else:
                 add_texture_file(textures, sib)
 
+    located = locate_textures(textures, path, model)
+    if located:
+        from .texindex import index_for
+
+        root = index_for(path).root
+        where = sorted({p.relative_to(root).as_posix() if p.is_relative_to(root) else str(p) for _n, p in located})
+        notes.append(f"{len(located)} of its textures {'is' if len(located) == 1 else 'are'} kept elsewhere in the game "
+                     f"folder: {', '.join(where[:3])}{' ...' if len(where) > 3 else ''}")
+
     if extra_texture_dirs:
         wanted = {t.stem.lower() for m in model.materials for t in m.textures if t.path}
         missing = wanted - set(textures)
@@ -252,7 +268,57 @@ def load_model(path: str | os.PathLike, inner_name: str | None = None,
             for d in extra_texture_dirs:
                 _add_from_texture_dir(textures, Path(d), missing)
 
-    return ModelAsset(stem, path, inner, model, textures, notes, variants, binder)
+    return ModelAsset(stem, path, inner, model, textures, notes, variants, binder, located)
+
+
+def wanted_textures(model: flver.Flver) -> set[str]:
+    """The names of the textures the model's materials name (lower case)."""
+    return {t.stem.lower() for m in model.materials for t in m.textures if t.path and t.stem}
+
+
+def textures_in_file(textures: dict[str, TextureRef], path: Path, only: set[str] | None = None) -> None:
+    """Add the textures a file holds: a texture pack, or a model archive (or a loose FLVER's folder).
+    ``only`` names those wanted, so that a split pack reads no more than their entries."""
+    if re.search(r"\.(partsbnd|chrbnd|objbnd|geombnd|mapbnd)(\.dcx)?$", path.name, re.I):
+        try:
+            _add_binder_textures(textures, bnd.read_binder(read_bytes(path)), str(path), path.parent, only)
+        except (FormatError, OSError):
+            return
+    elif re.search(r"\.(flver|flv)(\.dcx)?$", path.name, re.I):
+        _scan_loose_texture_dir(textures, path.parent)
+    else:
+        add_texture_file(textures, path, only)
+
+
+def extract_texture(path: Path, name: str) -> bytes:
+    """One texture out of a file, as a DDS file."""
+    held: dict[str, TextureRef] = {}
+    textures_in_file(held, Path(path), {name.lower()})
+    if name.lower() not in held:
+        raise FormatError(f"{name} isn't in {Path(path).name} any more")
+    return held[name.lower()].dds_bytes()
+
+
+def locate_textures(textures: dict[str, TextureRef], path: Path, model: flver.Flver) -> list[tuple[str, Path]]:
+    """Find the textures the model names that aren't in ``textures`` elsewhere in its game folder (see
+    :mod:`.texindex`), and add them. Returns (texture name, file it was found in) for each one added."""
+    from . import texindex
+
+    missing = {n for n in wanted_textures(model) - set(textures) if not texindex.PLACEHOLDER.match(n)}
+    index = texindex.index_for(path) if missing else None
+    if index is None:
+        return []
+    found: list[tuple[str, Path]] = []
+    for file, _names in index.candidates(missing, exclude=[path]):
+        if not missing:
+            break
+        held: dict[str, TextureRef] = {}
+        textures_in_file(held, file, missing)
+        for name in sorted(missing & set(held)):  # only those wanted: a map's pack holds hundreds
+            textures[name] = held[name]
+            found.append((name, file))
+        missing -= set(held)
+    return found
 
 
 def _add_from_texture_dir(textures: dict[str, TextureRef], directory: Path, wanted: set[str]) -> None:
@@ -404,6 +470,28 @@ def _map_texture_files(directory: Path, stem: str) -> list[Path]:
         if any(low.startswith(p) for p in prefixes) and base.endswith((".tpf", ".tpfbhd", ".tpfbdt", ".texbnd")):
             out.append(entry)
     return out
+
+
+_located: dict[tuple, list[tuple[str, Path]]] = {}
+
+
+def located_textures(path: Path) -> list[tuple[str, Path]]:
+    """The textures the model at ``path`` takes from elsewhere in its game folder: (name, file holding it).
+    Kept for the file as it is now, as working out what to collect and collecting ask twice."""
+    try:
+        st = Path(path).stat()
+    except OSError:
+        return []
+    key = (str(path), st.st_size, st.st_mtime_ns)
+    if key not in _located:
+        try:
+            asset = load_model(path)
+        except (FormatError, OSError):
+            asset = None
+        _located[key] = list(asset.located) if asset else []
+        while len(_located) > 4096:
+            _located.pop(next(iter(_located)))
+    return _located[key]
 
 
 def related_files(path: Path, textures: bool = True, animations: bool = True, lod: bool = False) -> list[Path]:

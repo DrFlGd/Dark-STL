@@ -22,6 +22,12 @@ def register(importer: Importer) -> None:
     IMPORTERS.insert(0, importer)
 
 
+def set_cache_folder(folder: str | os.PathLike | None) -> None:
+    """Give each importer a folder in the app's cache (``<folder>/<key>``) to keep what its scans find."""
+    for imp in IMPORTERS:
+        imp.cache = Path(folder) / imp.key if folder else None
+
+
 def importer_for(path: str | os.PathLike) -> Importer:
     path = Path(path)
     for imp in IMPORTERS:
@@ -45,4 +51,5 @@ def open_file_filter() -> str:
     return ";;".join(filters + ["All files (*)"])
 
 
-__all__ = ["IMPORTERS", "Importer", "importer_for", "model_variants", "open_file_filter", "open_model", "register"]
+__all__ = ["IMPORTERS", "Importer", "importer_for", "model_variants", "open_file_filter", "open_model", "register",
+           "set_cache_folder"]

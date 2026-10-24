@@ -10,7 +10,7 @@ import { ui, setPref, resolvedTheme } from "./state.js";
 import { routeHash, placeRoute, modelOf } from "./context.js";
 import { Icon } from "./icons.js";
 import { collectModelItem } from "./games.js";
-import { api, binUrl, info, plural, bytesText, followJob, toast, showInFolder, pickFolder, pickFile } from "./api.js";
+import { api, binUrl, info, plural, bytesText, followJob, stopJob, toast, showInFolder, pickFolder, pickFile } from "./api.js";
 import { CommandBar } from "./layout.js";
 import { Inspector, useWidth } from "./inspector.js";
 import { Viewer } from "../viewer.js";
@@ -402,10 +402,11 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
       const now = { ...ENHANCE, ...(ui.get().enhance || {}) };
       const { job } = await call("enhance", { sid: m.sid, ...args.json, settings: { ...now, max_displacement_mm: now.max_displacement_mm || null,
         texture_overrides: overrides, material_strength: strengthsNow.current } });
-      const r = await followJob(job, `Generating ${m.entry?.label || variantName(m.variant) || m.name}`, (j) => setRun({ progress: j.progress, message: j.message }));
+      setRun({ progress: 0, message: "Starting", job });
+      const r = await followJob(job, `Generating ${m.entry?.label || variantName(m.variant) || m.name}`, (j) => setRun({ progress: j.progress, message: j.message, job, stopping: j.stopping }));
       onDone(r);
       toast(r.kept ? "Already generated with these settings" : `Generated: ${plural(r.stats.vertices, "vertex", "vertices")}`);
-    } catch (e) { setError(msg(e)); }
+    } catch (e) { if (e.stopped) toast("Stopped generating"); else setError(msg(e)); }
     setRun(null);
   };
   return html`<div class="tab-pad" id="enhance-tab">
@@ -470,7 +471,8 @@ function EnhanceTab({ m, args, stats, result, stale, call, onDone }) {
     <div class="insp-actions enhance-go">
       <button type="button" class="primary" id="enhance-run" disabled=${!!run || !stats.triangles} onClick=${go}>${run ? "Generating…" : result ? "Generate again" : "Generate"}</button>
     </div>
-    ${run ? html`<div class="job-progress" id="enhance-progress"><progress max="1" value=${run.progress}></progress><small class="muted">${run.message}</small></div>` : null}
+    ${run ? html`<div class="job-progress" id="enhance-progress"><progress max="1" value=${run.progress}></progress><small class="muted">${run.message}</small>
+      ${run.job ? html`<button type="button" class="ghost compact" id="enhance-stop" disabled=${!!run.stopping} title="Stop generating; the model shown stays as it is" onClick=${() => { setRun({ ...run, stopping: true, message: "Stopping…" }); stopJob(run.job); }}>${run.stopping ? "Stopping…" : "Stop"}</button>` : null}</div>` : null}
     ${error ? html`<p class="warn-note" role="alert" id="enhance-error">${error}</p>` : null}
     ${result ? html`<section class="insp-section" id="enhance-result"><h3>Enhanced</h3>
       ${stale ? html`<p class="insp-note">Made with other parts, options or pose than those chosen now: generate again to include the change.</p>` : null}
@@ -511,7 +513,7 @@ function ExportTab({ m, args, result, which: shownWhich, pose, call }) {
       const { job } = await call("export", { sid: m.sid, which, ...args.json, format: o.format, units: o.units, textures: o.textures, folder: folder || null, name: name.trim() || auto });
       const r = await followJob(job, `Exporting ${name.trim() || auto}${o.format}`);
       setDone(r);
-    } catch (e) { setError(msg(e)); }
+    } catch (e) { if (e.stopped) toast("Stopped exporting"); else setError(msg(e)); }
     setBusy(false);
   };
   return html`<div class="tab-pad" id="export-tab">

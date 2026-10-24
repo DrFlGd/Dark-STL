@@ -4,7 +4,9 @@ A game's install takes tens of gigabytes; the files Dark STL reads for a handful
 a few megabytes. Collecting copies the model archives with the textures and animations that go
 with them into ``<library folder>/<game>/``, keeping each file's path relative to the game
 folder it came from, so the same lookups (sibling ``.texbnd``, ``.anibnd``, split
-``.tpfbhd``/``.tpfbdt`` pairs, unpacked folders) work on the copies. The game's folder can then
+``.tpfbhd``/``.tpfbdt`` pairs, unpacked folders) work on the copies. Textures a model takes from
+elsewhere in the game (a map's texture pack) are written out on their own instead of copying
+the whole pack. The game's folder can then
 be removed from the library, or the game uninstalled, and the copies stay.
 """
 
@@ -23,10 +25,15 @@ KINDS = ("model", "texture", "animation", "other")
 
 @dataclass(frozen=True)
 class RelatedFile:
-    """A file a model needs: where it is and what it is for."""
+    """A file a model needs: where it is and what it is for. With ``extract``, only part of the file is
+    needed (one texture out of a map's pack): ``extract`` reads that part, and it is saved as ``save_as``
+    (a path below the game's library folder), which ``size`` estimates the size of."""
 
     path: Path
     kind: str  # one of KINDS
+    save_as: str = ""
+    extract: Callable[[], bytes] | None = field(default=None, compare=False)
+    size: int = 0
 
 
 @dataclass
@@ -46,6 +53,7 @@ class PlannedFile:
     size: int
     model: str  # the model (stem) it belongs to, or "" for the game's shared files
     present: bool = False  # already in the library folder with the same size and date
+    extract: Callable[[], bytes] | None = None  # what to write instead of copying the source (see RelatedFile)
 
 
 @dataclass
@@ -100,6 +108,13 @@ def plan(library: Path, game: str, entries: list[CatalogEntry], roots: list[Path
 
     def add(f: RelatedFile, model: str) -> None:
         src = Path(f.path)
+        if f.extract is not None:
+            target = folder / f.save_as
+            if target in seen or _is_under(src, folder):
+                return
+            seen.add(target)
+            out.files.append(PlannedFile(src, target, f.kind, f.size, model, target.is_file(), f.extract))
+            return
         if src in seen:
             return
         seen.add(src)
@@ -138,7 +153,10 @@ def run(plan: Plan, progress: Callable[[float, str], None] | None = None) -> dic
             progress(done / total, f"{f.model or f.kind}: {f.source.name}")
         f.target.parent.mkdir(parents=True, exist_ok=True)
         tmp = f.target.with_name(f.target.name + ".part")
-        shutil.copy2(f.source, tmp)
+        if f.extract is not None:
+            tmp.write_bytes(f.extract())
+        else:
+            shutil.copy2(f.source, tmp)
         os.replace(tmp, f.target)
         done += f.size
         copied += 1

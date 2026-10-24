@@ -72,6 +72,26 @@ def decompress(data: bytes) -> tuple[bytes, str]:
     raise FormatError("Not a DCX/DCP container")
 
 
+def decompress_head(data: bytes, size: int) -> bytes | None:
+    """The first ``size`` bytes (or fewer, if that's all there is) of a DCX's payload, from ``data``
+    that may be only the start of the file. zlib streams only; None for the other codecs, which
+    have to be decompressed whole."""
+    if data[:4] == b"DCX\0" and data[0x28:0x2C] == b"DFLT":
+        dca = data.find(b"DCA\0", 0x2C, 0x80)
+        if dca < 0:
+            raise FormatError("DCX header has no DCA block")
+        (dca_size,) = struct.unpack_from(">I", data, dca + 4)
+        payload = data[dca + dca_size:]
+    elif data[:4] == b"DCP\0" and data[4:8] == b"DFLT":
+        payload = data[0x2C:]
+    else:
+        return None
+    try:
+        return zlib.decompressobj().decompress(payload, size)
+    except zlib.error as exc:
+        raise FormatError(f"Bad zlib data: {exc}") from exc
+
+
 def maybe_decompress(data: bytes) -> bytes:
     """Return the payload of a DCX container, or the data unchanged."""
     if is_dcx(data):

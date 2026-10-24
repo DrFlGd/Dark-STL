@@ -79,15 +79,18 @@ darkstl            # or darkstl-gui; darkstl gui --browser opens it in your brow
    Change game and Remove. Nothing in your folders is ever changed.
 2. **Browse a game.** Each game has its own library: its kinds of model (weapons, armour,
    characters, objects, map pieces) as tiles, then each kind's models with a preview, in
-   groups. Search with the box at the top (or press /). *Open a model file…* under ⋯ on
+   groups. Previews are drawn once and kept until you rescan the folder. Search with the box
+   at the top (or press /). *Open a model file…* under ⋯ on
    Home opens a single file, including `.obj`.
-3. **Open a model** (double-click or Enter). It's shown with the game's textures; *Model*
-   lists its parts and options, *Textures* every texture found. A file that holds several
+3. **Open a model** (double-click or Enter). It's shown with the game's textures, wherever in
+   the game folder they are (a map's texture packs, shared packs, another model's archive);
+   *Model* lists its parts and options, *Textures* every texture found. A file that holds several
    models (a weapon and its sheath) has a switch at the top.
 4. **Generate** sets the vertex count (it shows the spacing that gives on this model) and where
    the detail comes from, then makes the detailed model. Show *Original* or *Enhanced* under
    the view: both stay loaded, so switching is instant. The last three models generated are
-   kept too, so generating again with settings you've already used is instant.
+   kept too, so generating again with settings you've already used is instant. Click the job
+   in the status bar (or Stop under the progress bar) to stop it.
 5. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default.
 
 ![A game's library](docs/images/library.png)

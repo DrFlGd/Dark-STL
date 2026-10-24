@@ -9,6 +9,7 @@ import { CommandBar } from "./layout.js";
 import { Icon } from "./icons.js";
 import { GameBadge } from "./gameicons.js";
 import { rescanFolder, removeFolder, changeGame } from "./games.js";
+import { forgetThumbs } from "./thumbs.js";
 
 const msg = (e) => String(e?.message || e);
 
@@ -94,9 +95,9 @@ function Engine() {
     </section>
     <section class="ls-section" id="settings-previews">
       <h2>Previews</h2>
-      <p class="muted">The pictures on the cards are drawn the first time each model comes into view, and kept in <span class="note-path">${s.previews}</span>.</p>
+      <p class="muted">The pictures on the cards are drawn the first time each model comes into view, and kept in <span class="note-path">${s.previews}</span> until the model's folder is rescanned.</p>
       <div><button type="button" class="ghost" id="previews-clear" onClick=${async () => {
-        try { const r = await api("thumbs_clear"); toast(`Cleared ${plural(r.removed, "preview")}. They're drawn again as they come into view.`); } catch (e) { toast(msg(e)); }
+        try { const r = await api("thumbs_clear"); forgetThumbs(); toast(`Cleared ${plural(r.removed, "preview")}. They're drawn again as they come into view.`); } catch (e) { toast(msg(e)); }
       }}>Draw them again</button></div>
     </section>`;
 }

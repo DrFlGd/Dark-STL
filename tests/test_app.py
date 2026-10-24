@@ -301,3 +301,40 @@ def test_without_a_web_view_the_page_opens_in_the_browser(home, monkeypatch):
         port = s.getsockname()[1]
     assert desktop.run(port=port) == 0
     assert served == [(f"http://127.0.0.1:{port}/", 200)]
+
+
+def test_generating_can_be_stopped(service, monkeypatch):
+    import threading
+
+    from darkstl import pipeline
+
+    started, release = threading.Event(), threading.Event()
+
+    def slow(model, settings, progress):
+        progress(0.1, "Building mesh")
+        started.set()
+        release.wait(10)
+        progress(0.5, "Subdividing")  # the next step: where a stopped job ends
+        raise AssertionError("should have stopped")
+
+    monkeypatch.setattr(pipeline, "enhance", slow)
+    item = service.call("models_query", {"game": "Dark Souls III", "category": "Weapons"})["items"][0]
+    m = service.call("model_open", {"id": item["id"]})
+    job_id = service.call("enhance", {"sid": m["sid"], "settings": {"target_vertices": 4000}})["job"]
+    assert started.wait(10)
+    job = service.call("job", {"id": job_id})
+    assert job["stoppable"] and job["state"] == "running"
+    stopped = service.call("job_stop", {"id": job_id})
+    assert stopped["stopping"] and stopped["message"] == "Stopping…"
+    release.set()
+    end = time.time() + 10
+    while service.call("job", {"id": job_id})["state"] == "running" and time.time() < end:
+        time.sleep(0.02)
+    job = service.call("job", {"id": job_id})
+    assert job["state"] == "stopped" and not job["stoppable"]
+    assert service.call("model_open", {"id": item["id"]})["enhanced"] is None  # nothing was kept
+    # the start-up read of the game folders can't be stopped (the library would be half read)
+    reading = service.load_folders()
+    with pytest.raises(AppError, match="can't be stopped"):
+        service.call("job_stop", {"id": reading.id})
+    wait(service, reading.id)

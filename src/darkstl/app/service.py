@@ -73,25 +73,39 @@ def reveal(path: str) -> None:
 
 # --------------------------------------------------------------------- jobs
 
+class Stopped(BaseException):
+    """Raised in a job's thread at its next progress report once the user has stopped it. Not an
+    Exception, so that nothing on the way catches it as a failure."""
+
+
 @dataclass
 class Job:
     id: str
     label: str
-    state: str = "running"  # running | done | failed
+    state: str = "running"  # running | done | failed | stopped
     progress: float = 0.0
     message: str = ""
     result: Any = None
     error: str | None = None
     started: float = field(default_factory=time.time)
+    stoppable: bool = False
+    stopping: bool = False
 
     def report(self, frac: float, message: str = "") -> None:
+        self.check()
         self.progress = float(min(max(frac, 0.0), 1.0))
         if message:
             self.message = message
 
+    def check(self) -> None:
+        """Stop here if the user has asked to (call before keeping a result)."""
+        if self.stopping:
+            raise Stopped()
+
     def as_json(self) -> dict:
         return {"id": self.id, "label": self.label, "state": self.state, "progress": round(self.progress, 4),
-                "message": self.message, "result": self.result, "error": self.error, "started": self.started}
+                "message": self.message, "result": self.result, "error": self.error, "started": self.started,
+                "stoppable": self.stoppable and self.state == "running", "stopping": self.stopping}
 
 
 class Jobs:
@@ -100,8 +114,10 @@ class Jobs:
         self._lock = threading.Lock()
         self._keep = keep
 
-    def start(self, label: str, fn: Callable[[Job], Any]) -> Job:
-        job = Job(uuid.uuid4().hex[:12], label)
+    def start(self, label: str, fn: Callable[[Job], Any], stoppable: bool = False) -> Job:
+        """Run ``fn`` in a thread of its own. A ``stoppable`` job can be stopped (:meth:`stop`): it ends
+        at its next progress report, and what it was making is dropped."""
+        job = Job(uuid.uuid4().hex[:12], label, stoppable=stoppable)
         with self._lock:
             self._jobs[job.id] = job
             while len(self._jobs) > self._keep:
@@ -115,6 +131,8 @@ class Jobs:
                 job.result = fn(job)
                 job.progress = 1.0
                 job.state = "done"
+            except Stopped:
+                job.error, job.state = "Stopped", "stopped"
             except AppError as exc:
                 job.error, job.state = str(exc), "failed"
             except Exception as exc:  # noqa: BLE001 - reported to the page
@@ -126,6 +144,13 @@ class Jobs:
 
     def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
+
+    def stop(self, job_id: str) -> Job | None:
+        job = self._jobs.get(job_id)
+        if job is not None and job.stoppable and job.state == "running":
+            job.stopping = True
+            job.message = "Stopping…"
+        return job
 
     def running(self) -> list[Job]:
         return [j for j in list(self._jobs.values()) if j.state == "running"]
@@ -235,6 +260,9 @@ class Service:
         self.library = Library()
         self.jobs = Jobs()
         self.thumbs = ThumbnailCache(Path(cache) / "previews")
+        from ..importers import set_cache_folder
+
+        set_cache_folder(Path(cache) / "scans")  # the texture index of each game folder, so rescans are quick
         self.sessions: OrderedDict[str, Session] = OrderedDict()
         self.opened: dict[str, Path] = {}  # model files opened on their own, by id
         self.lock = threading.RLock()
@@ -303,6 +331,7 @@ class Service:
             self.config.oodle = path
             if path:
                 self._use_oodle(path)
+                self.thumbs.clear(only_failed=True)  # models that needed it can be drawn now
         if "export_dir" in args:
             self.config.export_dir = str(args["export_dir"] or "").strip()
         if "library_dir" in args:
@@ -358,6 +387,15 @@ class Service:
     def cmd_jobs(self, args: dict) -> list:
         return [j.as_json() for j in self.jobs.running()]
 
+    def cmd_job_stop(self, args: dict) -> dict:
+        """Stop a job (generating, exporting, scanning, collecting): it ends at its next step."""
+        job = self.jobs.get(str(args.get("id")))
+        if job is None:
+            raise AppError("That job is no longer known (the app was restarted?)")
+        if not job.stoppable:
+            raise AppError(f"{job.label} can't be stopped.")
+        return self.jobs.stop(job.id).as_json()
+
     # ------------------------------------------------------------ library
 
     def load_folders(self) -> Job | None:
@@ -379,9 +417,9 @@ class Service:
                 self.library.merge(lib)  # keeps a folder added while this ran
             return {"games": len(lib.games()), "models": len(lib.entries)}
 
-        return self._scan_job("Reading game folders", run)
+        return self._scan_job("Reading game folders", run, stoppable=False)  # the library would be left half read
 
-    def _scan_job(self, label: str, fn: Callable[[Job], Any]) -> Job:
+    def _scan_job(self, label: str, fn: Callable[[Job], Any], stoppable: bool = True) -> Job:
         with self.lock:
             self.scanning += 1
 
@@ -392,7 +430,7 @@ class Service:
                 with self.lock:
                     self.scanning -= 1
 
-        return self.jobs.start(label, run)
+        return self.jobs.start(label, run, stoppable)
 
     def cmd_overview(self, args: dict) -> dict:
         with self.lock:
@@ -434,12 +472,18 @@ class Service:
             raise AppError(f"{path} isn't one of the game folders.")
         if not path.is_dir():
             raise AppError(f"This folder isn't there any more: {path}")
-        return {"job": self._scan(path, game, f"Rescanning {path.name}").id}
+        return {"job": self._scan(path, game, f"Rescanning {path.name}", redraw=True).id}
 
-    def _scan(self, path: Path, game: str, label: str) -> Job:
+    def _scan(self, path: Path, game: str, label: str, redraw: bool = False) -> Job:
+        """Scan a folder into the library; ``redraw`` (a rescan) draws its models' previews again."""
         def run(job: Job):
             lib = Library()
-            lib.add_root(path, game, lambda i, name: job.report(0.0, f"{i:,} files: {name}"))
+            lib.add_root(path, game, lambda i, name: job.report(0.0, name if i < 0 else f"{i:,} files: {name}"))
+            job.check()
+            if redraw:
+                with self.lock:
+                    before = [e.path for e in self.library.entries if _is_under(e.path, path)]
+                self.thumbs.forget(set(before) | {e.path for e in lib.entries})
             with self.lock:
                 for inner in folder_relation(path, self.library.roots)[1]:  # now part of this folder
                     self.library.remove_root(inner)
@@ -691,7 +735,9 @@ class Service:
         if path is None:
             return None
         try:
-            return self.thumbs.get(path, None, tuple(self.config.texture_dirs))
+            # cached=1: only a preview drawn already (b"" when it isn't), so the page can show those at once
+            return self.thumbs.get(path, None, tuple(self.config.texture_dirs),
+                                   draw=str(args.get("cached") or "") not in ("1", "true"))
         except Exception:  # noqa: BLE001 - a model that can't be drawn just has no preview
             return None
 
@@ -741,12 +787,13 @@ class Service:
 
         def run(job: Job):
             result = kept or enhance(session.model, settings, job.report)
+            job.check()  # stopped in its last step: not kept
             self._keep(key, result)
             session.result, session.result_id = result, _key_id(key)
             return {**self._result_json(session), "kept": kept is not None}
 
         name = session.model.variant or session.model.name
-        return {"job": self.jobs.start(f"Generating {name}", run).id}
+        return {"job": self.jobs.start(f"Generating {name}", run, stoppable=True).id}
 
     def _keep(self, key: tuple, result: Any) -> None:
         with self.lock:
@@ -804,7 +851,7 @@ class Service:
             path = export_mesh(mesh, _free_name(folder / f"{base}{ext}"), opts)
             return {"path": str(path), "bytes": path.stat().st_size}
 
-        return {"job": self.jobs.start(f"Exporting {base}{ext}", run).id}
+        return {"job": self.jobs.start(f"Exporting {base}{ext}", run, stoppable=True).id}
 
     def _forget_models(self) -> None:
         with self.lock:

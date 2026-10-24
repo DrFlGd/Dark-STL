@@ -118,8 +118,8 @@ class Handler(BaseHTTPRequestHandler):
         if data is None:
             return self._send(404, b"Nothing to show", "text/plain")
         ctype = "image/png" if data[:4] == b"\x89PNG" else "application/octet-stream"
-        # previews are keyed by the file's date, so the page may keep them a while
-        self._send(200, data, ctype, cache="private, max-age=3600" if cmd == "thumb" else "no-store")
+        # previews are keyed by the file's date, so the page may keep them a while (not "not drawn yet")
+        self._send(200, data, ctype, cache="private, max-age=3600" if cmd == "thumb" and data else "no-store")
 
     # ----------------------------------------------------------------- POST
 

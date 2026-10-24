@@ -9,7 +9,9 @@ matching ``*bdt`` file.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
 from . import dcx
@@ -148,11 +150,23 @@ def is_binder(data: bytes) -> bool:
     return data[:4] in BINDER_MAGICS
 
 
-def read_binder(data: bytes, bdt: bytes | Callable[[], bytes] | None = None) -> Binder:
+def _file_slice_loader(path: Path, offset: int, size: int) -> Callable[[], bytes]:
+    def load() -> bytes:
+        with open(path, "rb") as fh:
+            fh.seek(offset)
+            data = fh.read(size)
+        if offset < 0 or len(data) != size:
+            raise FormatError(f"Binder entry 0x{offset:X}+0x{size:X} is outside {path.name}")
+        return data
+    return load
+
+
+def read_binder(data: bytes, bdt: bytes | Callable[[], bytes] | os.PathLike | None = None) -> Binder:
     """Parse a BND3/BND4 archive, or a BHF3/BHF4 header with its BDT data.
 
     ``data`` may still be DCX-compressed. For split binders ``bdt`` is the
-    data file's bytes (or a callable that loads them on first access).
+    data file's bytes (or a callable that loads them on first access), or its
+    path, so that only the entries used are read from it.
     """
     data = dcx.maybe_decompress(data)
     magic = data[:4]
@@ -181,6 +195,9 @@ def read_binder(data: bytes, bdt: bytes | Callable[[], bytes] | None = None) -> 
     if source is not None:
         for file_id, name, flags, offset, size in headers:
             files.append(BinderFile(file_id, name, flags, _slice_loader(source, offset, size)))
+    elif isinstance(bdt, (str, os.PathLike)):  # a data file on disk: each entry read from it on its own
+        for file_id, name, flags, offset, size in headers:
+            files.append(BinderFile(file_id, name, flags, _file_slice_loader(Path(bdt), offset, size)))
     else:
         cache: dict[str, bytes] = {}
 
