@@ -368,18 +368,18 @@ def streaming_partner(path: Path) -> Path | None:
         rel = path.relative_to(tree)
     except ValueError:
         return None
-    candidate = tree / "streaming" / rel
-    return candidate if exists(candidate) else None
+    return _resolve_file(tree / "streaming", rel)
 
 
 def _resolve_dir(base: Path, rel: str) -> Path:
-    """``base/rel`` with each folder of ``rel`` matched regardless of case (the engine's paths are
-    case-insensitive; extracted trees are often all lower case while the materials say ``_Chainsaw``)."""
+    """``base/rel`` with each folder of ``rel`` matched regardless of case and spelt as it is on disk
+    (the engine's paths are case-insensitive; extracted trees are often all lower case while the
+    materials say ``_Chainsaw``, and Windows finds either spelling)."""
     current = Path(base)
     for segment in [s for s in rel.replace("\\", "/").split("/") if s]:
         candidate = current / segment
-        if candidate.is_dir() or not current.is_dir():
-            current = candidate  # exists as written, or is inside a pak: compared lower-case there
+        if not current.is_dir():
+            current = candidate  # inside a pak: names are compared lower-case there
             continue
         low = segment.lower()
         try:
@@ -388,6 +388,12 @@ def _resolve_dir(base: Path, rel: str) -> Path:
             match = None
         current = match if match is not None else candidate
     return current
+
+
+def _resolve_file(base: Path, rel: Path) -> Path | None:
+    """``base/rel`` as spelt on disk (or in a pak), or None when there is no such file."""
+    folder = _resolve_dir(base, rel.parent.as_posix() if rel.parent != Path(".") else "")
+    return _listing(folder).get(rel.name.lower())
 
 
 def _listing(directory: Path) -> dict[str, Path]:
@@ -613,8 +619,7 @@ def _small_copy(path: Path) -> Path | None:
         rel = path.relative_to(tree)
     except ValueError:
         return None
-    candidate = base / "natives" / platform / rel
-    return candidate if exists(candidate) else None
+    return _resolve_file(base / "natives" / platform, rel)
 
 
 __all__ = ["FileIndex", "ModelAsset", "ModelPath", "TexRef", "build_index", "exists", "file_stem", "find_mdf",
