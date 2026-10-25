@@ -1,7 +1,7 @@
 [package]
 name = "dark-stl"
 description = "Dark STL desktop app"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 publish = false
 

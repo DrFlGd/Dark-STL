@@ -50,6 +50,19 @@ def normal_map_slopes(rgba: np.ndarray, convention: str = "directx", max_slope: 
     return np.clip(p, -max_slope, max_slope), np.clip(q, -max_slope, max_slope)
 
 
+def slopes_to_normal_map(p: np.ndarray, q: np.ndarray, convention: str = "directx") -> np.ndarray:
+    """The inverse of :func:`normal_map_slopes`: slopes drawn as an RGBA uint8 normal map."""
+    inv = 1.0 / np.sqrt(1.0 + p * p + q * q)
+    nx = -p * inv
+    ny = (-q if convention == "directx" else q) * inv
+    out = np.empty(p.shape + (4,), np.uint8)
+    out[..., 0] = np.clip(np.rint((nx * 0.5 + 0.5) * 255), 0, 255)
+    out[..., 1] = np.clip(np.rint((ny * 0.5 + 0.5) * 255), 0, 255)
+    out[..., 2] = np.clip(np.rint((inv * 0.5 + 0.5) * 255), 0, 255)
+    out[..., 3] = 255
+    return out
+
+
 def _staggered(p: np.ndarray, q: np.ndarray, mask: np.ndarray | None):
     """Slopes at texel centres -> forward differences between neighbours, zeroed across mask borders."""
     fx = np.zeros_like(p)

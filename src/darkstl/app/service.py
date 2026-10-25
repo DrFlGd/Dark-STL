@@ -260,9 +260,11 @@ def mesh_stats(mesh: TriMesh) -> dict:
 # ------------------------------------------------------------------ service
 
 class Service:
-    BYTES = {"model_mesh", "texture", "thumb"}
+    BYTES = {"model_mesh", "texture", "thumb", "texture_crop"}
     KEEP_GENERATED = 3  # enhanced models kept, so generating one again with the same settings is instant
     KEEP_MESHES = 2  # evened-out meshes kept, so other displacement settings are tried without making them again
+    KEEP_UPSCALED = 8  # normal maps made ready (cleaned up, upsampled) kept, within KEEP_UPSCALED_BYTES
+    KEEP_UPSCALED_BYTES = 768 << 20
 
     def __init__(self, config: Config, cache: Path, host: Host | None = None):
         self.config = config
@@ -280,6 +282,7 @@ class Service:
         self.textures_png: OrderedDict[tuple, bytes] = OrderedDict()
         self.generated: OrderedDict[tuple, Any] = OrderedDict()  # EnhanceResult by generated_key(), newest last
         self.meshes: OrderedDict[tuple, Any] = OrderedDict()  # step 1's evened-out meshes (Resampled) by mesh_key()
+        self.upscaled: OrderedDict[tuple, Any] = OrderedDict()  # normal maps made ready (UpscaledMap) by _upscale_key()
         if config.oodle:
             self._use_oodle(config.oodle)
 
@@ -851,6 +854,7 @@ class Service:
             upsample=str(s.get("upsample", defaults.upsample)),
             ai_model=str(s.get("ai_model") or ""),
             deblock_model=str(s.get("deblock_model") or ""),
+            upsample_factor=_factor(s.get("upsample_factor")),
             models_dir=models_dir(),
             material_strength={int(k): float(v) for k, v in (s.get("material_strength") or {}).items()
                                if v is not None and v != ""},
@@ -864,12 +868,20 @@ class Service:
         return settings
 
     def cmd_enhance(self, args: dict) -> dict:
-        from ..pipeline import enhance
+        """Generate: step 1 (even out the vertices) then step 2 (displace them), starting from step 1's
+        mesh when it's kept. ``step: "mesh"`` runs step 1 alone: the evened-out model, not displaced."""
+        from dataclasses import replace
+
+        from ..pipeline import MESH_SETTINGS, SOURCE_NONE, enhance
 
         session = self._session(args)
         options = mesh_options(args)
         s = args.get("settings") or {}
         settings = self._enhance_settings(s, options)
+        only_mesh = args.get("step") == "mesh"
+        if only_mesh:  # what step 1 depends on alone, so step-2 settings don't make it again
+            s = {**{k: s[k] for k in MESH_SETTINGS if k in s}, "step": "mesh"}
+            settings = replace(settings, source=SOURCE_NONE)
         key = generated_key(session, options, s)
         mkey = mesh_key(session, options, settings)
         with self.lock:
@@ -884,14 +896,20 @@ class Service:
                     self.meshes.popitem(last=False)
 
         def run(job: Job):
-            result = kept or enhance(session.model, settings, job.report, mesh=mesh, on_mesh=keep_mesh)
+            result = kept
+            if result is None:
+                # the normal maps as the texture settings make them (the Textures tab's step), made now if not yet
+                _maps, prepared, made = self._prepared_maps(session, options, settings, job) if not only_mesh else ([], {}, False)
+                progress = (lambda f, m: job.report(0.2 + 0.8 * f, m)) if made else job.report
+                result = enhance(session.model, settings, progress, mesh=mesh, on_mesh=keep_mesh, prepared=prepared)
             job.check()  # stopped in its last step: not kept
             self._keep(key, result)
             session.result, session.result_id = result, _key_id(key)
             return {**self._result_json(session), "kept": kept is not None, "mesh_reused": mesh is not None}
 
         name = session.model.variant or session.model.name
-        return {"job": self.jobs.start(f"Generating {name}", run, stoppable=True).id}
+        label = f"Evening out {name}" if only_mesh else f"Generating {name}"
+        return {"job": self.jobs.start(label, run, stoppable=True).id}
 
     def cmd_enhance_mesh(self, args: dict) -> dict:
         """Whether the evened-out mesh for these parts, pose and step-1 settings is kept from an earlier
@@ -903,6 +921,118 @@ class Service:
             mesh = self.meshes.get(mesh_key(session, options, settings))
         return {"kept": mesh is not None, "vertices": mesh.resampled.n_vertices if mesh else 0,
                 "triangles": mesh.resampled.n_faces if mesh else 0}
+
+    # ------------------------------------------------------------ textures made ready for displacement
+
+    def _detail_maps(self, session: Session, options: MeshOptions, settings):
+        """The normal maps displacement would read, and the vertex spacing the mesh settings give."""
+        from ..geometry.subdivide import edge_length_for_vertex_count
+        from ..pipeline import detail_maps
+
+        source = session.build(options)
+        maps = detail_maps(session.model, source, session.model.materials, settings)
+        return maps, edge_length_for_vertex_count(source.surface_area(), max(int(settings.target_vertices), 4))
+
+    def _upscale_key(self, session: Session, options: MeshOptions, settings, dm, spacing: float, h: int, w: int) -> tuple:
+        """What a normal map made ready depends on: the model file, its parts and pose (the UVs covered),
+        the texture, the texture settings, and the factor and model those give it here."""
+        from ..pipeline import UPSCALE_SETTINGS, plan_upscale
+
+        factor, model = plan_upscale(settings, dm.texel, spacing, dm.codec, h, w)
+        return (session.sid, _file_id(session.model.path), dm.key, _options_key(options), dm.green,
+                tuple(getattr(settings, k) for k in UPSCALE_SETTINGS), factor, str(model.path) if model else "")
+
+    def _prepared_maps(self, session: Session, options: MeshOptions, settings, job: Job | None = None,
+                       keys: list[str] | None = None, make: bool = True):
+        """The normal maps displacement with these settings reads, each made ready (cleaned up and upsampled as
+        the texture settings ask) and kept, so Displace and the Textures tab share them. ``make`` False only
+        says which are ready. Returns (what the page shows of each, the maps ready by key, whether any was made)."""
+        from ..pipeline import upscale_normal_map
+
+        maps, spacing = self._detail_maps(session, options, settings)
+        if keys is not None:
+            maps = [dm for dm in maps if dm.key in keys]
+        model = session.model
+        shown, found, made = [], {}, False
+        for i, dm in enumerate(maps):
+            tex = model.textures[dm.key]
+            img = tex.decode()
+            h, w = img.shape[:2]
+            k = self._upscale_key(session, options, settings, dm, spacing, h, w)
+            with self.lock:
+                up = self.upscaled.get(k)
+                if up is not None:
+                    self.upscaled.move_to_end(k)
+            if up is None and make:
+                if job is not None:
+                    job.report(0.2 * i / len(maps), f"Making {tex.name} ready ({i + 1} of {len(maps)})")
+                info = model.materials[dm.materials[0]] if dm.materials[0] < len(model.materials) else None
+                progress = (lambda f, m, i=i, name=tex.name: job.report(0.2 * (i + f) / len(maps), f"{name}: {m}")) if job else None
+                up = upscale_normal_map(model, info, img, dm.all_uv, dm.green, dm.texel, spacing, settings, dm.key,
+                                        dm.codec, progress)
+                if job is not None:
+                    job.check()
+                self._keep_upscaled(k, up)
+                made = True
+            if up is not None:
+                found[dm.key] = up
+            shown.append({"key": dm.key, "name": tex.name, "size": [w, h], "texel_mm": dm.texel * 1000,
+                          "materials": [model.materials[m].name if m < len(model.materials) else str(m) for m in dm.materials],
+                          "ready": up is not None, "factor": up.factor if up else None,
+                          "up_size": [w * up.factor, h * up.factor] if up else None,
+                          "steps": list(up.steps) if up else [], "warnings": list(up.warnings) if up else []})
+        return shown, found, made
+
+    def _keep_upscaled(self, key: tuple, up: Any) -> None:
+        with self.lock:
+            self.upscaled[key] = up
+            self.upscaled.move_to_end(key)
+            while len(self.upscaled) > 1 and (len(self.upscaled) > self.KEEP_UPSCALED
+                                              or sum(u.nbytes for u in self.upscaled.values()) > self.KEEP_UPSCALED_BYTES):
+                self.upscaled.popitem(last=False)
+
+    def cmd_texture_maps(self, args: dict) -> dict:
+        """The normal maps Displace will read with these settings, and whether each is ready (made with the
+        texture settings as they are, for the vertex spacing the mesh settings give)."""
+        session = self._session(args)
+        options = mesh_options(args)
+        settings = self._enhance_settings(args.get("settings") or {}, options)
+        shown, _found, _made = self._prepared_maps(session, options, settings, make=False)
+        _maps, spacing = self._detail_maps(session, options, settings)
+        return {"maps": shown, "spacing_mm": spacing * 1000}
+
+    def cmd_texture_upscale(self, args: dict) -> dict:
+        """Make the normal maps ready (the Textures tab's step): ``keys`` chooses some, else all of them."""
+        session = self._session(args)
+        options = mesh_options(args)
+        settings = self._enhance_settings(args.get("settings") or {}, options)
+        keys = args.get("keys")
+        if isinstance(keys, str):
+            keys = [k for k in keys.split(",") if k]
+
+        def run(job: Job):
+            shown, _found, _made = self._prepared_maps(session, options, settings, job, keys)
+            job.check()
+            return {"maps": shown}
+
+        name = session.model.variant or session.model.name
+        return {"job": self.jobs.start(f"Upscaling {name}'s textures", run, stoppable=True).id}
+
+    def cmd_texture_crop(self, args: dict) -> bytes:
+        """A piece of a normal map made ready, before (``which=before``) or after the texture settings, drawn at
+        ``w`` x ``h``: the part ``x0..x1`` by ``y0..y1`` of it (fractions; outside the texture is grey). The
+        page's before/after view asks for these as it pans and zooms, so texels stay crisp however far in."""
+        session = self._session(args)
+        key = str(args.get("key") or "")
+        options = mesh_options(_parse_lists(args))
+        settings = self._enhance_settings(_json_arg(args.get("settings")) or {}, options)
+        _shown, found, _made = self._prepared_maps(session, options, settings, make=False, keys=[key])
+        up = found.get(key)
+        if up is None:
+            raise AppError("This texture hasn't been upscaled with these settings yet.")
+        rect = tuple(float(args.get(k, d)) for k, d in (("x0", 0), ("y0", 0), ("x1", 1), ("y1", 1)))
+        size = tuple(min(max(int(args.get(k, 512)), 16), 4096) for k in ("w", "h"))
+        return crop_png(up, str(args.get("which", "after")) != "before", rect, size)
 
     def _keep(self, key: tuple, result: Any) -> None:
         with self.lock:
@@ -931,7 +1061,7 @@ class Service:
                             "texture": model.textures[f.texture].name if f.texture in model.textures else f.texture,
                             "convention": f.field.convention, "texel_mm": f.texel_size * 1000, "steps": f.steps}
                            for m, f in r.fields.items()],
-                "warnings": list(r.warnings)}
+                "warnings": list(r.warnings), "displaced": r.displaced_by_textures}
 
     def cmd_export(self, args: dict) -> dict:
         session = self._session(args)
@@ -968,6 +1098,7 @@ class Service:
             self.textures_png.clear()
             self.generated.clear()
             self.meshes.clear()
+            self.upscaled.clear()
 
 
 def _collection_json(path: Path, data: dict) -> dict:
@@ -1025,6 +1156,46 @@ def _albedo(model: SourceModel, mesh: TriMesh) -> dict[int, np.ndarray]:
             except Exception:  # noqa: BLE001 - exported without that texture
                 pass
     return out
+
+
+def _json_arg(value):
+    """An argument the page sends as JSON in a URL (binary commands take their arguments as query strings)."""
+    return json.loads(value) if isinstance(value, str) else value
+
+
+def _factor(value) -> int:
+    """The upsampling factor setting: 0 (automatic), 2 or 4."""
+    try:
+        n = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return n if n in (2, 4) else 0
+
+
+def crop_png(up, upscaled: bool, rect: tuple, size: tuple) -> bytes:
+    """``rect`` = (x0, y0, x1, y1) of a map made ready (fractions of it), drawn at ``size`` = (w, h) px:
+    texels are blocks when magnified and averaged when there are more than pixels."""
+    from PIL import Image
+
+    H, W = (up.p if upscaled else up.p0).shape
+    x0, y0, x1, y1 = rect
+    w, h = size
+    if x1 <= x0 or y1 <= y0:
+        raise AppError("Nothing to show: the view is empty.")
+    canvas = Image.new("RGBA", (w, h), (52, 52, 56, 255))
+    px0, px1 = max(int(np.floor(x0 * W)), 0), min(int(np.ceil(x1 * W)), W)
+    py0, py1 = max(int(np.floor(y0 * H)), 0), min(int(np.ceil(y1 * H)), H)
+    if px1 > px0 and py1 > py0:
+        sx, sy = w / ((x1 - x0) * W), h / ((y1 - y0) * H)  # output pixels per texel
+        step = max(int(1 / min(sx, sy)) // 2, 1) if min(sx, sy) < 0.5 else 1  # far out: every nth texel will do
+        rgba = up.normal_map(upscaled, (py0, py1, px0, px1))[::step, ::step]
+        piece = Image.fromarray(np.ascontiguousarray(rgba))
+        pw, ph = max(int(round((px1 - px0) * sx)), 1), max(int(round((py1 - py0) * sy)), 1)
+        piece = piece.resize((pw, ph), Image.NEAREST if min(sx, sy) >= 1 else Image.BOX)
+        canvas.paste(piece, (int(round((px0 - x0 * W) * sx)), int(round((py0 - y0 * H) * sy))))
+    buf = io.BytesIO()
+    canvas.save(buf, "PNG", compress_level=1)
+    return buf.getvalue()
 
 
 def texture_png(img: np.ndarray, max_size: int) -> bytes:

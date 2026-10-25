@@ -78,6 +78,7 @@ class EnhanceSettings:
     upsample: str = "off"  # off | guided (albedo-guided) | ai
     ai_model: str = ""  # upscaling model file in models_dir ("": the included one for the texture's compression)
     deblock_model: str = ""  # 1x deblocking model file in models_dir
+    upsample_factor: int = 0  # 0: as the vertex spacing needs; else 2 or 4 (an AI model's own factor is brought to it)
     models_dir: Path | None = None
     material_strength: dict[int, float] = field(default_factory=dict)  # material -> extra strength multiplier
     edge_hints: bool = False  # let specular/metallic mask edges decouple the integration
@@ -106,6 +107,7 @@ class EnhanceResult:
     fields: dict[int, MaterialField]
     materials: list[Material]
     warnings: list[str] = field(default_factory=list)
+    displaced_by_textures: bool = True  # False: step 1 alone (or nothing to displace by chosen)
 
     def stats(self) -> dict:
         h = self.displaced.metadata.get("displacement")
@@ -123,8 +125,187 @@ def _report(progress: ProgressFn | None, frac: float, msg: str) -> None:
         progress(frac, msg)
 
 
+UPSCALE_SETTINGS = ("green", "deblock", "deblock_model", "upsample", "ai_model", "upsample_factor")  # what a map made ready depends on
+
+
+@dataclass
+class UpscaledMap:
+    """A normal map made ready for displacement by the texture settings (:data:`UPSCALE_SETTINGS`): cleaned
+    up and upsampled, kept as slopes at the new size. Made once (the Textures tab's step), it serves every
+    displacement after it, and drawn as a normal map before and after it shows what the settings did."""
+
+    key: str
+    convention: str
+    confidence: float
+    bias: tuple[float, float]
+    p0: np.ndarray  # the texture's own slopes, bias removed (float32)
+    q0: np.ndarray
+    p: np.ndarray  # the slopes made ready, ``factor`` x the texture's size
+    q: np.ndarray
+    factor: int
+    steps: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return self.p0.shape
+
+    @property
+    def nbytes(self) -> int:
+        return self.p0.nbytes + self.q0.nbytes + self.p.nbytes + self.q.nbytes
+
+    def normal_map(self, upscaled: bool = True, region: tuple[int, int, int, int] | None = None) -> np.ndarray:
+        """The slopes drawn as a normal map (RGBA uint8): the whole, or ``region`` = (y0, y1, x0, x1) of it."""
+        p, q = (self.p, self.q) if upscaled else (self.p0, self.q0)
+        if region is not None:
+            y0, y1, x0, x1 = region
+            p, q = p[y0:y1, x0:x1], q[y0:y1, x0:x1]
+        return hm.slopes_to_normal_map(p, q, self.convention)
+
+
+@dataclass
+class DetailMap:
+    """A normal map displacement will read: the materials that use it, the UVs they cover it with and the
+    size of its texels on the model (from the first material using it, as :func:`build_fields` does)."""
+
+    key: str
+    materials: list[int]
+    texel: float
+    all_uv: np.ndarray
+    green: str
+    codec: str | None
+
+
+def detail_maps(model: SourceModel, source: TriMesh, materials: list[Material], settings: EnhanceSettings) -> list[DetailMap]:
+    """The normal maps displacement with these settings reads from ``source``'s materials, in material order."""
+    out: dict[str, DetailMap] = {}
+    if settings.source != SOURCE_NORMAL or source.corner_uvs is None:
+        return []
+    for mat in np.unique(source.face_material):
+        mat = int(mat)
+        if settings.texture_overrides.get(mat, None) == "":
+            continue
+        key = _material_texture(materials, settings, mat)
+        if not key or key not in model.textures:
+            continue
+        info = materials[mat] if mat < len(materials) else None
+        sel = source.face_material == mat
+        if key in out:
+            out[key].materials.append(mat)
+            out[key].all_uv = np.concatenate([out[key].all_uv, source.corner_uvs[sel]])
+            continue
+        h, w = model.textures[key].decode().shape[:2]
+        texel = texel_world_size(source.vertices, source.faces[sel], source.corner_uvs[sel], w, h)
+        green = settings.green
+        if green == "auto" and info is not None and info.normal_green:
+            green = info.normal_green
+        out[key] = DetailMap(key, [mat], texel, source.corner_uvs[sel], green, model.textures[key].codec())
+    return list(out.values())
+
+
+def plan_upscale(settings: EnhanceSettings, texel: float, spacing: float, codec: str | None, h: int, w: int,
+                 warnings: list[str] | None = None):
+    """What the texture settings mean for a texture of ``h`` x ``w``: the factor its slopes are brought to and
+    the AI model used (None: none). Automatic (``upsample_factor`` 0) goes by how much closer together the
+    vertices are than the texels; a factor asked for is used as it is."""
+    from .textures import upscale
+
+    want = int(settings.upsample_factor or 0)
+    need = texel / max(spacing, 1e-12) if texel > 0 else 0.0
+    if settings.upsample == "ai":
+        if not want and need <= 1.5:
+            return 1, None
+        m = _ai(settings, settings.ai_model, "upscaling", warnings if warnings is not None else [], codec)
+        if m is None:
+            return 1, None
+        if max(h, w) * m.scale > MAX_UPSCALED:
+            if warnings is not None:
+                warnings.append(f"AI upscaling skipped for {w} x {h}: the result would pass {MAX_UPSCALED} px")
+            return 1, None
+        return (want or m.scale), m
+    if settings.upsample == "guided":
+        if want:
+            g = want
+        else:
+            g = 1
+            while g < 4 and need > 1.5 * g:
+                g *= 2
+        while g > 1 and max(h, w) * g > min(MAX_UPSCALED, 4096):
+            g //= 2
+        return g, None
+    return 1, None
+
+
+def upscale_normal_map(model: SourceModel, info: Material | None, img: np.ndarray, all_uv: np.ndarray, green: str,
+                       texel: float, spacing: float, settings: EnhanceSettings, key: str = "",
+                       codec: str | None = None, progress: ProgressFn | None = None) -> UpscaledMap:
+    """Make one normal map ready for displacement, as the texture settings ask: find its convention, take out
+    its slope bias, clean up compression blocks, and upsample it (an AI model or guided by the colour texture)."""
+    from .textures import upscale
+
+    steps: list[str] = []
+    warnings: list[str] = []
+    h, w = img.shape[:2]
+    mask = uv_coverage_mask(all_uv, w, h)
+    confidence = 0.0
+    convention = green
+    if convention == "auto":
+        convention, confidence = hm.detect_convention(img, mask)
+    p0, q0 = hm.normal_map_slopes(img, convention)
+    bias = hm.slope_bias(p0, q0, mask)
+    p0, q0 = p0 - bias[0], q0 - bias[1]
+    if max(abs(bias[0]), abs(bias[1])) > 0.004:
+        steps.append(f"removed a {max(abs(bias[0]), abs(bias[1])):.3f} slope bias")
+    work = img
+    if settings.deblock == "ai":
+        _report(progress, 0.1, "Cleaning up compression blocks")
+        m = _ai(settings, settings.deblock_model, "deblocking", warnings)
+        if m is not None:
+            work = upscale.normal_map(m, work, rg_only=False)
+            steps.append(f"deblocked by {m.path.name}")
+    factor, ai_model = plan_upscale(settings, texel, spacing, codec, h, w, warnings)
+    base = None
+    if settings.upsample == "ai" and ai_model is None and not settings.upsample_factor and texel > 0 \
+            and texel / max(spacing, 1e-12) <= 1.5:
+        steps.append("no AI upscaling needed: the vertices are no closer together than the texels")
+    if ai_model is not None:
+        _report(progress, 0.3, f"Upscaling {ai_model.scale}x with {ai_model.path.name}")
+        base = work
+        work = upscale.normal_map(ai_model, work)
+        picked = f", picked for {codec}" if codec and codec.startswith("BC") else ""
+        steps.append(f"{ai_model.scale}x by {ai_model.path.name}" + ("" if settings.ai_model else f" (included{picked})"))
+    p, q = hm.normal_map_slopes(work, convention)
+    p, q = p - bias[0], q - bias[1]
+    if base is not None:
+        # Keep the model's fine detail but the texture's own broader shape: upscalers drift by a
+        # degree or two and bend broad slopes, which integration would turn into bulges.
+        bp, bq = hm.normal_map_slopes(base, convention)
+        sigma = ai_model.scale / 2
+        p = hm.resize(bp - bias[0], p.shape, 3) + p - ndimage.gaussian_filter(p, sigma, mode="wrap")
+        q = hm.resize(bq - bias[1], q.shape, 3) + q - ndimage.gaussian_filter(q, sigma, mode="wrap")
+        if factor != ai_model.scale:
+            p, q = hm.resize(p, (h * factor, w * factor), 3), hm.resize(q, (h * factor, w * factor), 3)
+            steps.append(f"brought to {factor}x")
+    if settings.deblock == "smooth" and factor == 1:
+        p, q = hm.smooth_slopes(p, q, 0.7)
+        steps.append("smoothed compression blocks")
+    if settings.upsample == "guided" and factor > 1:
+        _report(progress, 0.3, f"Upsampling {factor}x")
+        guide = None
+        if info is not None and info.albedo and info.albedo in model.textures:
+            guide = hm.luminance(model.textures[info.albedo].decode())
+        p, q = hm.guided_upsample(p, q, guide, factor)
+        steps.append(f"{factor}x guided by the albedo" if guide is not None else f"{factor}x cubic upsampling")
+    _report(progress, 1.0, "Done")
+    return UpscaledMap(key, convention, confidence, (float(bias[0]), float(bias[1])), p0.astype(np.float32),
+                       q0.astype(np.float32), p.astype(np.float32), q.astype(np.float32), int(factor), steps, warnings)
+
+
 def build_fields(model: SourceModel, source: TriMesh, materials: list[Material], settings: EnhanceSettings,
-                 spacing: float, warnings: list[str], progress: ProgressFn | None = None) -> dict[int, MaterialField]:
+                 spacing: float, warnings: list[str], progress: ProgressFn | None = None,
+                 prepared: dict[str, UpscaledMap] | None = None) -> dict[int, MaterialField]:
+    """``prepared``: normal maps made ready before (:func:`upscale_normal_map`, by texture key); the others
+    are made here."""
     fields: dict[int, MaterialField] = {}
     if settings.source == SOURCE_NONE or source.corner_uvs is None:
         return fields
@@ -158,7 +339,7 @@ def build_fields(model: SourceModel, source: TriMesh, materials: list[Material],
                 if green == "auto" and info is not None and info.normal_green:
                     green = info.normal_green  # the importer knows; detection is for normal maps of unknown origin
                 cache[cache_key] = _normal_layers(model, info, img, all_uv, green, texel, spacing, settings, warnings,
-                                                  model.textures[key].codec())
+                                                  model.textures[key].codec(), key, (prepared or {}).get(key))
         entry = cache[cache_key]
         hf = entry["hf"]
         if hf.units == "texels":
@@ -219,70 +400,21 @@ def _ai(settings: EnhanceSettings, name: str, what: str, warnings: list[str], co
 
 def _normal_layers(model: SourceModel, info: Material | None, img: np.ndarray, all_uv: np.ndarray, green: str,
                    texel: float, spacing: float, settings: EnhanceSettings, warnings: list[str],
-                   codec: str | None = None) -> dict:
-    """Slopes from one normal map, cleaned and upsampled as the settings ask, plus its texture-space height."""
-    from .textures import upscale
-
-    steps: list[str] = []
+                   codec: str | None = None, key: str = "", prepared: UpscaledMap | None = None) -> dict:
+    """Slopes from one normal map, cleaned and upsampled as the settings ask (``prepared``, or made now), plus
+    its texture-space height."""
+    up = prepared if prepared is not None else upscale_normal_map(model, info, img, all_uv, green, texel, spacing,
+                                                                  settings, key, codec)
+    warnings.extend(up.warnings)
+    steps = list(up.steps)
     h, w = img.shape[:2]
     mask = uv_coverage_mask(all_uv, w, h)
-    confidence = 0.0
-    convention = green
-    if convention == "auto":
-        convention, confidence = hm.detect_convention(img, mask)
-    bias = hm.slope_bias(*hm.normal_map_slopes(img, convention), mask)
-    p0, q0 = hm.normal_map_slopes(img, convention)
-    hf = hm.height_from_slopes(p0 - bias[0], q0 - bias[1], mask, settings.detail_fraction, convention, confidence)
-    if max(abs(bias[0]), abs(bias[1])) > 0.004:
-        steps.append(f"removed a {max(abs(bias[0]), abs(bias[1])):.3f} slope bias")
-    work = img
-    if settings.deblock == "ai":
-        m = _ai(settings, settings.deblock_model, "deblocking", warnings)
-        if m is not None:
-            work = upscale.normal_map(m, work, rg_only=False)
-            steps.append(f"deblocked by {m.path.name}")
-    factor = 1
-    base = None
-    if settings.upsample == "ai" and texel > 0 and texel / max(spacing, 1e-12) <= 1.5:
-        steps.append("no AI upscaling needed: the vertices are no closer together than the texels")
-    elif settings.upsample == "ai":
-        m = _ai(settings, settings.ai_model, "upscaling", warnings, codec)
-        if m is not None and max(h, w) * m.scale <= MAX_UPSCALED:
-            base = work
-            work = upscale.normal_map(m, work)
-            factor = m.scale
-            picked = f", picked for {codec}" if codec and codec.startswith("BC") else ""
-            steps.append(f"{m.scale}x by {m.path.name}" + ("" if settings.ai_model else f" (included{picked})"))
-        elif m is not None:
-            warnings.append(f"AI upscaling skipped for {w} x {h}: the result would pass {MAX_UPSCALED} px")
-    p, q = hm.normal_map_slopes(work, convention)
-    p, q = p - bias[0], q - bias[1]
-    if base is not None:
-        # Keep the model's fine detail but the texture's own broader shape: upscalers drift by a
-        # degree or two and bend broad slopes, which integration would turn into bulges.
-        bp, bq = hm.normal_map_slopes(base, convention)
-        sigma = factor / 2
-        p = hm.resize(bp - bias[0], p.shape, 3) + p - ndimage.gaussian_filter(p, sigma, mode="wrap")
-        q = hm.resize(bq - bias[1], q.shape, 3) + q - ndimage.gaussian_filter(q, sigma, mode="wrap")
-    if settings.deblock == "smooth" and factor == 1:
-        p, q = hm.smooth_slopes(p, q, 0.7)
-        steps.append("smoothed compression blocks")
-    if settings.upsample == "guided" and texel > 0:
-        need = texel / max(spacing, 1e-12)
-        g = 1
-        while g < 4 and need > 1.5 * g and max(h, w) * g * 2 <= min(MAX_UPSCALED, 4096):
-            g *= 2
-        if g > 1:
-            guide = None
-            if info is not None and info.albedo and info.albedo in model.textures:
-                guide = hm.luminance(model.textures[info.albedo].decode())
-            p, q = hm.guided_upsample(p, q, guide, g)
-            factor *= g
-            steps.append(f"{g}x guided by the albedo" if guide is not None else f"{g}x cubic upsampling")
-    out = {"hf": hf, "p": p.astype(np.float32), "q": q.astype(np.float32), "texel_up_ratio": 1.0 / factor,
-           "steps": steps}
+    convention = up.convention
+    hf = hm.height_from_slopes(up.p0, up.q0, mask, settings.detail_fraction, convention, up.confidence)
+    p, q, factor = up.p, up.q, up.factor
+    out = {"hf": hf, "p": p, "q": q, "texel_up_ratio": 1.0 / factor, "steps": steps}
     if settings.integration == INTEGRATE_TEXTURE:
-        if factor == 1 and work is img and settings.deblock != "smooth" and settings.upsample == "off":
+        if factor == 1 and settings.deblock == "off" and settings.upsample == "off":
             out["hf_up"] = hf
         else:
             mask_up = mask if factor == 1 else uv_coverage_mask(all_uv, w * factor, h * factor)
@@ -419,12 +551,13 @@ def resample(model: SourceModel, settings: EnhanceSettings | None = None,
 
 
 def displace_resampled(model: SourceModel, mesh: Resampled, settings: EnhanceSettings | None = None,
-                       progress: ProgressFn | None = None) -> EnhanceResult:
-    """Step 2: work out the heights from the textures and push the evened-out mesh's vertices by them."""
+                       progress: ProgressFn | None = None, prepared: dict[str, UpscaledMap] | None = None) -> EnhanceResult:
+    """Step 2: work out the heights from the textures (``prepared``: normal maps made ready already, by
+    texture key) and push the evened-out mesh's vertices by them."""
     settings = settings or EnhanceSettings()
     warnings = list(mesh.warnings)
     materials = model.materials
-    fields = build_fields(model, mesh.source, materials, settings, mesh.spacing, warnings, _sub(progress, 0.0, 0.6))
+    fields = build_fields(model, mesh.source, materials, settings, mesh.spacing, warnings, _sub(progress, 0.0, 0.6), prepared)
     heights = np.zeros(mesh.resampled.n_vertices)
     if fields and mesh.carrier.corner_uvs is not None:
         heights = vertex_heights(mesh.carrier, fields, materials, settings, mesh.spacing, _sub(progress, 0.6, 0.9))
@@ -435,14 +568,17 @@ def displace_resampled(model: SourceModel, mesh: Resampled, settings: EnhanceSet
     max_disp = settings.max_displacement_mm / 1000.0 if settings.max_displacement_mm else None
     displaced = displace(mesh.resampled, heights, max_disp)
     _report(progress, 1.0, "Done")
-    return EnhanceResult(mesh.source, mesh.resampled, displaced, fields, materials, warnings)
+    return EnhanceResult(mesh.source, mesh.resampled, displaced, fields, materials, warnings,
+                         displaced_by_textures=settings.source != SOURCE_NONE)
 
 
 def enhance(model: SourceModel, settings: EnhanceSettings | None = None,
             progress: ProgressFn | None = None, mesh: Resampled | None = None,
-            on_mesh: Callable[[Resampled], None] | None = None) -> EnhanceResult:
+            on_mesh: Callable[[Resampled], None] | None = None,
+            prepared: dict[str, UpscaledMap] | None = None) -> EnhanceResult:
     """Both steps. ``mesh``: the evened-out mesh made before with the same mesh settings (see
-    :data:`MESH_SETTINGS`), to skip making it again; ``on_mesh`` is handed the one made here."""
+    :data:`MESH_SETTINGS`), to skip making it again; ``on_mesh`` is handed the one made here. ``prepared``:
+    normal maps made ready before (:func:`upscale_normal_map`), by texture key."""
     settings = settings or EnhanceSettings()
     if mesh is None:
         mesh = resample(model, settings, _sub(progress, 0.0, 0.6))
@@ -451,7 +587,7 @@ def enhance(model: SourceModel, settings: EnhanceSettings | None = None,
         progress = _sub(progress, 0.6, 1.0)
     else:
         _report(progress, 0.0, f"Using the evened-out mesh made before ({mesh.resampled.n_vertices:,} vertices)")
-    return displace_resampled(model, mesh, settings, progress)
+    return displace_resampled(model, mesh, settings, progress, prepared)
 
 
 def _sub(progress: ProgressFn | None, lo: float, hi: float) -> ProgressFn | None:

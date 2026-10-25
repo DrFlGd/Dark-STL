@@ -96,7 +96,7 @@ try:
     shot("03-model")
     click("#rail-textures")
     wait("document.querySelector('#texture-info')?.textContent.includes('128')", what="the texture's details")
-    click("#rail-enhance")
+    click("#rail-mesh")
     method = Select(d.find_element(By.CSS_SELECTOR, "#method"))
     options = {o.get_attribute("value"): o.is_enabled() for o in method.options}
     assert options.get("isotropic"), f"the remesher isn't offered: {options}"
@@ -104,13 +104,18 @@ try:
     field = d.find_element(By.CSS_SELECTOR, "#target-vertices")
     field.send_keys(Keys.CONTROL, "a")
     field.send_keys("3000", Keys.TAB)
-    click("#enhance-run")
-    wait("document.querySelector('#enhance-result')", 120, "the enhanced model")
+    click("#mesh-run")
+    wait("document.querySelector('#mesh-kept')", 120, "the evened-out mesh (step 1)")
+    wait("document.querySelector('#stage-canvas:not([data-loading])')", what="the evened-out model drawn")
+    shot("04-mesh")
+    click("#rail-displace")
+    click("#displace-run")
+    wait("document.querySelector('#enhance-result h3')?.textContent === 'Enhanced'", 120, "the displaced model (step 2)")
     result = d.find_element(By.CSS_SELECTOR, "#enhance-result").text
     print("enhance:", " ".join(result.split()), flush=True)
     assert "subdivision instead" not in result, result
     wait("document.querySelector('#stage-canvas:not([data-loading])')", what="the enhanced model drawn")
-    shot("04-enhanced")
+    shot("05-displaced")
     click("#rail-export")
     folder = d.find_element(By.CSS_SELECTOR, "#export-folder")
     folder.send_keys(Keys.CONTROL, "a")
@@ -120,7 +125,7 @@ try:
     stls = list(exports.glob("*.stl"))
     assert stls and stls[0].stat().st_size > 84 + 50 * 3000, f"no STL in {exports}: {list(exports.iterdir())}"
     print(f"export: {stls[0].name}, {stls[0].stat().st_size} bytes", flush=True)
-    shot("05-exported")
+    shot("06-exported")
     errors = d.execute_script("return window.__errors")
     assert not errors, f"page errors: {errors}"
 except Exception as exc:  # noqa: BLE001 - reported with a screenshot and what the page says

@@ -1,5 +1,5 @@
 """The page itself in a real browser (Chromium through Playwright): add a game folder, browse it,
-open a model in the 3D view, enhance and export it. Skipped when Playwright or its Chromium isn't
+open a model in the 3D view, even it out, upscale its textures, displace and export it. Skipped when Playwright or its Chromium isn't
 installed (pip install playwright && python -m playwright install chromium)."""
 
 import os
@@ -61,6 +61,7 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path, mon
     (included / "models.json").write_text('{"models": [{"name": "up", "codecs": ["*"]}]}')
     (included / "up.onnx").write_bytes(b"")
     monkeypatch.setenv("DARKSTL_BUNDLED_MODELS", str(included))
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
     page.wait_for_selector("#first-run")
     page.click("#first-add-folder")
     page.fill("#folder-path", str(weapon_dir))
@@ -86,15 +87,34 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path, mon
     assert "1000 × 1000" in page.inner_text("#stage-size")
     page.click("#rail-textures")
     page.wait_for_function("document.querySelector('#texture-info')?.textContent.includes('128')")
-    page.click("#rail-enhance")
+
+    # step 1 on the Mesh tab: the evened-out model, not displaced, is shown and kept
+    page.click("#rail-mesh")
+    assert page.text_content("#rail-mesh").strip() == "Mesh"
     page.fill("#target-vertices", "3000")
     page.press("#target-vertices", "Tab")
-    assert page.text_content("#rail-enhance").strip() == "Generate"
-    assert page.text_content("#enhance-run") == "Generate"
-    page.click("#enhance-run")
-    page.wait_for_selector("#enhance-result", timeout=60000)
-    assert page.text_content("#enhance-run") == "Generate again"
+    assert page.text_content("#mesh-run") == "Even out the vertices"
+    page.click("#mesh-run")
+    page.wait_for_selector("#mesh-kept", timeout=60000)
+    page.wait_for_selector("#mesh-shown")
+    if shots:
+        page.screenshot(path=os.path.join(shots, "mesh-tab.png"))
+    page.wait_for_selector("text=Displace adds the texture detail")
+    assert "Kept while you work" in page.text_content("#mesh-kept")
+    assert page.text_content("#mesh-run") == "Show the evened-out model"
     page.wait_for_selector('#show-which [data-value="enhanced"][aria-pressed="true"]')
+    page.wait_for_selector("#stage-canvas:not([data-loading])")
+    # step 2 on the Displace tab starts from the kept mesh
+    page.click("#rail-displace")
+    page.wait_for_selector("#enhance-result h3:text('Evened out, not displaced yet')")
+    assert "up to 0.00 mm" in page.text_content("#enhance-result")
+    page.wait_for_function("document.querySelector('#displace-mesh-state')?.textContent.includes('kept')")
+    assert page.text_content("#displace-run") == "Displace"
+    page.click("#displace-run")
+    page.wait_for_selector("#enhance-result h3:text('Enhanced')", timeout=60000)
+    page.wait_for_selector("text=Displaced:")
+    assert "evened out first" not in page.text_content("#toast")  # step 1 wasn't run again
+    assert page.text_content("#displace-run") == "Displace again"
     page.wait_for_selector("#stage-canvas:not([data-loading])")
     # the original and the enhanced model in turn: both are kept, nothing is fetched or made again
     meshes = []
@@ -106,18 +126,29 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path, mon
         page.wait_for_selector(f'#show-which [data-value="{which}"][aria-pressed="true"]')
         page.wait_for_selector("#stage-canvas:not([data-loading])")
         assert (page.evaluate(triangles) == enhanced) == (which == "enhanced")
-    # generating again with the same settings gives the kept model at once
-    page.click("#enhance-run")
+    # displacing again with the same settings gives the kept model at once
+    page.click("#displace-run")
     page.wait_for_selector("text=Already generated with these settings")
     assert meshes == []
     page.click('#shading [data-value="clay"]')
     # the same mesh drawn again stays where it was (on the floor, centred)
     page.wait_for_selector("#stage-canvas:not([data-loading])")
 
-    # the displacement settings: per-material strength, upsampling, colour-texture detail, AI models
+    # the displacement settings: per-material strength and colour-texture detail; the mesh is kept through them
     page.click(".more-settings > summary")
     page.fill('[data-strength="0"]', "2")
     page.press('[data-strength="0"]', "Tab")
+    page.fill("#albedo-detail", "0.1")
+    page.press("#albedo-detail", "Tab")
+    if shots:
+        page.screenshot(path=os.path.join(shots, "displace-tab.png"))
+    page.click("#displace-run")
+    page.wait_for_selector("#enhance-result .field-list :text('albedo detail')", timeout=60000)
+    page.wait_for_selector("text=Displaced:")
+    assert "evened out first" not in page.text_content("#toast")
+
+    # the Textures tab: upsampling settings, AI models, and the maps made ready with before and after to zoom into
+    page.click("#rail-textures")
     page.select_option("#upsample", "ai")
     page.wait_for_selector("#ai-models #ai-model-add")
     page.wait_for_selector("#ai-models-folder")  # the list has come
@@ -125,21 +156,55 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path, mon
     assert page.locator("#ai-model option").inner_text().startswith("Included")  # the app's own, by default
     page.select_option("#upsample", "guided")
     assert page.locator("#ai-models").count() == 0
-    page.fill("#albedo-detail", "0.1")
-    page.press("#albedo-detail", "Tab")
-    if os.environ.get("DARKSTL_SCREENSHOTS"):
-        page.locator("#enhance-tab").screenshot(path=os.path.join(os.environ["DARKSTL_SCREENSHOTS"], "enhance-settings.png"))
-    page.wait_for_selector("#mesh-kept")  # step 1 is the same: its mesh is used again
-    assert "Generate skips step 1" in page.text_content("#mesh-kept")
-    page.click("#enhance-run")
-    page.wait_for_selector("#enhance-result .field-list :text('albedo detail')", timeout=60000)
-    page.wait_for_selector("text=the evened-out mesh was kept")
-    page.fill("#target-vertices", "3500")  # a step-1 setting: no kept mesh for it
+    page.select_option("#upsample-factor", "2")
+    page.wait_for_selector('#upscale-maps li[data-map][data-ready="0"]')  # not made with these settings yet
+    assert "Upscale first" in page.text_content("#compare")
+    assert page.text_content("#upscale-run") == "Upscale 1 map"
+    page.click("#upscale-run")
+    page.wait_for_selector('#upscale-maps li[data-map][data-ready="1"]', timeout=60000)
+    page.wait_for_selector("text=1 normal map ready for Displace")
+    assert "2× · 256 × 256" in page.text_content('#upscale-maps li[data-map]')
+    loaded = "(img) => img.complete && img.naturalWidth > 0"
+    for which in ("before", "after"):
+        page.wait_for_selector(f'#compare img[data-which="{which}"]', timeout=30000)
+        page.wait_for_function(f"document.querySelector('#compare img[data-which=\"{which}\"]').complete")
+        assert page.eval_on_selector(f'#compare img[data-which="{which}"]', loaded)
+    assert "2 × 2 texels for each" in page.text_content("#compare")
+    scale = page.text_content("#compare-scale")
+    before = page.get_attribute('#compare img[data-which="after"]', "src")
+    page.click("#compare-zoom-in")
+    assert page.text_content("#compare-scale") != scale
+    page.wait_for_function(f"document.querySelector('#compare img[data-which=\"after\"]').src !== {before!r}", timeout=30000)
+    page.click('#compare-mode [data-value="after"]')
+    page.wait_for_selector('#compare img[data-which="before"]', state="detached")
+    page.click('#compare-mode [data-value="split"]')
+    page.wait_for_selector(".compare-divider")
+    if shots:
+        page.locator("#compare").scroll_into_view_if_needed()
+        page.screenshot(path=os.path.join(shots, "textures-tab.png"))
+    # Displace uses the map made here
+    page.click("#rail-displace")
+    page.wait_for_function("document.querySelector('#displace-maps-state')?.textContent === '1 normal map ready'")
+    page.wait_for_function("document.querySelector('#displace-mesh-state')?.textContent.includes('kept')")
+    page.click("#displace-run")
+    page.wait_for_selector("#enhance-result .field-list :text('2x')", timeout=60000)
+    page.wait_for_selector("text=Displaced:")
+    assert "evened out first" not in page.text_content("#toast")
+
+    # a step-1 setting changes: no kept mesh for it until the Mesh tab runs again
+    page.click("#rail-mesh")
+    page.wait_for_selector("#mesh-kept")
+    page.fill("#target-vertices", "3500")
     page.press("#target-vertices", "Tab")
     page.wait_for_selector("#mesh-kept", state="detached")
+    assert page.text_content("#mesh-run") == "Even out the vertices"
     page.fill("#target-vertices", "3000")
     page.press("#target-vertices", "Tab")
     page.wait_for_selector("#mesh-kept")
+    page.click("#rail-displace")
+    page.fill("#strength", "1.5")
+    page.press("#strength", "Tab")
+    page.wait_for_function("document.querySelector('#displace-mesh-state')?.textContent.includes('kept')")
 
     page.click("#rail-export")
     page.fill("#export-folder", str(tmp_path / "out"))
@@ -212,16 +277,16 @@ def test_previews_stay_shown_and_a_job_stops_from_the_status_bar(page, app, weap
     page.click('#layout-switch [data-view="grid"]')
     assert [u for u in asked if any(f"id={w}&" in u for w in weapons)] == []  # (the game's page shows others too)
 
-    # a long Generate, stopped by clicking its status at the foot of the window
+    # a long step 1, stopped by clicking its status at the foot of the window
     page.click(".results [data-model]")
     page.click("#summary-open")
     page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
-    page.click("#rail-enhance")
+    page.click("#rail-mesh")
     page.fill("#target-vertices", "20000000")
     page.press("#target-vertices", "Tab")
-    page.click("#enhance-run")
-    page.wait_for_selector("#status-job.can-stop", timeout=10000)
+    page.click("#mesh-run")
+    page.wait_for_selector("#status-job.can-stop .status-stop", timeout=10000)  # Stop is shown without hovering
     page.click("#status-job")
-    page.wait_for_selector("text=Stopped generating", timeout=120000)
-    assert page.locator("#enhance-error").count() == 0 and page.locator("#enhance-result").count() == 0
-    assert page.text_content("#enhance-run") == "Generate"
+    page.wait_for_selector("text=Stopped evening out", timeout=120000)
+    assert page.locator("#mesh-error").count() == 0 and page.locator("#mesh-kept").count() == 0
+    assert page.text_content("#mesh-run") == "Even out the vertices"
