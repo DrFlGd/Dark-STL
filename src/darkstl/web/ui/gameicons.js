@@ -5,6 +5,8 @@ import { Icon } from "./icons.js";
 const SHORT = {
   "Dark Souls": "DS1", "Dark Souls Remastered": "DSR", "Dark Souls II": "DS2", "Dark Souls III": "DS3",
   "Bloodborne": "BB", "Sekiro": "SEK", "Elden Ring": "ER", "Other models": "3D",
+  "Resident Evil 2": "RE2", "Resident Evil 3": "RE3", "Resident Evil 4": "RE4", "Resident Evil 7": "RE7",
+  "Resident Evil Village": "RE8", "Resident Evil Requiem": "RE9", "Devil May Cry 5": "DMC",
 };
 
 export const gameShort = (name) => SHORT[name] || (name || "?").split(/\s+/).filter(Boolean).map((w) => w[0]).join("").slice(0, 3).toUpperCase();

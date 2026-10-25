@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
 from pathlib import Path
@@ -110,8 +111,13 @@ def cmd_textures(args) -> int:
     out.mkdir(parents=True, exist_ok=True)
     try:
         textures = open_model(path, texture_dirs=_extra_dirs(args)).textures
-    except FormatError:
-        textures = FromSoftwareImporter.texture_pack(path)  # a texture pack rather than a model
+    except FormatError:  # a texture pack or texture file rather than a model
+        from .importers.reengine import REEngineImporter
+
+        if re.search(r"\.tex(\.\d+)?$", path.name, re.I):
+            textures = REEngineImporter.texture_file(path)
+        else:
+            textures = FromSoftwareImporter.texture_pack(path)
     if not textures:
         print("No textures found")
         return 1
