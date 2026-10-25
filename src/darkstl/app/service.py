@@ -387,6 +387,8 @@ class Service:
 
     def cmd_open_path(self, args: dict) -> dict:
         path = str(args.get("path") or "")
+        if path and not Path(path).exists() and Path(path).parent.is_file():
+            path = str(Path(path).parent)  # a model inside a game archive: show the archive
         if not path or not Path(path).exists():
             raise AppError(f"{path or 'That file'} isn't there any more.")
         self.host.open_path(path)

@@ -1,7 +1,7 @@
 # Dark STL: plan
 
 Dark STL is a desktop tool that reads models and textures extracted from games, starting with
-the FromSoftware games (Dark Souls, Bloodborne, Sekiro, Elden Ring), lets you browse them
+the FromSoftware games (Dark Souls, Bloodborne, Sekiro, Elden Ring) and Cyberpunk 2077, lets you browse them
 grouped by type, and turns them into high-fidelity meshes for 3D printing and rendering. It
 does that in three steps:
 
@@ -31,6 +31,7 @@ importer and registering it in `importers/__init__.py`:
 | Importer | Reads | Status |
 | --- | --- | --- |
 | FromSoftware | FLVER2 models in BND/DCX archives, TPF/DDS textures. Per-game differences (markers, compression, PS4 textures, where material data lives) are profiles in `importers/fromsoft/games.py` | Dark Souls Remastered and Bloodborne checked on real files; the rest on synthetic files |
+| REDengine 4 (Cyberpunk 2077) | `.mesh` and `.xbm` in the CR2W container, loose (WolvenKit exports under their depot paths) or inside the game's `.archive` packs, read directly; `.mi`/`.mt` material chains; Kraken buffers through the game's `oo2ext_7_win64.dll`. Formats worked out with WolvenKit as the reference | Built on synthetic files; awaiting a check against the game |
 | Wavefront OBJ | OBJ + MTL with PNG/JPG/TGA/DDS textures, from any other tool | Done |
 
 An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
@@ -123,6 +124,35 @@ or the folder name), and otherwise from the paths stored inside the archives, wh
 studio's project (`N:\SPRJ\...` is Bloodborne, `N:\FDP\...` Dark Souls III), so a folder of
 loose extracted files is recognised too.
 
+### Reading Cyberpunk 2077 files
+
+Every REDengine resource is a CR2W file: tables of strings, names and imports (the depot paths
+of the resources it refers to), then chunks, each a class instance serialised property by
+property as `name, type, size, value`, then buffers (vertex data, pixels), each raw or
+Kraken-compressed behind a `KARK` header. Because every property names its type, the reader
+is generic (`Red` objects with plain Python values) and the mesh and texture readers pick what
+they need; properties of types it does not know are kept as bytes and skipped by their size.
+
+- **Meshes** (`CMesh`): the `rendRenderMeshBlob` header lists the chunks (sub-meshes) with
+  their vertex layouts (per-stream packing elements) and one buffer holds every stream and the
+  index buffer. Positions are signed 16-bit over `quantizationScale/Offset`, normals 10-10-10-2,
+  UVs half floats. All levels of detail are chunks of the same file, told apart by `lodMask`;
+  the full level is kept by default. Game space is right-handed, Z up, metres: nothing is rotated.
+- **Textures** (`CBitmapTexture`): the setup's compression picks the codec (BC1, BC3, BC5 for
+  normal maps, BC7, raw formats) and the PC render blob's buffer holds the mips largest first,
+  decoded like DDS surfaces.
+- **Materials**: a chunk's `CMaterialInstance` (kept in the mesh, or an external `.mi`) chains
+  through `baseMaterial` to the `.mt` template; the merged parameters name the textures
+  (`BaseColor`/`DiffuseTexture`, `Normal`/`NormalTexture`/`GlobalNormal`, `Roughness`,
+  `Metalness`, detail normals). Multilayered materials blend tiled layers at run time; only
+  their global normal map is used and the model says so. Appearances are the model's variants.
+- **Archives** (`RDAR`): files keyed by the FNV-1a hash of their lower-case depot path, in
+  segments (resource, then buffers). No names are stored, so the first scan reads every
+  resource's import table and names the meshes that entities, appearances and other meshes refer
+  to; the result is cached per archive. Members are listed under the pseudo path
+  `<pack>.archive\<hash>.mesh`. Collecting extracts them under their depot paths, so the copies
+  read like a WolvenKit export.
+
 ### Step 1: even vertex spacing
 
 Two methods, both in the app and the command line:
@@ -213,6 +243,10 @@ src/darkstl/
                 height per material), mesh.py (FLVER -> mesh, skinned to a pose), animation.py
                 (skeletons, spline-compressed animations, poses), catalog.py (classifies models
                 by FromSoftware naming)
+    redengine/  formats/ (CR2W container, .archive packs, CMesh render blobs, CBitmapTexture),
+                depot.py (depot paths -> loose files or archive members), materials.py (.mi/.mt
+                chains -> texture roles), mesh.py (chunks -> mesh), catalog.py (names learnt
+                from import tables, groups by depot path)
     wavefront.py  OBJ + MTL
   geometry/     TriMesh, subdivision, isotropic remesh, UV seam matching, closest-point queries,
                 displacement
