@@ -74,7 +74,7 @@ function Engine() {
   if (!s) return error ? html`<p class="warn-note" role="alert">${error}</p>` : null;
   const dirs = s.texture_dirs;
   const pickFile = async (start) => {
-    try { return (await api("pick_file", { title: "Find oo2core (in the Sekiro or Elden Ring folder)", patterns: ["Oodle (oo2core*.dll;liboo2core*)", "All files (*.*)"], start })).path; }
+    try { return (await api("pick_file", { title: "Find the Oodle library (oo2core in the Sekiro or Elden Ring folder, bin\\x64\\oo2ext_7_win64.dll in Cyberpunk 2077's)", patterns: ["Oodle (oo2core*.dll;oo2ext*.dll;liboo2core*;kraken.dll)", "All files (*.*)"], start })).path; }
     catch (e) { toast(msg(e)); return null; }
   };
   return html`
@@ -102,7 +102,7 @@ function Engine() {
     </section>
     <section class="ls-section" id="settings-oodle">
       <h2>Oodle</h2>
-      <p class="muted">Sekiro and Elden Ring compress their files with Oodle. Dark STL uses the game's own copy of it, oo2core_6_win64.dll in the game's folder, and finds it by itself when a model comes from there.</p>
+      <p class="muted">Sekiro, Elden Ring and Cyberpunk 2077 compress their files with Oodle. Dark STL uses the game's own copy of it (oo2core_6_win64.dll in the game's folder; bin\\x64\\oo2ext_7_win64.dll for Cyberpunk) and finds it by itself when a model comes from there.</p>
       <p id="oodle-status">${s.oodle_found ? html`${Icon.check(14)} Found: <span class="note-path">${s.oodle_found}</span>` : html`<span class="warn-text">Not found yet.</span> Dark Souls, Dark Souls II, Dark Souls III and Bloodborne don't need it.`}</p>
       <${PathRow} id="oodle-path" value=${s.oodle} placeholder="The DLL, or the game folder it's in" busy=${busy} browse=${pickFile}
         onSave=${(p) => save({ oodle: p }, p ? "Saved where Oodle is." : "Cleared.")} />

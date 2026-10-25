@@ -1,10 +1,13 @@
-"""Runtime binding to the game's Oodle library for KRAK-compressed DCX files.
+"""Runtime binding to the game's Oodle library for Kraken-compressed data.
 
-Oodle is proprietary and cannot be redistributed, but Sekiro and Elden Ring ship
-``oo2core_6_win64.dll`` next to the game executable. Dark STL looks for it in
-the folders above any game file it opens, so an unpacked game folder works as
-is; otherwise point at it with ``--oodle``, the app's Settings page, or the
-``DARKSTL_OODLE`` environment variable.
+Oodle is proprietary and cannot be redistributed, but the games that use it
+ship it: Sekiro and Elden Ring have ``oo2core_6_win64.dll`` next to the game
+executable, Cyberpunk 2077 has ``oo2ext_7_win64.dll`` in ``bin\\x64``. Dark STL
+looks for it in the folders above any game file it opens, so a game folder
+works as is; otherwise point at it with ``--oodle``, the app's Settings page,
+or the ``DARKSTL_OODLE`` environment variable. The open-source Kraken
+decoder that WolvenKit ships (``kraken.dll`` / ``libkraken.so``, from ooz) is
+accepted too.
 """
 
 from __future__ import annotations
@@ -20,9 +23,14 @@ _LIBRARY_NAMES = (
     "oo2core_9_win64.dll",
     "oo2core_8_win64.dll",
     "oo2core_6_win64.dll",
+    "oo2ext_7_win64.dll",
     "liboo2corelinux64.so.9",
     "liboo2corelinux64.so",
+    "kraken.dll",
+    "libkraken.so",
+    "libkraken.dylib",
 )
+_SUBDIRS = ("", "bin/x64")  # where a game keeps the library, relative to its folder
 
 _search_dirs: list[Path] = []  # chosen by the user, searched first
 _hint_dirs: list[Path] = []  # folders above opened game files
@@ -54,8 +62,11 @@ def _candidates() -> list[Path]:
     if env:
         envp = Path(env)
         paths.extend([envp] if envp.is_file() else [envp / n for n in _LIBRARY_NAMES])
+    # this platform's libraries first (the others are listed too, so the user is told about them)
+    names = sorted(_LIBRARY_NAMES, key=lambda n: n.endswith(".dll") != (sys.platform == "win32"))
     for d in _search_dirs + _hint_dirs:
-        paths.extend(d / n for n in _LIBRARY_NAMES)
+        for sub in _SUBDIRS:
+            paths.extend(d / sub / n for n in names)
     return paths
 
 
@@ -77,6 +88,12 @@ def _load():
         except OSError as exc:
             errors.append(f"{path}: {exc}")
             continue
+        if hasattr(lib, "Kraken_Decompress"):  # ooz: int Kraken_Decompress(src, src_len, dst, dst_len)
+            fn = lib.Kraken_Decompress
+            fn.restype = ctypes.c_int
+            fn.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t]
+            _lib = lib
+            return lib
         fn = lib.OodleLZ_Decompress
         fn.restype = ctypes.c_ssize_t
         fn.argtypes = [
@@ -90,19 +107,23 @@ def _load():
         ]
         _lib = lib
         return lib
-    detail = ("; ".join(errors)) if errors else "no oo2core library found"
+    detail = ("; ".join(errors)) if errors else "no Oodle library found"
     raise FormatError(
-        "This file uses Oodle (KRAK) compression, used by Sekiro and Elden Ring. "
-        "Point Dark STL at the game's oo2core_6_win64.dll (Settings > Oodle, --oodle, or DARKSTL_OODLE). "
-        f"Details: {detail}"
+        "This file uses Oodle (Kraken) compression, used by Sekiro, Elden Ring and Cyberpunk 2077. "
+        "Point Dark STL at the game's Oodle library (oo2core_6_win64.dll beside Sekiro or Elden Ring, "
+        "bin\\x64\\oo2ext_7_win64.dll in Cyberpunk 2077's folder) under Settings > Oodle, with --oodle, "
+        f"or with DARKSTL_OODLE. Details: {detail}"
     )
 
 
 def oodle_decompress(payload: bytes, uncompressed_size: int) -> bytes:
     lib = _load()
     out = ctypes.create_string_buffer(uncompressed_size + 64)
-    got = lib.OodleLZ_Decompress(payload, len(payload), out, uncompressed_size,
-                                 1, 0, 0, None, 0, None, None, None, 0, 3)
+    if hasattr(lib, "Kraken_Decompress"):
+        got = lib.Kraken_Decompress(payload, len(payload), out, uncompressed_size)
+    else:
+        got = lib.OodleLZ_Decompress(payload, len(payload), out, uncompressed_size,
+                                     1, 0, 0, None, 0, None, None, None, 0, 3)
     if got != uncompressed_size:
         raise FormatError(f"Oodle decompression failed (returned {got}, expected {uncompressed_size})")
     return out.raw[:uncompressed_size]

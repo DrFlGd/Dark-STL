@@ -4,7 +4,7 @@ import { Icon } from "./icons.js";
 
 const SHORT = {
   "Dark Souls": "DS1", "Dark Souls Remastered": "DSR", "Dark Souls II": "DS2", "Dark Souls III": "DS3",
-  "Bloodborne": "BB", "Sekiro": "SEK", "Elden Ring": "ER", "Other models": "3D",
+  "Bloodborne": "BB", "Sekiro": "SEK", "Elden Ring": "ER", "Cyberpunk 2077": "CP77", "Other models": "3D",
 };
 
 export const gameShort = (name) => SHORT[name] || (name || "?").split(/\s+/).filter(Boolean).map((w) => w[0]).join("").slice(0, 3).toUpperCase();

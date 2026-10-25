@@ -1,7 +1,7 @@
 # Dark STL
 
-Browse the models of Dark Souls, Bloodborne, Sekiro and Elden Ring (or any OBJ file), add the
-surface detail their textures describe, and export print-ready meshes.
+Browse the models of Dark Souls, Bloodborne, Sekiro, Elden Ring and Cyberpunk 2077 (or any OBJ
+file), add the surface detail their textures describe, and export print-ready meshes.
 
 ![A model enhanced in Dark STL](docs/images/model-page.png)
 
@@ -24,8 +24,8 @@ weapon, and a Bloodborne character, object and armour piece (PS4 textures includ
 other games come next (Phase 1 of the plan).
 
 Importing is modular: each game family has its own importer, and everything after import
-(the explorer, the three steps, export) is shared. FromSoftware files and Wavefront OBJ are
-supported today.
+(the explorer, the three steps, export) is shared. FromSoftware files, Cyberpunk 2077 files and
+Wavefront OBJ are supported today.
 
 ## Install
 
@@ -64,6 +64,12 @@ encrypted archives directly.
 - **Sekiro and Elden Ring** compress with Oodle. Dark STL uses the `oo2core_6_win64.dll`
   that ships with the game. It is found automatically when the model files are inside the
   unpacked game folder; otherwise point to it in *Settings > Oodle* (or `--oodle`).
+- **Cyberpunk 2077:** add the game's install folder as it is. Its `.archive` files are read
+  directly (the first scan reads through them once to learn the models' names, and keeps
+  what it found), using the game's own `bin\x64\oo2ext_7_win64.dll` to decompress. A folder
+  of `.mesh` and `.xbm` files exported with WolvenKit (kept under their `base\...` paths)
+  works too, and the two can be mixed: a model's textures are looked up in the loose folder
+  first, then in the archives.
 
 ## Using the app
 

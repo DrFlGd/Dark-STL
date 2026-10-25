@@ -139,8 +139,9 @@ class Animations(Protocol):
 
 CATEGORY_ORDER = ["Weapons", "Armor", "Characters", "Faces & Hair", "Objects", "Map Pieces", "Models", "Other"]
 
-# what a low-detail copy adds to its full model's file stem (wp_a_0300_l, c1100_lod1)
-LOD_SUFFIX = re.compile(r"_l$|_lod\d*$", re.I)
+# what a low-detail copy adds to its full model's file stem (wp_a_0300_l, c1100_lod1, Cyberpunk's
+# w_rifle_shadow / _proxy meshes)
+LOD_SUFFIX = re.compile(r"_l$|_lod\d*$|_shadow$|_proxy$", re.I)
 
 
 @dataclass
