@@ -75,10 +75,12 @@ class EnhanceSettings:
     edge_keeping: float = 0.0  # 0..1: how strongly inconsistent slopes are kept from smearing (mesh integration)
     smooth_sampling: bool = True  # bicubic instead of bilinear texture reads
     deblock: str = "off"  # block-compression clean-up: off | smooth | ai
+    edge_smoothing: float = 1.0  # 0..1: how much stair-stepped edges in normal maps are smoothed along their length
     upsample: str = "off"  # off | guided (albedo-guided) | ai
     ai_model: str = ""  # upscaling model file in models_dir ("": the included one for the texture's compression)
     deblock_model: str = ""  # 1x deblocking model file in models_dir
     upsample_factor: int = 0  # 0: as the vertex spacing needs; else 2 or 4 (an AI model's own factor is brought to it)
+    imported_maps: dict[str, str] = field(default_factory=dict)  # texture key -> a normal map file upscaled elsewhere
     models_dir: Path | None = None
     material_strength: dict[int, float] = field(default_factory=dict)  # material -> extra strength multiplier
     edge_hints: bool = False  # let specular/metallic mask edges decouple the integration
@@ -125,7 +127,8 @@ def _report(progress: ProgressFn | None, frac: float, msg: str) -> None:
         progress(frac, msg)
 
 
-UPSCALE_SETTINGS = ("green", "deblock", "deblock_model", "upsample", "ai_model", "upsample_factor")  # what a map made ready depends on
+UPSCALE_SETTINGS = ("green", "deblock", "deblock_model", "edge_smoothing", "upsample", "ai_model",
+                    "upsample_factor")  # what a map made ready depends on
 
 
 @dataclass
@@ -240,7 +243,7 @@ def upscale_normal_map(model: SourceModel, info: Material | None, img: np.ndarra
                        texel: float, spacing: float, settings: EnhanceSettings, key: str = "",
                        codec: str | None = None, progress: ProgressFn | None = None) -> UpscaledMap:
     """Make one normal map ready for displacement, as the texture settings ask: find its convention, take out
-    its slope bias, clean up compression blocks, and upsample it (an AI model or guided by the colour texture)."""
+    its slope bias, clean up compression blocks, smooth stair-stepped edges, and upsample it (an AI model or guided by the colour texture)."""
     from .textures import upscale
 
     steps: list[str] = []
@@ -256,6 +259,15 @@ def upscale_normal_map(model: SourceModel, info: Material | None, img: np.ndarra
     p0, q0 = p0 - bias[0], q0 - bias[1]
     if max(abs(bias[0]), abs(bias[1])) > 0.004:
         steps.append(f"removed a {max(abs(bias[0]), abs(bias[1])):.3f} slope bias")
+    # a map upscaled elsewhere is used as it is, in place of everything below
+    imported = settings.imported_maps.get(key) if key else None
+    if imported:
+        got = _imported_map(imported, p0, q0, convention, steps, warnings)
+        if got is not None:
+            _report(progress, 1.0, "Done")
+            p, q, factor = got
+            return UpscaledMap(key, convention, confidence, (float(bias[0]), float(bias[1])), p0.astype(np.float32),
+                               q0.astype(np.float32), p, q, factor, steps, warnings)
     work = img
     if settings.deblock == "ai":
         _report(progress, 0.1, "Cleaning up compression blocks")
@@ -263,6 +275,12 @@ def upscale_normal_map(model: SourceModel, info: Material | None, img: np.ndarra
         if m is not None:
             work = upscale.normal_map(m, work, rg_only=False)
             steps.append(f"deblocked by {m.path.name}")
+    if settings.edge_smoothing > 0:
+        # before upsampling: upscalers keep the steps they are shown (only bigger), so they go first
+        _report(progress, 0.2, "Smoothing jagged edges")
+        sp, sq = hm.smooth_jagged_edges(*hm.normal_map_slopes(work, convention), strength=settings.edge_smoothing)
+        work = hm.slopes_to_normal_map(sp, sq, convention)
+        steps.append("smoothed jagged edges")
     factor, ai_model = plan_upscale(settings, texel, spacing, codec, h, w, warnings)
     base = None
     if settings.upsample == "ai" and ai_model is None and not settings.upsample_factor and texel > 0 \
@@ -299,6 +317,65 @@ def upscale_normal_map(model: SourceModel, info: Material | None, img: np.ndarra
     _report(progress, 1.0, "Done")
     return UpscaledMap(key, convention, confidence, (float(bias[0]), float(bias[1])), p0.astype(np.float32),
                        q0.astype(np.float32), p.astype(np.float32), q.astype(np.float32), int(factor), steps, warnings)
+
+
+IMAGE_FILES = (".png", ".tga", ".tif", ".tiff", ".dds", ".jpg", ".jpeg", ".webp", ".bmp")
+
+
+def read_image_file(path: str | Path) -> np.ndarray:
+    """An image file as RGBA uint8: DDS (any compression the app reads) or what Pillow opens."""
+    path = Path(path)
+    if path.suffix.lower() == ".dds":
+        from .textures.dds import decode_dds
+
+        return decode_dds(path.read_bytes())
+    from PIL import Image
+
+    with Image.open(path) as im:
+        return np.asarray(im.convert("RGBA"))
+
+
+def _imported_map(path: str, p0: np.ndarray, q0: np.ndarray, convention: str, steps: list[str],
+                  warnings: list[str]):
+    """Slopes from a normal map upscaled outside the app, in place of the texture's own upscale: brought to a
+    whole multiple of the texture's size, its green channel matched to the texture's, and checked to be the same
+    picture. None (with a warning) when it can't be used, so the map is made from the texture as usual."""
+    name = Path(path).name
+    try:
+        img = read_image_file(path)
+    except Exception as e:  # noqa: BLE001 - any unreadable file is reported, and the texture used instead
+        warnings.append(f"Couldn't read {name} ({e}); upscaled the texture instead")
+        return None
+    h, w = p0.shape
+    H, W = img.shape[:2]
+    if abs((W / w) - (H / h)) > 0.02 * max(W / w, H / h) or W < w or H < h:
+        warnings.append(f"{name} is {W} x {H}, not the texture's {w} x {h} shape made bigger; upscaled the texture instead")
+        return None
+    factor = max(int(round(W / w)), 1)
+    while factor > 1 and max(h, w) * factor > MAX_UPSCALED:
+        factor -= 1
+    p, q = hm.normal_map_slopes(img, convention)
+    if p.shape != (h * factor, w * factor):
+        p, q = hm.resize(p, (h * factor, w * factor), 3), hm.resize(q, (h * factor, w * factor), 3)
+        steps.append(f"resized from {W} x {H} to {w * factor} x {h * factor}")
+    # the same picture? compare it, shrunk back, with the texture (and catch a flipped green channel)
+    small = [a.reshape(h, factor, w, factor).mean(axis=(1, 3)) for a in (p, q)]
+
+    def corr(a, b):
+        a, b = a - a.mean(), b - b.mean()
+        return float((a * b).sum() / max(np.sqrt((a * a).sum() * (b * b).sum()), 1e-12))
+
+    cp, cq = corr(small[0], p0), corr(small[1], q0)
+    if cq < -0.3 and cp > 0.3:
+        q, small[1], cq = -q, -small[1], -cq
+        steps.append("its green channel flipped to match the texture's")
+    if min(cp, cq) < 0.3:
+        warnings.append(f"{name} doesn't look much like this texture (match {min(cp, cq):.2f}); check it's the right file")
+    steps.insert(0, f"{factor}x from {name}, upscaled elsewhere")
+    # the texture's slope bias is taken out: shift the file's slopes to the same average
+    p = p - (small[0].mean() - p0.mean())
+    q = q - (small[1].mean() - q0.mean())
+    return p.astype(np.float32), q.astype(np.float32), factor
 
 
 def build_fields(model: SourceModel, source: TriMesh, materials: list[Material], settings: EnhanceSettings,

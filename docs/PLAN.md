@@ -162,7 +162,7 @@ used, so the side stays straight instead of swelling into a bulge. This is on by
   near-flat texels is subtracted first.
 - **Options** (Enhance > More settings): edge keeping (re-weighted least squares, so slopes
   no real surface could have stay local), compression clean-up (a sub-texel blur, or a 1x AI
-  deblocking model), upsampling of the normal map (guided by the albedo's edges, or a 2x/4x
+  deblocking model), smoothing of stair-stepped edges along their length (0.6.1), upsampling of the normal map (guided by the albedo's edges, or a 2x/4x
   AI model such as 4x-Normal-RG0 run through ONNX Runtime), specular/metallic mask edges
   as hints, fine relief guessed from the delit albedo, the material's tiled detail normal
   map, and a strength per material. Since 0.5.0 the Windows app includes two AI upscalers,

@@ -55,7 +55,7 @@ def page(browser, app):
     pg.close()
 
 
-def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path, monkeypatch):  # noqa: F811
+def test_add_a_folder_browse_open_enhance_export(page, app, weapon_dir, tmp_path, monkeypatch):  # noqa: F811
     included = tmp_path / "included"
     included.mkdir()
     (included / "models.json").write_text('{"models": [{"name": "up", "codecs": ["*"]}]}')
@@ -157,6 +157,8 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path, mon
     page.select_option("#upsample", "guided")
     assert page.locator("#ai-models").count() == 0
     page.select_option("#upsample-factor", "2")
+    assert page.input_value("#edge-smoothing") == "1"  # stair-stepped edges smoothed by default
+    page.select_option("#edge-smoothing", "0.5")
     page.wait_for_selector('#upscale-maps li[data-map][data-ready="0"]')  # not made with these settings yet
     assert "Upscale first" in page.text_content("#compare")
     assert page.text_content("#upscale-run") == "Upscale 1 map"
@@ -164,6 +166,7 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path, mon
     page.wait_for_selector('#upscale-maps li[data-map][data-ready="1"]', timeout=60000)
     page.wait_for_selector("text=1 normal map ready for Displace")
     assert "2× · 256 × 256" in page.text_content('#upscale-maps li[data-map]')
+    assert "smoothed jagged edges" in page.text_content('#upscale-maps li[data-map]')
     loaded = "(img) => img.complete && img.naturalWidth > 0"
     for which in ("before", "after"):
         page.wait_for_selector(f'#compare img[data-which="{which}"]', timeout=30000)
@@ -214,6 +217,35 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path, mon
     assert (tmp_path / "out" / "WP_A_0300_enhanced.stl").stat().st_size > 84
     # the view sits a model on the floor, centred, each time the same mesh is shown again (another shading)
     assert page.evaluate(SHOW_TWICE) == [[-5, 5, 0], [-5, 5, 0]]
+
+    # a normal map upscaled by another program, brought back in place of the Textures tab's settings
+    from PIL import Image
+
+    from darkstl.importers import open_model
+
+    model = open_model(next(weapon_dir.rglob("*0300.partsbnd.dcx")))
+    tex = next(t for t in model.textures.values() if t.name.endswith("_n"))
+    mine = tmp_path / "WP_A_0300_n_4x.png"
+    Image.fromarray(tex.decode()).resize((512, 512), Image.BICUBIC).save(mine)
+
+    class Dialogs:
+        dialogs = True
+
+        def pick_file(self, title, patterns, start=None):
+            return str(mine)
+
+    app.service.host = Dialogs()
+    page.evaluate("window.__darkstl.platform.info.dialogs = true")
+    page.click("#rail-textures")
+    page.click("#upscale-maps [data-import]")
+    page.wait_for_selector('#upscale-maps li[data-map][data-ready="1"] :text("4x from WP_A_0300_n_4x.png")', timeout=60000)
+    assert "Using WP_A_0300_n_4x.png" in page.text_content("#upscale-maps")
+    assert "4× · 512 × 512" in page.text_content("#upscale-maps li[data-map]")
+    if shots:
+        page.locator("#upscale-maps").scroll_into_view_if_needed()
+        page.screenshot(path=os.path.join(shots, "textures-imported.png"))
+    page.click("#upscale-maps [data-import-stop]")
+    page.wait_for_selector("#upscale-maps [data-import]")
 
 
 SHOW_TWICE = """() => {
