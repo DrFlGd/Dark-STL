@@ -190,6 +190,47 @@ used, so the side stays straight instead of swelling into a bulge. This is on by
   along their seams as well as possible, and what still differs is faded smoothly into each
   island over a few vertex spacings.
 
+### Step 2b: keeping thin parts from clipping (planned)
+
+Found on Dark Souls' `c2780` (1M vertices, normal-map height, strength 0.5): claw tips and
+teeth come out jagged and pass through themselves, while lowering the strength hides it. The
+cause is that relief is sized from the texture alone. A claw tip is only a few millimetres
+thick, but the relief is up to 13 mm, so the two sides of the tip are pushed past each other.
+Where a tip curls, its vertex normals also fan out or cross, so neighbouring vertices move in
+directions that disagree, which gives the saw-tooth look. Neighbouring parts that sit close
+together (fingers, rows of teeth) can clip into each other for the same reason.
+
+The fix is to give every vertex a limit from the shape around it and to keep the result
+smooth, in this order:
+
+1. **Measure room per vertex.** Inward room is the radius of the largest ball that touches
+   the vertex from inside the part (half the local thickness); outward room is the same from
+   outside (half the gap to the nearest other surface). Both come from the shrinking-ball
+   method (Ma et al. 2012), which only needs nearest-point queries, so the KD-tree that
+   `geometry/proximity.py` already uses is enough and no ray-casting library is added. A
+   single-sided sheet (a cape) has no inside, so only its outward room counts. The room field is smoothed over a few vertex spacings so the
+   limit itself has no steps.
+2. **Fold the limit into the solve, not after it.** `geometry/integrate.py` already pulls
+   heights weakly towards zero (the screening term) and that pull is set per vertex. Where the
+   room is small the pull becomes stronger, so thin parts get less relief and the change
+   blends into the surroundings, instead of being clipped flat afterwards. A soft cap
+   (`room * tanh(h / room)`) then catches what is left, with "Thickness kept" (default 80 %)
+   setting how much of the room may be used.
+3. **Move along calmer normals.** Heights are applied along vertex normals smoothed over a
+   distance tied to the local room, so on tips and tight curls the directions agree and cannot
+   cross; on broad surfaces nothing changes.
+4. **Check and repair.** After displacement, triangle pairs that intersect (excluding
+   neighbours) are found with a bounding-box tree over the faces. Heights around each
+   crossing are scaled down and the check repeats, at most a few rounds. The Enhanced panel
+   reports how many places were fixed, and any that remain.
+5. **Fallback.** Where the room can't be measured (very open or broken shells), relief is
+   scaled down by the local curvature so the sharpest points still get less.
+
+It is on by default ("Keep thin parts from clipping" in Generate step 2), part of the cache key
+like every setting, and has no effect on large, thick surfaces. The test bench gains thin scenes
+(a curled cone tip, a comb of close teeth, a single-sided sheet) and reports, besides the
+relief error, the number of crossing triangles and how much relief was kept.
+
 ### Step 3: export
 
 | Format | Content |
@@ -270,6 +311,11 @@ differs:
 - [ ] Watertight option: game meshes are open shells with overlapping parts, so add a
       solidify step (voxel or winding-number remesh) that outputs one closed manifold
 - [ ] Thin-part thickening for blades and capes
+- [ ] Thin parts stop clipping when displaced (Step 2b): room measured per vertex, folded
+      into the height solve, calmer normals on tips, then an intersection check that repairs
+      what is left
+- [ ] Bench scenes for thin parts (curled tip, close teeth, single-sided sheet) with a
+      self-intersection count
 - [x] Per-material strength and on/off in the material list
 - [x] Use detail normal maps as well as the main normal map (blend maps still to do)
 - [ ] Height-map preview painted on the model before running the full step
@@ -300,6 +346,8 @@ differs:
 - Of the real game files, Dark Souls Remastered weapons and Bloodborne characters, objects and
   armour have been loaded so far (Phase 1).
 - Output is not guaranteed watertight; most slicers repair it, but Phase 2 adds a proper fix.
+- Thin parts (claw tips, teeth) can pass through themselves at higher strengths; lower the
+  strength for now. Phase 2 adds a fix (Step 2b).
 - Without an anibnd beside the model, skinned meshes (characters, armor) are shown in their
   bind pose, which is a T or A pose. Armour pieces take the player's animations
   (`c0000.anibnd`) only when that archive is copied next to them.
