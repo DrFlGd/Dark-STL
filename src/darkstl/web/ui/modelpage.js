@@ -17,7 +17,7 @@ import { Inspector, useWidth } from "./inspector.js";
 import { Viewer } from "../viewer.js";
 
 const ENHANCE = { target_vertices: 1_000_000, method: "subdivide", smooth: true, source: "normal", strength: 1, height_range_mm: 1,
-  green: "auto", detail_fraction: 0.0625, max_displacement_mm: 0, integration: "mesh", edge_keeping: 0, deblock: "off",
+  green: "auto", detail_fraction: 0.0625, max_displacement_mm: 0, integration: "mesh", edge_keeping: 0, deblock: "off", edge_smoothing: 1,
   upsample: "off", upsample_factor: 0, ai_model: "", deblock_model: "", edge_hints: false, albedo_detail_mm: 0, detail_normals: false, detail_strength: 1 };
 const EXPORT = { format: ".stl", units: "mm", textures: true, folder: "" };
 const VIEW = { shading: "textured", edges: false };
@@ -364,6 +364,9 @@ function TexturesTab({ m, args, s, set, run, setRun, call, sendSettings, over, u
       <label class="field-block" title="Block compression leaves a faint 4-pixel grid. Smoothing melts it but also softens the finest detail; an AI model can remove it more cleanly."><span>Compression clean-up</span>
         <select id="deblock" value=${s.deblock} onChange=${(e) => set({ deblock: e.target.value })}>
           <option value="off">None</option><option value="smooth">Smooth it out</option><option value="ai">AI model</option></select></label>
+      <label class="field-block" title="Edges baked with too few pixels come out as stair-steps, and upscaling only makes the steps bigger. This blends each edge along its length before upsampling, so it stays sharp across but runs smoothly. Grain along the edges is softened too, so Light keeps more of it."><span>Jagged edges</span>
+        <select id="edge-smoothing" value=${String(s.edge_smoothing ?? 1)} onChange=${(e) => set({ edge_smoothing: Number(e.target.value) })}>
+          <option value="0">Leave as they are</option><option value="0.5">Smooth lightly</option><option value="1">Smooth</option></select></label>
       <label class="field-block" title="More pixels in the normal map, so vertices closer together than its pixels still get detail of their own. Guided keeps edges where the colour texture has them; AI models invent plausible fine detail."><span>Upsample</span>
         <select id="upsample" value=${s.upsample} onChange=${(e) => set({ upsample: e.target.value })}>
           <option value="off">No</option><option value="guided">Guided by the colour texture</option><option value="ai">AI model</option></select></label>
@@ -407,7 +410,7 @@ function useTextureMaps(call, m, args, s, over, run, sendSettings) {
     let live = true;
     call("texture_maps", { sid: m.sid, ...args.json, settings: sendSettings() }).then((r) => live && setMaps(r), () => live && setMaps(null));
     return () => { live = false; };
-  }, [args.key, s.target_vertices, s.source, s.green, s.deblock, s.deblock_model, s.upsample, s.ai_model, s.upsample_factor, JSON.stringify(over), !!run]);
+  }, [args.key, s.target_vertices, s.source, s.green, s.deblock, s.deblock_model, s.edge_smoothing, s.upsample, s.ai_model, s.upsample_factor, JSON.stringify(over), !!run]);
   return maps;
 }
 

@@ -851,6 +851,7 @@ class Service:
             integration=str(s.get("integration", defaults.integration)),
             edge_keeping=min(max(float(s.get("edge_keeping", defaults.edge_keeping)), 0.0), 1.0),
             deblock=str(s.get("deblock", defaults.deblock)),
+            edge_smoothing=min(max(float(s.get("edge_smoothing", defaults.edge_smoothing)), 0.0), 1.0),
             upsample=str(s.get("upsample", defaults.upsample)),
             ai_model=str(s.get("ai_model") or ""),
             deblock_model=str(s.get("deblock_model") or ""),

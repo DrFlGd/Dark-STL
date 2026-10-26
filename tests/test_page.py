@@ -157,6 +157,8 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path, mon
     page.select_option("#upsample", "guided")
     assert page.locator("#ai-models").count() == 0
     page.select_option("#upsample-factor", "2")
+    assert page.input_value("#edge-smoothing") == "1"  # stair-stepped edges smoothed by default
+    page.select_option("#edge-smoothing", "0.5")
     page.wait_for_selector('#upscale-maps li[data-map][data-ready="0"]')  # not made with these settings yet
     assert "Upscale first" in page.text_content("#compare")
     assert page.text_content("#upscale-run") == "Upscale 1 map"
@@ -164,6 +166,7 @@ def test_add_a_folder_browse_open_enhance_export(page, weapon_dir, tmp_path, mon
     page.wait_for_selector('#upscale-maps li[data-map][data-ready="1"]', timeout=60000)
     page.wait_for_selector("text=1 normal map ready for Displace")
     assert "2× · 256 × 256" in page.text_content('#upscale-maps li[data-map]')
+    assert "smoothed jagged edges" in page.text_content('#upscale-maps li[data-map]')
     loaded = "(img) => img.complete && img.naturalWidth > 0"
     for which in ("before", "after"):
         page.wait_for_selector(f'#compare img[data-which="{which}"]', timeout=30000)

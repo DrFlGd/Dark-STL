@@ -199,6 +199,7 @@ def cmd_enhance(args) -> int:
         integration=args.integration,
         edge_keeping=args.edge_keeping,
         deblock=args.deblock,
+        edge_smoothing=args.edge_smoothing,
         upsample=args.upsample,
         ai_model=args.ai_model,
         deblock_model=args.deblock_model,
@@ -302,6 +303,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="integrate normal-map slopes on the model's surface (default) or per texture (v0.1)")
     s.add_argument("--edge-keeping", type=float, default=0.0, help="0..1, keep inconsistent slopes from smearing")
     s.add_argument("--deblock", choices=["off", "smooth", "ai"], default="off", help="block-compression clean-up")
+    s.add_argument("--edge-smoothing", type=float, default=1.0,
+                   help="0..1, smooth stair-stepped edges in normal maps along their length (0 = off)")
     s.add_argument("--upsample", choices=["off", "guided", "ai"], default="off", help="upsample normal maps")
     s.add_argument("--ai-model", default="", help="upscaling .onnx model (path, or a name in the models folder); "
                    "default: the included one for each texture's compression")

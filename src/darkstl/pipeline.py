@@ -75,6 +75,7 @@ class EnhanceSettings:
     edge_keeping: float = 0.0  # 0..1: how strongly inconsistent slopes are kept from smearing (mesh integration)
     smooth_sampling: bool = True  # bicubic instead of bilinear texture reads
     deblock: str = "off"  # block-compression clean-up: off | smooth | ai
+    edge_smoothing: float = 1.0  # 0..1: how much stair-stepped edges in normal maps are smoothed along their length
     upsample: str = "off"  # off | guided (albedo-guided) | ai
     ai_model: str = ""  # upscaling model file in models_dir ("": the included one for the texture's compression)
     deblock_model: str = ""  # 1x deblocking model file in models_dir
@@ -125,7 +126,8 @@ def _report(progress: ProgressFn | None, frac: float, msg: str) -> None:
         progress(frac, msg)
 
 
-UPSCALE_SETTINGS = ("green", "deblock", "deblock_model", "upsample", "ai_model", "upsample_factor")  # what a map made ready depends on
+UPSCALE_SETTINGS = ("green", "deblock", "deblock_model", "edge_smoothing", "upsample", "ai_model",
+                    "upsample_factor")  # what a map made ready depends on
 
 
 @dataclass
@@ -240,7 +242,7 @@ def upscale_normal_map(model: SourceModel, info: Material | None, img: np.ndarra
                        texel: float, spacing: float, settings: EnhanceSettings, key: str = "",
                        codec: str | None = None, progress: ProgressFn | None = None) -> UpscaledMap:
     """Make one normal map ready for displacement, as the texture settings ask: find its convention, take out
-    its slope bias, clean up compression blocks, and upsample it (an AI model or guided by the colour texture)."""
+    its slope bias, clean up compression blocks, smooth stair-stepped edges, and upsample it (an AI model or guided by the colour texture)."""
     from .textures import upscale
 
     steps: list[str] = []
@@ -263,6 +265,12 @@ def upscale_normal_map(model: SourceModel, info: Material | None, img: np.ndarra
         if m is not None:
             work = upscale.normal_map(m, work, rg_only=False)
             steps.append(f"deblocked by {m.path.name}")
+    if settings.edge_smoothing > 0:
+        # before upsampling: upscalers keep the steps they are shown (only bigger), so they go first
+        _report(progress, 0.2, "Smoothing jagged edges")
+        sp, sq = hm.smooth_jagged_edges(*hm.normal_map_slopes(work, convention), strength=settings.edge_smoothing)
+        work = hm.slopes_to_normal_map(sp, sq, convention)
+        steps.append("smoothed jagged edges")
     factor, ai_model = plan_upscale(settings, texel, spacing, codec, h, w, warnings)
     base = None
     if settings.upsample == "ai" and ai_model is None and not settings.upsample_factor and texel > 0 \
