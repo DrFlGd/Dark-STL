@@ -135,6 +135,8 @@ a.chip-btn.on { background: var(--sel); }
 /* the Textures tab: the normal maps made ready, and before/after one of them (modelpage.js TextureCompare) */
 .upscale-maps li > span:first-child { display: grid; }
 .upscale-maps small { font-size: 11.5px; }
+.upscale-maps .map-import { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.upscale-maps .map-import .link-btn { padding: 2px 0; font-size: 11.5px; }
 .compare { display: grid; gap: 6px; }
 .compare-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
 .compare-zoom { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }

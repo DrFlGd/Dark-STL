@@ -282,6 +282,41 @@ def test_textures_are_made_ready_once_and_displacement_uses_them(service, monkey
     assert service.call("texture_maps", {"sid": m["sid"], "settings": {**settings, "source": "none"}})["maps"] == []
 
 
+def test_a_normal_map_upscaled_elsewhere_is_used_as_it_is(service, tmp_path):
+    import numpy as np
+    from PIL import Image
+
+    item = service.call("models_query", {"game": "Dark Souls III", "category": "Weapons"})["items"][0]
+    m = service.call("model_open", {"id": item["id"]})
+    settings = {"target_vertices": 4000}
+    (mp,) = service.call("texture_maps", {"sid": m["sid"], "settings": settings})["maps"]
+    png = tmp_path / "mine_4x.png"
+    service.call("texture_save", {"sid": m["sid"], "key": mp["key"], "folder": str(tmp_path)})
+    saved = next(tmp_path.glob("*.png"))
+    with Image.open(saved) as im:
+        im.resize((im.width * 4, im.height * 4), Image.BICUBIC).save(png)  # another program's 4x
+    mine = {**settings, "upsample": "ai", "imported_maps": {mp["key"]: str(png)}}  # the file wins over the settings
+    r = wait(service, service.call("texture_upscale", {"sid": m["sid"], "settings": mine, "keys": [mp["key"]]})["job"])
+    (got,) = r["maps"]
+    assert got["ready"] and got["factor"] == 4 and got["imported"] == str(png) and got["up_size"] == [512, 512]
+    assert got["steps"][0] == "4x from mine_4x.png, upscaled elsewhere" and not got["warnings"]
+    assert "smoothed jagged edges" not in got["steps"]
+    r2 = wait(service, service.call("enhance", {"sid": m["sid"], "settings": mine})["job"])
+    assert "4x from mine_4x.png, upscaled elsewhere" in r2["fields"][0]["steps"]
+    # a file of another shape: the texture's own upscale, with a warning
+    with Image.open(saved) as im:
+        im.resize((im.width * 4, im.height * 2)).save(png)
+    r3 = wait(service, service.call("texture_upscale", {"sid": m["sid"], "settings": mine})["job"])
+    assert r3["maps"][0]["factor"] != 4 and "not the texture's" in r3["maps"][0]["warnings"][0]
+    # its green channel flipped: put back
+    with Image.open(saved) as im:
+        a = np.asarray(im.convert("RGBA").resize((im.width * 2, im.height * 2), Image.BICUBIC)).copy()
+    a[..., 1] = 255 - a[..., 1]
+    Image.fromarray(a).save(png)
+    r4 = wait(service, service.call("texture_upscale", {"sid": m["sid"], "settings": mine})["job"])
+    assert r4["maps"][0]["factor"] == 2 and "its green channel flipped to match the texture's" in r4["maps"][0]["steps"]
+
+
 def test_a_model_file_can_be_opened_on_its_own(home, weapon_dir):  # noqa: F811
     s = make_service(home)
     path = weapon_dir / "chr" / "c1100.chrbnd.dcx"

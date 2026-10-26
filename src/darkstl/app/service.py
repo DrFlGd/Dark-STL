@@ -188,7 +188,8 @@ def generated_key(session: Session, options: MeshOptions, settings: dict) -> tup
     """What a generated model depends on: the model file as it is now, its parts and options, and every
     setting the page sent (all of them, so settings added later count without being listed here)."""
     settings_key = json.dumps(settings, sort_keys=True, default=str)
-    return session.sid, _file_id(session.model.path), _options_key(options), settings_key
+    imported = tuple(_file_id(Path(p)) for _k, p in sorted((settings.get("imported_maps") or {}).items()) if p)
+    return session.sid, _file_id(session.model.path), _options_key(options), settings_key, imported
 
 
 def mesh_key(session: Session, options: MeshOptions, settings) -> tuple:
@@ -856,6 +857,7 @@ class Service:
             ai_model=str(s.get("ai_model") or ""),
             deblock_model=str(s.get("deblock_model") or ""),
             upsample_factor=_factor(s.get("upsample_factor")),
+            imported_maps={str(k): str(v) for k, v in (s.get("imported_maps") or {}).items() if v},
             models_dir=models_dir(),
             material_strength={int(k): float(v) for k, v in (s.get("material_strength") or {}).items()
                                if v is not None and v != ""},
@@ -939,6 +941,10 @@ class Service:
         the texture, the texture settings, and the factor and model those give it here."""
         from ..pipeline import UPSCALE_SETTINGS, plan_upscale
 
+        imported = settings.imported_maps.get(dm.key)
+        if imported:  # a file upscaled elsewhere: the other texture settings don't come into it
+            return (session.sid, _file_id(session.model.path), dm.key, _options_key(options), dm.green,
+                    "imported", _file_id(Path(imported)))
         factor, model = plan_upscale(settings, dm.texel, spacing, dm.codec, h, w)
         return (session.sid, _file_id(session.model.path), dm.key, _options_key(options), dm.green,
                 tuple(getattr(settings, k) for k in UPSCALE_SETTINGS), factor, str(model.path) if model else "")
@@ -980,6 +986,7 @@ class Service:
             shown.append({"key": dm.key, "name": tex.name, "size": [w, h], "texel_mm": dm.texel * 1000,
                           "materials": [model.materials[m].name if m < len(model.materials) else str(m) for m in dm.materials],
                           "ready": up is not None, "factor": up.factor if up else None,
+                          "imported": settings.imported_maps.get(dm.key) or None,
                           "up_size": [w * up.factor, h * up.factor] if up else None,
                           "steps": list(up.steps) if up else [], "warnings": list(up.warnings) if up else []})
         return shown, found, made

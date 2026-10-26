@@ -19,6 +19,7 @@ import { Viewer } from "../viewer.js";
 const ENHANCE = { target_vertices: 1_000_000, method: "subdivide", smooth: true, source: "normal", strength: 1, height_range_mm: 1,
   green: "auto", detail_fraction: 0.0625, max_displacement_mm: 0, integration: "mesh", edge_keeping: 0, deblock: "off", edge_smoothing: 1,
   upsample: "off", upsample_factor: 0, ai_model: "", deblock_model: "", edge_hints: false, albedo_detail_mm: 0, detail_normals: false, detail_strength: 1 };
+const IMAGE_PATTERN = "Images (*.png;*.tga;*.tif;*.tiff;*.dds;*.jpg;*.jpeg;*.webp;*.bmp)";
 const EXPORT = { format: ".stl", units: "mm", textures: true, folder: "" };
 const VIEW = { shading: "textured", edges: false };
 const KEEP_MESHES = 4; // built meshes a model page keeps (on the graphics card) to show again at once
@@ -132,7 +133,7 @@ function Workspace({ m, variant }) {
   // straight away is saved (on blur) just before the click, before the tab has drawn it again
   const sendSettings = () => {
     const now = { ...ENHANCE, ...(ui.get().enhance || {}) };
-    return { ...now, max_displacement_mm: now.max_displacement_mm || null,
+    return { ...now, max_displacement_mm: now.max_displacement_mm || null, imported_maps: (ui.get().imports || {})[m.id] || {},
       texture_overrides: Object.fromEntries(m.materials.map((mat, i) => [i, detailOf(mat, i)])), material_strength: strengthsNow.current };
   };
   const name = m.entry?.label || variantName(m.variant) || m.name;
@@ -152,7 +153,7 @@ function Workspace({ m, variant }) {
     return r;
   };
   /** The Textures tab's step: the normal maps cleaned up and upsampled as the texture settings ask. */
-  const upscale = () => follow("upscale", () => call("texture_upscale", { sid: m.sid, ...args.json, settings: sendSettings() }), `Upscaling ${name}'s textures`);
+  const upscale = (keys) => follow("upscale", () => call("texture_upscale", { sid: m.sid, ...args.json, settings: sendSettings(), ...(keys ? { keys } : {}) }), `Upscaling ${name}'s textures`);
   const shared = { m, args, stats, s, set, run, setRun, call, sendSettings };
   return html`<div class="model-workspace" ref=${box}>
     <section class="workspace-viewing-area">
@@ -337,6 +338,20 @@ function TexturesTab({ m, args, s, set, run, setRun, call, sendSettings, over, u
   const list = maps?.maps || [];
   const [compare, setCompare] = useState(null); // the map compared, when chosen by hand
   const shownMap = list.find((x) => x.key === compare) || list.find((x) => x.key === sel) || list[0];
+  // a normal map upscaled by another program, used for this map in place of the settings above
+  const setImport = (key, path) => {
+    const all = ui.get().imports || {};
+    const mine = { ...(all[m.id] || {}) };
+    if (path) mine[key] = path; else delete mine[key];
+    setPref({ imports: { ...all, [m.id]: mine } });
+  };
+  const useFile = async (key) => {
+    const path = await pickFile("Use a normal map upscaled elsewhere", [IMAGE_PATTERN]);
+    if (!path) return;
+    setImport(key, path);
+    setError(null);
+    try { await upscale([key]); } catch (e) { if (!e.stopped) setError(msg(e)); }
+  };
   const go = async () => {
     setError(null);
     try {
@@ -387,7 +402,13 @@ function TexturesTab({ m, args, s, set, run, setRun, call, sendSettings, over, u
       ${list.length ? html`<ul class="ls-list upscale-maps" id="upscale-maps">${list.map((x) => html`<li key=${x.key} data-map=${x.key} data-ready=${x.ready ? "1" : "0"}>
         <span>${x.name}<small class="muted">${x.materials.join(", ")} · ${x.size[0]} × ${x.size[1]} px · ${x.texel_mm.toFixed(2)} mm per texel</small>
           ${x.ready && x.steps.length ? html`<small class="muted">${x.steps.join(" · ")}</small>` : null}
-          ${x.warnings.map((w, i) => html`<small class="warn-text" key=${i}>${w}</small>`)}</span>
+          ${x.warnings.map((w, i) => html`<small class="warn-text" key=${i}>${w}</small>`)}
+          <span class="map-import">${x.imported
+            ? html`<small title=${x.imported}>Using ${x.imported.split(/[\\/]/).pop()}</small>
+              <button type="button" class="link-btn" data-import-stop=${x.key} onClick=${() => setImport(x.key, null)}>Stop using it</button>`
+            : info().dialogs ? html`<button type="button" class="link-btn" data-import=${x.key} disabled=${!!run}
+                title="Save the texture (Save as PNG above), upscale it with another program, then bring the result back here: it is used as it is, in place of the settings above."
+                onClick=${() => useFile(x.key)}>Use my own upscaled file…</button>` : null}</span></span>
         <span class=${x.ready ? "" : "muted"}>${x.ready ? `${x.factor > 1 ? `${x.factor}× · ` : ""}${x.up_size[0]} × ${x.up_size[1]}` : "not made yet"}</span></li>`)}</ul>`
         : maps ? html`<p class="muted" id="upscale-none">${s.source === "normal" ? "No normal map is read for the parts shown." : ""}</p>` : null}
       ${shownMap ? html`${list.length > 1 ? html`<label class="field-block"><span>Compare</span><select id="compare-map" value=${shownMap.key} onChange=${(e) => setCompare(e.target.value)}>
@@ -406,11 +427,12 @@ function TexturesTab({ m, args, s, set, run, setRun, call, sendSettings, over, u
 /** The normal maps Displace reads with the settings as they are, and whether each is made ready: { maps, spacing_mm }. */
 function useTextureMaps(call, m, args, s, over, run, sendSettings) {
   const [maps, setMaps] = useState(null);
+  const imports = useStore(ui, (st) => (st.imports || {})[m.id]);
   useEffect(() => {
     let live = true;
     call("texture_maps", { sid: m.sid, ...args.json, settings: sendSettings() }).then((r) => live && setMaps(r), () => live && setMaps(null));
     return () => { live = false; };
-  }, [args.key, s.target_vertices, s.source, s.green, s.deblock, s.deblock_model, s.edge_smoothing, s.upsample, s.ai_model, s.upsample_factor, JSON.stringify(over), !!run]);
+  }, [args.key, s.target_vertices, s.source, s.green, s.deblock, s.deblock_model, s.edge_smoothing, s.upsample, s.ai_model, s.upsample_factor, JSON.stringify(over), JSON.stringify(imports || {}), !!run]);
   return maps;
 }
 
