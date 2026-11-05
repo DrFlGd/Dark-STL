@@ -14,9 +14,10 @@ from ..model import SourceModel
 from .base import Importer
 from .fromsoft import FromSoftwareImporter
 from .redengine import RedEngineImporter
+from .reengine import REEngineImporter
 from .wavefront import WavefrontImporter
 
-IMPORTERS: list[Importer] = [FromSoftwareImporter(), RedEngineImporter(), WavefrontImporter()]
+IMPORTERS: list[Importer] = [FromSoftwareImporter(), RedEngineImporter(), REEngineImporter(), WavefrontImporter()]
 
 
 def register(importer: Importer) -> None:

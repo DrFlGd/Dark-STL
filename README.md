@@ -27,8 +27,9 @@ weapon, and a Bloodborne character, object and armour piece (PS4 textures includ
 other games come next (Phase 1 of the plan).
 
 Importing is modular: each game family has its own importer, and everything after import
-(the explorer, the three steps, export) is shared. FromSoftware files, Cyberpunk 2077 files and
-Wavefront OBJ are supported today.
+(the explorer, the three steps, export) is shared. FromSoftware files (Dark Souls, Bloodborne,
+Dark Souls III, Sekiro, Elden Ring), Cyberpunk 2077 files, Capcom RE Engine files (Resident Evil
+2, 3, 4, 7 and Village, Devil May Cry 5) and Wavefront OBJ are supported today.
 
 ## Install
 
@@ -73,6 +74,15 @@ encrypted archives directly.
   of `.mesh` and `.xbm` files exported with WolvenKit (kept under their `base\...` paths)
   works too, and the two can be mixed: a model's textures are looked up in the loose folder
   first, then in the archives.
+- **Resident Evil (RE Engine):** either extract the game with a pak tool (REtool, ree-pak) and
+  add the folder holding `natives/`, or add the game's install folder with the game's file
+  list (a `.list` file from the RE Engine modding community, as those tools use) copied in
+  beside the `.pak` archives: Dark STL then reads the models straight from the archives.
+  Models are `.mesh` files with their materials in a `.mdf2` and textures in `.tex` files;
+  the full-size textures and the most detailed geometry of newer games (Resident Evil 4) sit
+  under `natives/stm/streaming/` and are used when present. Games whose archives are
+  encrypted (Monster Hunter Wilds and later) need extracting first; their GDeflate textures
+  are not read yet.
 
 ## Using the app
 

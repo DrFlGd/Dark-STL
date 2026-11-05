@@ -32,6 +32,7 @@ importer and registering it in `importers/__init__.py`:
 | --- | --- | --- |
 | FromSoftware | FLVER2 models in BND/DCX archives, TPF/DDS textures. Per-game differences (markers, compression, PS4 textures, where material data lives) are profiles in `importers/fromsoft/games.py` | Dark Souls Remastered and Bloodborne checked on real files; the rest on synthetic files |
 | REDengine 4 (Cyberpunk 2077) | `.mesh` and `.xbm` in the CR2W container, loose (WolvenKit exports under their depot paths) or inside the game's `.archive` packs, read directly; `.mi`/`.mt` material chains; Kraken buffers through the game's `oo2ext_7_win64.dll`. Formats worked out with WolvenKit as the reference | Built on synthetic files; awaiting a check against the game |
+| RE Engine (Capcom) | `.mesh` models (every generation from RE2 to RE Requiem, streamed buffers included), `.mdf2` materials, `.tex` textures, read from extracted files or from `.pak` archives through a community file list. Games in `importers/reengine/games.py` | Synthetic RE2 and RE4 files; real files next |
 | Wavefront OBJ | OBJ + MTL with PNG/JPG/TGA/DDS textures, from any other tool | Done |
 
 An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
@@ -290,6 +291,10 @@ src/darkstl/
                 depot.py (depot paths -> loose files or archive members), materials.py (.mi/.mt
                 chains -> texture roles), mesh.py (chunks -> mesh), catalog.py (names learnt
                 from import tables, groups by depot path)
+    reengine/   formats/ (mesh, tex, mdf2, pak with MurmurHash3 names), games.py (RE Engine games and
+                how a folder is recognised), files.py (a model, its streamed half, materials and textures,
+                on disk or inside a pak), materials.py (texture roles from slot types), catalog.py
+                (classifies models by the engine's folder layout)
     wavefront.py  OBJ + MTL
   geometry/     TriMesh, subdivision, isotropic remesh, UV seam matching, closest-point queries,
                 displacement
@@ -342,6 +347,10 @@ differs:
       frame; Dark Souls Remastered's `c2240.hkx` skeleton (tagfile) reads. Still to check on
       real files: Dark Souls PTDE (hk_2010), Dark Souls III, Sekiro and Elden Ring (compendium)
 - [ ] Compare against the before/after example: same weapon, same look
+- [ ] RE Engine: a Resident Evil 2 and a Resident Evil 4 character, weapon and object, extracted and
+      straight from the paks (the readers follow the community's format descriptions and pass on
+      synthetic files; the normal maps' green direction and the texture roles of each game's slot
+      names need a look on real files)
 
 ### Phase 2: print-ready output
 
@@ -379,7 +388,10 @@ differs:
 ## Known limits today
 
 - Of the real game files, Dark Souls Remastered weapons and Bloodborne characters, objects and
-  armour have been loaded so far (Phase 1).
+  armour have been loaded so far (Phase 1). The RE Engine importer has only seen synthetic files.
+- RE Engine: `.pak` archives with an encrypted table of contents (Monster Hunter Wilds and later)
+  and GDeflate-compressed textures are not read; extract those games with a pak tool first.
+  MPLY stage meshes, blend shapes and the skeleton's poses are not read.
 - Output is not guaranteed watertight (pieces cut on the Cut tab are); most slicers repair it,
   but Phase 2 adds a proper fix.
 - Without an anibnd beside the model, skinned meshes (characters, armor) are shown in their
