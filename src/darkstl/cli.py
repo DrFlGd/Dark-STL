@@ -52,6 +52,51 @@ def cmd_scan(args) -> int:
     return 0
 
 
+def cmd_unpack(args) -> int:
+    from .app.config import cache_dir, filelists_dir
+    from .importers.fromsoft import unpack
+
+    if args.download_lists:
+        out = unpack.download_lists(filelists_dir(), None)
+        print(f"Downloaded {len(out['downloaded'])} file lists into {out['folder']}")
+        for f in out["failed"]:
+            print(f"  failed: {f}")
+        if not args.folder:
+            return 0 if out["downloaded"] else 1
+    if not args.folder:
+        print("Name the game's folder (or --download-lists).")
+        return 2
+
+    def progress(frac: float, msg: str) -> None:
+        print(f"\r{frac * 100:5.1f}%  {msg[:90]:<90}", end="", flush=True)
+
+    groups = [g.strip() for g in args.only.split(",")] if args.only else list(unpack.DEFAULT_GROUPS)
+    unknown = [g for g in groups if g not in {x.id for x in unpack.GROUPS}]
+    if unknown:
+        print(f"Unknown group(s) {', '.join(unknown)}; choose from {', '.join(g.id for g in unpack.GROUPS)}")
+        return 2
+    plan = unpack.plan(Path(args.folder), Path(args.out), args.game, cache_dir() / "archives", filelists_dir(), progress)
+    print()
+    s = plan.summary()
+    print(f"{s['game']}: {sum(a['files'] for a in s['archives']):,} files in {len(s['archives'])} archives "
+          f"({s['unknown']:,} without a known name, {s['guessed']:,} named by pattern)")
+    for a in s["archives"]:
+        if a["error"]:
+            print(f"  {a['name']}: {a['error']}")
+    for g in s["groups"]:
+        mark = "*" if g["id"] in groups else " "
+        print(f" {mark} {g['id']:<11} {g['files']:>7,} files {g['bytes'] / 2**30:8.2f} GB  ({g['to_unpack']:,} to unpack)")
+    if args.dry_run:
+        return 0
+    result = unpack.run(plan, groups, progress)
+    print()
+    failed = f"; {result['failed_count']} failed" if result["failed_count"] else ""
+    print(f"Wrote {result['written']:,} files ({result['bytes'] / 2**30:.2f} GB) into {result['dest']}{failed}")
+    for f in result["failed"]:
+        print(f"  {f}")
+    return 0 if not result["failed_count"] else 1
+
+
 def cmd_info(args) -> int:
     from .errors import FormatError
     from .importers import IMPORTERS, importer_for
@@ -289,6 +334,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--lod", action="store_true", help="include low-detail (_l) variants")
     s.add_argument("--limit", type=int, default=12, help="names to show per group")
     s.set_defaults(func=cmd_scan)
+
+    s = sub.add_parser("unpack", help="unpack a game's models from its archives (Data0.bhd/.bdt ...)")
+    s.add_argument("folder", nargs="?", help="the game's install folder")
+    s.add_argument("-o", "--out", default="unpacked", help="folder to write into (default: ./unpacked)")
+    s.add_argument("--only", help="groups, comma-separated: characters,parts,objects,maps (default: all but maps)")
+    s.add_argument("--game", help="the game, when its archives don't say (Sekiro and Dark Souls III look alike)")
+    s.add_argument("--dry-run", action="store_true", help="only say what would be unpacked")
+    s.add_argument("--download-lists", action="store_true", help="first download newer file lists (UXM Selective Unpacker's)")
+    s.set_defaults(func=cmd_unpack)
 
     s = sub.add_parser("info", help="describe a model, texture pack or archive")
     s.add_argument("file")

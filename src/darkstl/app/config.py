@@ -41,6 +41,11 @@ def models_dir() -> Path:
     return config_dir() / "models"
 
 
+def filelists_dir() -> Path:
+    """Where newer file lists for unpacking game archives go when downloaded from Settings."""
+    return config_dir() / "filelists"
+
+
 def default_export_dir() -> Path:
     docs = Path.home() / "Documents"
     return (docs if docs.is_dir() else Path.home()) / "Dark STL exports"

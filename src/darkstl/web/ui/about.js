@@ -22,6 +22,7 @@ export function About() {
     <section class="ls-section">
       <h2>Games and files</h2>
       <p>${games.length ? `Recognised by their folders: ${games.join(", ")}.` : ""} Models are read from .partsbnd, .chrbnd, .objbnd, .geombnd and .mapbnd files (also inside .dcx), loose .flver files and .obj files.
+        The FromSoftware games that pack them in archives (Dark Souls, Dark Souls II and III, Sekiro, Elden Ring) are unpacked by Dark STL itself, models only, into its own library.
         Cyberpunk 2077 models (.mesh with .xbm textures) are read straight from the game's .archive files, or from files exported with WolvenKit.
         Resident Evil models (RE Engine .mesh files with their .mdf2 materials and .tex textures) are read extracted or inside .pak archives with a file list.
         Each game is read by its own importer, so more games can be added; generating and exporting work the same for all of them.</p>
@@ -31,6 +32,7 @@ export function About() {
       <h2>Built on</h2>
       <ul class="ls-list credits">
         <li><span>The file formats as worked out by the FromSoftware modding community, in particular ${link("https://github.com/JKAnderson/SoulsFormats", "SoulsFormats")} by TKGP and ${link("https://github.com/Grimrukh/soulstruct", "Soulstruct")} by Grimrukh</span></li>
+        <li><span>Unpacking the game archives as ${link("https://github.com/Atvaark/BinderTool", "BinderTool")} by Atvaark, UXM by TKGP and ${link("https://github.com/Nordgaren/UXM-Selective-Unpack", "UXM Selective Unpacker")} by Nordgaren do it; the archive keys and the bundled file lists come from ${link("https://github.com/vawser/Smithbox", "Smithbox")} (MIT)</span></li>
         <li><span>The REDengine formats as worked out by the ${link("https://github.com/WolvenKit/WolvenKit", "WolvenKit")} team (Cyberpunk 2077)</span></li>
         <li><span>The RE Engine formats as worked out by the Resident Evil modding community, in particular ${link("https://github.com/NSACloud/RE-Mesh-Editor", "RE Mesh Editor")} by NSACloud, ${link("https://github.com/eigeen/ree-pak-rs", "ree-pak")} by eigeen and ${link("https://github.com/Ekey/REE.PAK.Tool", "REE.PAK.Tool")} by Ekey (Dark STL reads them with code of its own)</span></li>
         <li><span>The interface of ${link("https://github.com/DrFlGd/Model-Library", "Model Library")} (and SCAD Workshop): its skins, menus, inspector and 3D view</span></li>

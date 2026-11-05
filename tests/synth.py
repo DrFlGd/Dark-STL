@@ -399,3 +399,75 @@ def tube_mesh(radius: float = 0.03, length: float = 0.25, segments: int = 16, ri
                 idx += [centre, centre + 1 + i, centre + 1 + (i + 1) % segments]
     return (np.array(pos, np.float32), np.array(nrm, np.float32), np.array(uv, np.float32),
             np.array(idx, np.int64))
+
+
+# ---------------------------------------------------------------------------
+# BHD5 / BDT game archives
+
+
+def build_bhd5(files: list[tuple[str, bytes]], fmt: str = "DS3", aes: bool = False, buckets: int = 7,
+               salt: str = "FDPrMhk") -> tuple[bytes, bytes]:
+    """A game archive pair (header, data) holding ``files`` (path, bytes), laid out as ``fmt``; with
+    ``aes`` the first 32 bytes of each file are AES-128 encrypted (with a key per file) as the games do."""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    from darkstl.importers.fromsoft.formats import bhd5
+
+    entry_size = {"DS1": 16, "DS2": 32, "DS3": 40, "ER": 40}[fmt]
+    bdt = bytearray(b"BDF307D7R6\0\0\0\0\0\0")
+    rows: list[list[tuple]] = [[] for _ in range(buckets)]
+    for i, (path, data) in enumerate(files):
+        h = bhd5.hash_path(path, fmt)
+        key = bytes((i * 7 + j) & 0xFF for j in range(16)) if aes else None
+        padded = fmt in ("DS3", "ER")  # to whole AES blocks, with the real size beside it (Dark Souls III on)
+        stored = bytearray(data + b"\0" * (-len(data) % 16 if padded else 0))
+        if key is not None:
+            n = min(32, len(stored) // 16 * 16)
+            enc = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+            stored[:n] = enc.update(bytes(stored[:n])) + enc.finalize()
+        offset = len(bdt)
+        bdt += stored
+        rows[h % buckets].append((h, len(stored), len(data), offset, key))
+    head_len = 24 if fmt == "DS1" else 28 + len(salt)
+    buckets_offset = head_len
+    entries_offset = buckets_offset + 8 * buckets
+    total_entries = sum(len(r) for r in rows)
+    aes_offset = entries_offset + entry_size * total_entries
+    out = bytearray(head_len)
+    bucket_table = bytearray()
+    entry_table = bytearray()
+    aes_table = bytearray()
+    at = entries_offset
+    for r in rows:
+        bucket_table += struct.pack("<ii", len(r), at)
+        at += entry_size * len(r)
+        for h, size, unpadded, offset, key in r:
+            key_at = 0
+            if key is not None:
+                key_at = aes_offset + len(aes_table)
+                aes_table += key + struct.pack("<i", 1) + struct.pack("<qq", 0, min(32, size))
+            if fmt == "ER":
+                entry_table += struct.pack("<QiiqqQ", h, size, unpadded, offset, 0, key_at)
+            elif fmt == "DS3":
+                entry_table += struct.pack("<Iiqqqq", h, size, offset, 0, key_at, unpadded)
+            elif fmt == "DS2":
+                entry_table += struct.pack("<Iiqqq", h, size, offset, 0, key_at)
+            else:
+                entry_table += struct.pack("<Iiq", h, size, offset)
+    body = out + bucket_table + entry_table + aes_table
+    struct.pack_into("<4sbb2xiiii", body, 0, b"BHD5", -1, 0, 1, len(body), buckets, buckets_offset)
+    if fmt != "DS1":
+        struct.pack_into("<i", body, 24, len(salt))
+        body[28:28 + len(salt)] = salt.encode("ascii")
+    return bytes(body), bytes(bdt)
+
+
+def rsa_keypair(bits: int = 1024):
+    """(n, e, d, pkcs1 pem text) of a fresh RSA key, to encrypt test archive headers with."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=bits)
+    nums = key.private_numbers()
+    pem = key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.PKCS1).decode()
+    return nums.public_numbers.n, nums.public_numbers.e, nums.d, pem

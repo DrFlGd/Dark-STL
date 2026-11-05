@@ -14,6 +14,7 @@ from darkstl.app.server import AppServer
 from darkstl.app.service import Service
 
 from test_pipeline import weapon_dir  # noqa: F401 - fixture
+from test_unpack import keypair, packed_ds3  # noqa: F401 - fixtures
 
 sync_api = pytest.importorskip("playwright.sync_api")
 
@@ -387,3 +388,37 @@ PLANE_CORNER = """() => {
   const r = v.canvas.getBoundingClientRect();
   return [r.left + (at.x + 1) / 2 * r.width, r.top + (1 - at.y) / 2 * r.height];
 }"""
+
+
+def test_unpack_a_packed_game(page, packed_ds3):  # noqa: F811
+    """Adding a game's install folder whose models are in its archives goes on to the Unpack dialog;
+    unpacking lists the models from the app's library."""
+    import shutil
+
+    game, lists = packed_ds3
+    home = Path(os.environ["DARKSTL_HOME"])
+    shutil.copytree(lists, home / "filelists")
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    page.wait_for_selector("#first-run")
+    page.click("#first-add-folder")
+    page.fill("#folder-path", str(game.parent))
+    page.wait_for_selector("text=Recognised as Dark Souls III.")
+    page.click("#add-folder-dialog-ok")
+    page.wait_for_selector("#unpack-dialog")
+    page.wait_for_selector("#unpack-groups")
+    assert "No models were found loose" in page.inner_text("#unpack-why")
+    assert page.is_checked('[data-group="parts"]') and page.is_checked('[data-group="characters"]')
+    assert not page.is_checked('[data-group="maps"]') and page.is_disabled('[data-group="maps"]')
+    assert page.input_value("#unpack-dest").endswith("Dark Souls III")
+    assert "1 other file" in page.inner_text("#unpack-names")
+    if shots:
+        page.locator("#unpack-dialog").screenshot(path=str(Path(shots) / "unpack-dialog.png"))
+    page.click("#unpack-dialog-ok")
+    page.wait_for_selector("#unpack-dialog", state="detached", timeout=30000)
+    page.wait_for_selector('#kind-tiles [data-sub="Weapons"]')
+    assert page.inner_text("#browse-count") == "4 models"
+    page.goto(page.url.split("#")[0] + "#/settings")
+    page.wait_for_selector("#settings-archives")
+    page.wait_for_selector("#filelists-status >> text=Downloaded lists for Dark Souls III")  # the copied list counts as one
+    if shots:
+        page.locator("#settings-archives").screenshot(path=str(Path(shots) / "settings-archives.png"))
