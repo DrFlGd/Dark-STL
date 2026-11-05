@@ -13,9 +13,10 @@ from ..errors import FormatError
 from ..model import SourceModel
 from .base import Importer
 from .fromsoft import FromSoftwareImporter
+from .redengine import RedEngineImporter
 from .wavefront import WavefrontImporter
 
-IMPORTERS: list[Importer] = [FromSoftwareImporter(), WavefrontImporter()]
+IMPORTERS: list[Importer] = [FromSoftwareImporter(), RedEngineImporter(), WavefrontImporter()]
 
 
 def register(importer: Importer) -> None:
