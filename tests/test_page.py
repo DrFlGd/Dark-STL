@@ -4,6 +4,8 @@ installed (pip install playwright && python -m playwright install chromium)."""
 
 import os
 from pathlib import Path
+from urllib.parse import quote
+
 
 import pytest
 
@@ -290,3 +292,98 @@ def test_previews_stay_shown_and_a_job_stops_from_the_status_bar(page, app, weap
     page.wait_for_selector("text=Stopped evening out", timeout=120000)
     assert page.locator("#mesh-error").count() == 0 and page.locator("#mesh-kept").count() == 0
     assert page.text_content("#mesh-run") == "Even out the vertices"
+
+
+def test_cut_a_model_into_pieces_with_joints_and_export_them(page, app, tmp_path):
+    pytest.importorskip("manifold3d")
+    from test_cut import figure_obj
+
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    path = figure_obj(tmp_path)
+    opened = app.service.call("model_open", {"path": str(path)})
+    page.goto(f"{app.url}#/model/{quote(opened['id'], safe='')}")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    page.click("#rail-cut")
+    page.wait_for_selector("#cut-none")
+    # the original is cut: nothing has been generated
+    assert page.get_attribute('#cut-from button:has-text("Enhanced")', "disabled") is not None
+    page.click('#cut-add [data-axis="z"]')
+    page.wait_for_selector('#cut-list li[data-cut="1"][aria-selected="true"]')
+    assert page.evaluate("window.__viewer.cutGroup.children.length") == 1
+    assert "across z · 0.00 mm from the middle · Pegs" in page.text_content("#cut-list")
+    # moved to the waist with the number box, then dragged in the 3D view a little way up
+    page.fill("#cut-position-mm", "-10")
+    page.press("#cut-position-mm", "Tab")
+    page.wait_for_selector("#cut-list :text('-10.00 mm from the middle')")
+    page.wait_for_timeout(400)  # the view settles (it eases to a stop)
+    corner = page.evaluate(PLANE_CORNER)
+    page.mouse.move(*corner)
+    page.mouse.down()
+    page.mouse.move(corner[0], corner[1] - 6, steps=4)
+    page.mouse.up()
+    page.wait_for_function("!document.querySelector('#cut-list').textContent.includes('-10.00 mm')")
+    page.fill("#cut-position-mm", "-12")
+    page.press("#cut-position-mm", "Tab")
+    # a second cut through the neck, with magnets and a looser clearance
+    page.click('#cut-add [data-axis="z"]')
+    page.fill("#cut-position-mm", "13")
+    page.press("#cut-position-mm", "Tab")
+    page.click('#cut-joint [data-value="magnets"]')
+    page.wait_for_selector("#cut-magnet-d")
+    page.fill("#cut-magnet-d", "5")
+    page.press("#cut-magnet-d", "Tab")
+    page.fill("#cut-clearance", "0.3")
+    page.press("#cut-clearance", "Tab")
+    page.wait_for_selector("#cut-list :text('Magnets, 0.30 mm clearance')")
+    assert page.evaluate("window.__viewer.cutGroup.children.length") == 2
+    if shots:
+        page.screenshot(path=os.path.join(shots, "cut-planes.png"))
+    page.click("#cut-run")
+    page.wait_for_selector("#cut-result", timeout=60000)
+    page.wait_for_selector("text=Cut into 3 pieces")
+    page.wait_for_selector('#show-which [data-value="pieces"][aria-pressed="true"]')
+    page.wait_for_selector("#stage-canvas:not([data-loading])")
+    assert page.locator("#piece-list li").count() == 3
+    assert page.evaluate("window.__viewer.mesh.children.length") == 3
+    assert page.evaluate("window.__viewer.cutGroup.children.length") == 0  # the planes aren't drawn over the pieces
+    page.fill("#cut-explode", "0.6")
+    page.dispatch_event("#cut-explode", "input")
+    assert page.evaluate("window.__viewer.mesh.children[0].position.length()") > 0
+    if shots:
+        page.screenshot(path=os.path.join(shots, "cut-pieces.png"))
+    # cutting again with the same planes is instant
+    page.click("#cut-run")
+    page.wait_for_selector("text=Cut with these planes already: shown")
+    # each piece in its own file
+    page.click("#rail-export")
+    page.wait_for_selector('#export-which button[aria-pressed="true"]:has-text("Pieces")')
+    page.fill("#export-folder", str(tmp_path / "out"))
+    page.press("#export-folder", "Tab")
+    page.click("#export-run")
+    page.wait_for_selector("#export-done", timeout=60000)
+    assert "3 files in figure_pieces" in page.text_content("#export-done")
+    files = sorted(p.name for p in (tmp_path / "out" / "figure_pieces").iterdir())
+    assert files == ["figure_piece1.stl", "figure_piece2.stl", "figure_piece3.stl"]
+    # the cuts are remembered for the model (in the settings, saved as they change)
+    for _ in range(100):
+        plans = (app.service.call("prefs_get", {}).get("ds-ui") or {}).get("cutPlans") or {}
+        if len(plans.get(opened["id"], [])) == 2:
+            break
+        page.wait_for_timeout(50)
+    page.reload()
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    page.wait_for_selector("#rail-cut")
+    if not page.locator("#cut-tab").count():  # (it may be open already: the tab last saved; clicking it would fold it)
+        page.click("#rail-cut")
+    page.wait_for_selector("#cut-list")
+    assert page.locator("#cut-list li").count() == 2
+
+
+PLANE_CORNER = """() => {
+  const v = window.__viewer;
+  const g = v.cutGroup.children[0];
+  const size = g.children[0].geometry.parameters.width;
+  const at = g.localToWorld(new g.position.constructor(size * 0.42, size * 0.42, 0)).project(v.camera);
+  const r = v.canvas.getBoundingClientRect();
+  return [r.left + (at.x + 1) / 2 * r.width, r.top + (1 - at.y) / 2 * r.height];
+}"""
