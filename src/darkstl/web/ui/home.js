@@ -104,7 +104,7 @@ function FirstRun({ error }) {
   const games = (info().games || []).filter((g) => g !== "Other models");
   return html`<div class="pages"><div class="first-run" id="first-run">
     <h1>Add your games</h1>
-    <p>Dark STL lists the models in your FromSoftware and Resident Evil games by game and kind (weapons, armour, characters and more),
+    <p>Dark STL lists the models in your games (FromSoftware's, Cyberpunk 2077 and the Resident Evil games) by game and kind (weapons, armour, characters and more),
       shows them with their textures, and turns them into detailed meshes you can 3D print.</p>
     <p>Add a game's folder to start. Dark STL only reads it; nothing in it is changed. Once a game is listed, the models you want
       can be collected into the app, so the game's folder isn't needed afterwards.</p>
@@ -119,6 +119,7 @@ function FirstRun({ error }) {
       <p><b>The game's install folder, once unpacked.</b> Dark Souls Remastered keeps its models loose, so its install folder works as it is.
         Dark Souls II, Dark Souls III, Sekiro and Elden Ring pack them in archives: unpack those first with UXM Selective Unpacker
         (UDSFM for Dark Souls: Prepare to Die Edition). For Bloodborne, choose the folder of files extracted from the game.
+        For Cyberpunk 2077, choose its install folder as it is: the models are read from its archives (the first scan reads through them once), or choose a folder of files exported with WolvenKit.
         Resident Evil 2, 3, 4, 7 and Village (RE Engine) are read from the files a pak tool (REtool, ree-pak) extracts, or straight from
         the game's folder when its file list (a <code>.list</code> file from the modding community) is copied in beside the <code>.pak</code> archives.</p>
       <p><b>Or any folder of extracted files</b>, such as .partsbnd, .chrbnd, .objbnd, .flver, .mesh or .obj files you've pulled out with other tools.</p>

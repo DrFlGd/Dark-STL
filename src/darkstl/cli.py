@@ -172,6 +172,31 @@ def _export_options(args, model, mesh):
     return opts
 
 
+def _write_pieces(args, mesh) -> int:
+    """With --cut: the model cut into pieces, each written beside the output as <name>_pieceN.<ext>."""
+    from . import cut
+    from .export import ExportOptions, export_mesh
+
+    try:
+        settings = cut.CutSettings([cut.parse_cut(c, mesh) for c in args.cut])
+        for c in settings.cuts:
+            c.joint.clearance_mm = args.clearance
+        result = cut.cut_mesh(mesh, settings, _progress)
+    except (ValueError, RuntimeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    sys.stderr.write("\n")
+    for n in result.notes:
+        print(f"note: {n}", file=sys.stderr)
+    out = Path(args.output)
+    for piece in result.pieces:
+        slug = piece.name.lower().replace(" ", "")
+        path = export_mesh(cut.print_pose(piece), out.with_name(f"{out.stem}_{slug}{out.suffix}"),
+                           ExportOptions(scale=args.scale, ascii_stl=getattr(args, "ascii", False)))
+        print(f"Wrote {path} ({piece.mesh.n_faces:,} triangles, {piece.volume_mm3 / 1000:.2f} cm3)")
+    return 0
+
+
 def cmd_export(args) -> int:
     from .export import export_mesh
 
@@ -180,6 +205,8 @@ def cmd_export(args) -> int:
     if mesh.n_faces == 0:
         print(f"error: {model.name} has no triangles to export", file=sys.stderr)
         return 1
+    if args.cut:
+        return _write_pieces(args, mesh)
     path = export_mesh(mesh, args.output, _export_options(args, model, mesh))
     print(f"Wrote {path} ({mesh.n_vertices:,} vertices, {mesh.n_faces:,} triangles)")
     return 0
@@ -218,6 +245,8 @@ def cmd_enhance(args) -> int:
     sys.stderr.write("\n")
     for w in result.warnings:
         print(f"warning: {w}", file=sys.stderr)
+    if args.cut:
+        return _write_pieces(args, result.displaced)
     path = export_mesh(result.displaced, args.output, _export_options(args, model, result.displaced))
     st = result.stats()
     print(f"Wrote {path}: {st['vertices']:,} vertices, {st['faces']:,} triangles "
@@ -280,6 +309,11 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--scale", type=float, default=1000.0, help="unit scale (default 1000: metres -> mm)")
         sp.add_argument("--ascii", action="store_true", help="ASCII STL")
         sp.add_argument("--textures", action="append", help="extra folder to search for textures")
+        sp.add_argument("--cut", action="append", metavar="AXIS=MM[:JOINT]",
+                        help="cut into pieces across an axis at that many mm (or AXIS=50%%), with a joint: flat, pegs, "
+                             "dowels, magnets or key (default pegs); repeat for more cuts. Each piece is written as "
+                             "<output>_pieceN, laid on a cut face")
+        sp.add_argument("--clearance", type=float, default=0.2, help="gap in mm between parts of a joint (with --cut)")
 
     s = sub.add_parser("textures", help="save a model's textures as PNG")
     s.add_argument("file")

@@ -84,7 +84,22 @@ class ModelPath:
 
     @property
     def is_mesh(self) -> bool:
-        return bool(MESH_FILE.search(self.name))
+        return is_mesh_file(self.path, self.name) if not self.in_pak else bool(MESH_FILE.search(self.name))
+
+
+def is_mesh_file(path: Path, name: str | None = None) -> bool:
+    """Whether a file is an RE Engine mesh: by its versioned name (``x.mesh.221108797``), or for a bare
+    ``x.mesh`` (which other engines use too, Cyberpunk 2077 among them) by its magic."""
+    name = name or Path(path).name
+    if not MESH_FILE.search(name):
+        return False
+    if re.search(r"\.mesh\.\d+$", name, re.I):
+        return True
+    try:
+        with open(path, "rb") as f:
+            return meshfmt.is_mesh(f.read(4))
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -623,5 +638,5 @@ def _small_copy(path: Path) -> Path | None:
 
 
 __all__ = ["FileIndex", "ModelAsset", "ModelPath", "TexRef", "build_index", "exists", "file_stem", "find_mdf",
-           "find_texture", "forget", "index_for", "is_streaming", "load_model", "locate", "natives_root", "read_bytes",
+           "find_texture", "forget", "index_for", "is_mesh_file", "is_streaming", "load_model", "locate", "natives_root", "read_bytes",
            "related_files", "size_of", "split_name", "streaming_partner", "walk"]

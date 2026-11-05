@@ -70,7 +70,7 @@ class REEngineImporter(Importer):
         return list(getattr(self, "_notes", {}).get(str(folder), []))
 
     def can_open(self, path: Path) -> bool:
-        return bool(profiles.MESH_FILE.search(path.name))
+        return files.is_mesh_file(Path(path))
 
     def load(self, path: Path, variant: str | None = None, texture_dirs: tuple[str, ...] = ()) -> SourceModel:
         asset = files.load_model(path, texture_dirs)

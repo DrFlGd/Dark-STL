@@ -1,7 +1,7 @@
 # Dark STL
 
-Browse the models of Dark Souls, Bloodborne, Sekiro and Elden Ring (or any OBJ file), add the
-surface detail their textures describe, and export print-ready meshes.
+Browse the models of Dark Souls, Bloodborne, Sekiro, Elden Ring and Cyberpunk 2077 (or any OBJ
+file), add the surface detail their textures describe, and export print-ready meshes.
 
 ![A model enhanced in Dark STL](docs/images/model-page.png)
 
@@ -14,6 +14,9 @@ detail into real geometry in three steps:
    physical scale the texture implies.
 3. **Export** to STL, OBJ (with textures), PLY or GLB, in millimetres by default.
 
+Before exporting, the model can be **cut into pieces** for printing: planes placed in the 3D view
+split it into watertight pieces, joined by pegs, dowels, magnets or a key, with a clearance for each.
+
 See [docs/PLAN.md](docs/PLAN.md) for how each step works, the file formats, and the roadmap.
 
 ## Status
@@ -25,8 +28,8 @@ other games come next (Phase 1 of the plan).
 
 Importing is modular: each game family has its own importer, and everything after import
 (the explorer, the three steps, export) is shared. FromSoftware files (Dark Souls, Bloodborne,
-Dark Souls III, Sekiro, Elden Ring), Capcom RE Engine files (Resident Evil 2, 3, 4, 7 and
-Village, Devil May Cry 5) and Wavefront OBJ are supported today.
+Dark Souls III, Sekiro, Elden Ring), Cyberpunk 2077 files, Capcom RE Engine files (Resident Evil
+2, 3, 4, 7 and Village, Devil May Cry 5) and Wavefront OBJ are supported today.
 
 ## Install
 
@@ -65,6 +68,12 @@ encrypted archives directly.
 - **Sekiro and Elden Ring** compress with Oodle. Dark STL uses the `oo2core_6_win64.dll`
   that ships with the game. It is found automatically when the model files are inside the
   unpacked game folder; otherwise point to it in *Settings > Oodle* (or `--oodle`).
+- **Cyberpunk 2077:** add the game's install folder as it is. Its `.archive` files are read
+  directly (the first scan reads through them once to learn the models' names, and keeps
+  what it found), using the game's own `bin\x64\oo2ext_7_win64.dll` to decompress. A folder
+  of `.mesh` and `.xbm` files exported with WolvenKit (kept under their `base\...` paths)
+  works too, and the two can be mixed: a model's textures are looked up in the loose folder
+  first, then in the archives.
 - **Resident Evil (RE Engine):** either extract the game with a pak tool (REtool, ree-pak) and
   add the folder holding `natives/`, or add the game's install folder with the game's file
   list (a `.list` file from the RE Engine modding community, as those tools use) copied in
@@ -98,14 +107,25 @@ darkstl            # or darkstl-gui; darkstl gui --browser opens it in your brow
    the game folder they are (a map's texture packs, shared packs, another model's archive);
    *Model* lists its parts and options, *Textures* every texture found. A file that holds several
    models (a weapon and its sheath) has a switch at the top.
-4. **Generate** sets the vertex count (it shows the spacing that gives on this model) and where
-   the detail comes from, then makes the detailed model. Show *Original* or *Enhanced* under
-   the view: both stay loaded, so switching is instant. The last three models generated are
-   kept too, so generating again with settings you've already used is instant. Its two steps
-   are independent: the evened-out mesh from step 1 is kept, so trying other step-2 (displacement)
-   settings on it skips step 1 and only displaces again. Click the job
-   in the status bar (or Stop under the progress bar) to stop it.
-5. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default.
+4. **Mesh** evens out the vertices (step 1): set the count (it shows the spacing that gives on this
+   model) and the method, then *Even out the vertices*. The model is shown, not displaced yet, and
+   the mesh is kept while you work on the next two tabs.
+5. **Textures** also cleans up and upsamples the normal maps for displacement: pick the clean-up,
+   the upsampling and the factor, *Upscale*, and compare **Before / After** (drag the line, zoom
+   into single texels), then change the settings and upscale again until the detail looks right.
+6. **Displace** raises the texture detail on the evened-out mesh (step 2): the strength, a detail
+   texture for each material and the finer settings. Whatever the Mesh and Textures tabs haven't
+   made yet is made first. Show *Original* or *Enhanced* under the view: both stay loaded, so
+   switching is instant, and the last three models generated are kept too. Click **Stop** in the
+   status bar (or under a progress bar) to stop a job.
+7. **Cut** splits the model into pieces for printing. *Add a cut* across X, Y or Z (or facing you),
+   then drag the plane in the 3D view to slide it, drag its round handle to tilt it, or *Pick a
+   point* on the model. Each cut has its own joint: flat (to glue), pegs, dowels, magnet pockets
+   or a key shaped like the cut face, and its own clearance. The model is made solid first
+   (openings closed, open surfaces such as capes thickened), so every piece is watertight.
+   *Show › Pieces* shows them in colour, spread apart with a slider.
+8. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default; *Pieces* writes each piece
+   to its own file, laid on a cut face ready to print.
 
 ![A game's library](docs/images/library.png)
 
@@ -123,7 +143,8 @@ darkstl enhance chr/c2010.chrbnd.dcx -o c2010.stl -n 4000000 --strength 1.5 --sa
 Useful `enhance` options: `--method isotropic` for an exact count of uniform triangles,
 `--source height` to use a grayscale height map, `--flat` to skip rounding, `--green
 opengl|directx` if the relief comes out inverted, `--max-mm` to clamp displacement, and
-`--parts 0,2` to keep only some parts, and `--variant WP_A_0402_1.flver` to pick a model in a
+`--parts 0,2` to keep only some parts, `--cut z=40:pegs` (repeatable; `z=50%`, joints `flat`,
+`pegs`, `dowels`, `magnets`, `key`, and `--clearance 0.2`) to write the model as pieces, and `--variant WP_A_0402_1.flver` to pick a model in a
 file that holds several (see `info`). Run `darkstl <command> -h` for all.
 
 ## Development

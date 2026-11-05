@@ -21,9 +21,10 @@ VTK_KEEP = {"util", "numpy_interface", "vtkCommonCore", "vtkCommonDataModel", "v
 VTK_CUT = [f"vtkmodules.{m.name}" for m in pkgutil.iter_modules(vtkmodules.__path__) if m.name not in VTK_KEEP]
 EXCLUDES = ["pyvista.plotting", "pyvista.trame", "pyvista.examples", "pyvista.demos", "pyvista.ext", "matplotlib", "tkinter", "webview", "PySide6", "PyQt5", "PyQt6", "IPython", "pytest", *VTK_CUT]
 
-# pyamg (the multigrid solver for integrating normal maps on the mesh) and ONNX Runtime (optional
-# AI upscaling models, DirectML build on Windows) are imported only when used, so name them here.
-OPTIONAL = [m for m in ("pyamg", "onnxruntime") if importlib.util.find_spec(m)]
+# pyamg (the multigrid solver for integrating normal maps on the mesh), ONNX Runtime (optional
+# AI upscaling models, DirectML build on Windows) and manifold3d (cutting models into pieces) are
+# imported only when used, so name them here.
+OPTIONAL = [m for m in ("pyamg", "onnxruntime", "manifold3d") if importlib.util.find_spec(m)]
 a = Analysis([str(HERE / "main.py")], datas=collect_data_files("darkstl"),
              hiddenimports=collect_submodules("darkstl") + [x for m in OPTIONAL for x in collect_submodules(m)],
              excludes=EXCLUDES)

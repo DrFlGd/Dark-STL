@@ -92,6 +92,32 @@ def test_ai_upscaling_keeps_the_textures_broad_shape(tmp_path):
     assert abs(float(p_ai.mean() - p_ref.mean())) < 0.005
 
 
+def test_a_map_made_ready_gives_the_same_displacement_as_making_it_inline():
+    from darkstl.geometry.subdivide import edge_length_for_vertex_count
+
+    model = bench.source_model(bench.panel_mesh(32), bench.normal_texture(bench.scene_bumps(32)))
+    s = pipeline.EnhanceSettings(target_vertices=8000, smooth=0.0, upsample="guided", upsample_factor=2)
+    inline = pipeline.enhance(model, s)
+    source = model.build_mesh(s.mesh_options)
+    (dm,) = pipeline.detail_maps(model, source, model.materials, s)
+    spacing = edge_length_for_vertex_count(source.surface_area(), 8000)
+    img = model.textures[dm.key].decode()
+    up = pipeline.upscale_normal_map(model, model.materials[dm.materials[0]], img, dm.all_uv, dm.green, dm.texel,
+                                     spacing, s, dm.key, dm.codec)
+    assert up.factor == 2 and up.p.shape == (64, 64) and up.normal_map().shape == (64, 64, 4)
+    assert up.normal_map(False, (0, 8, 0, 8)).shape == (8, 8, 4)
+    # drawn back as a normal map, the texture's own slopes give the texture back (its slope bias aside)
+    back = up.normal_map(upscaled=False)
+    assert np.abs(back[..., :2].astype(int) - img[..., :2].astype(int)).mean() < 3
+    ready = pipeline.enhance(model, s, prepared={dm.key: up})
+    assert np.allclose(ready.displaced.vertices, inline.displaced.vertices)
+    assert ready.fields[0].steps == inline.fields[0].steps and any("2x" in x for x in ready.fields[0].steps)
+    # the factor asked for wins over what the spacing needs
+    four = pipeline.EnhanceSettings(target_vertices=8000, smooth=0.0, upsample="guided", upsample_factor=4)
+    assert pipeline.plan_upscale(four, dm.texel, spacing, dm.codec, 32, 32) == (4, None)
+    assert pipeline.plan_upscale(pipeline.EnhanceSettings(upsample="off"), dm.texel, spacing, dm.codec, 32, 32) == (1, None)
+
+
 def test_bundled_model_is_picked_by_compression(tmp_path, monkeypatch):
     import json
 
