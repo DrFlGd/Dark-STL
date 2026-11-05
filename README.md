@@ -14,6 +14,9 @@ detail into real geometry in three steps:
    physical scale the texture implies.
 3. **Export** to STL, OBJ (with textures), PLY or GLB, in millimetres by default.
 
+Before exporting, the model can be **cut into pieces** for printing: planes placed in the 3D view
+split it into watertight pieces, joined by pegs, dowels, magnets or a key, with a clearance for each.
+
 See [docs/PLAN.md](docs/PLAN.md) for how each step works, the file formats, and the roadmap.
 
 ## Status
@@ -99,7 +102,14 @@ darkstl            # or darkstl-gui; darkstl gui --browser opens it in your brow
    made yet is made first. Show *Original* or *Enhanced* under the view: both stay loaded, so
    switching is instant, and the last three models generated are kept too. Click **Stop** in the
    status bar (or under a progress bar) to stop a job.
-7. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default.
+7. **Cut** splits the model into pieces for printing. *Add a cut* across X, Y or Z (or facing you),
+   then drag the plane in the 3D view to slide it, drag its round handle to tilt it, or *Pick a
+   point* on the model. Each cut has its own joint: flat (to glue), pegs, dowels, magnet pockets
+   or a key shaped like the cut face, and its own clearance. The model is made solid first
+   (openings closed, open surfaces such as capes thickened), so every piece is watertight.
+   *Show › Pieces* shows them in colour, spread apart with a slider.
+8. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default; *Pieces* writes each piece
+   to its own file, laid on a cut face ready to print.
 
 ![A game's library](docs/images/library.png)
 
@@ -117,7 +127,8 @@ darkstl enhance chr/c2010.chrbnd.dcx -o c2010.stl -n 4000000 --strength 1.5 --sa
 Useful `enhance` options: `--method isotropic` for an exact count of uniform triangles,
 `--source height` to use a grayscale height map, `--flat` to skip rounding, `--green
 opengl|directx` if the relief comes out inverted, `--max-mm` to clamp displacement, and
-`--parts 0,2` to keep only some parts, and `--variant WP_A_0402_1.flver` to pick a model in a
+`--parts 0,2` to keep only some parts, `--cut z=40:pegs` (repeatable; `z=50%`, joints `flat`,
+`pegs`, `dowels`, `magnets`, `key`, and `--clearance 0.2`) to write the model as pieces, and `--variant WP_A_0402_1.flver` to pick a model in a
 file that holds several (see `info`). Run `darkstl <command> -h` for all.
 
 ## Development

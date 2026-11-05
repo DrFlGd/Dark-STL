@@ -190,6 +190,49 @@ used, so the side stays straight instead of swelling into a bulge. This is on by
   along their seams as well as possible, and what still differs is faded smoothly into each
   island over a few vertex spacings.
 
+### Cutting into pieces (before export)
+
+A model too big for the printer, or with parts that print better apart, is cut on the **Cut** tab
+(`cut.py`, on [manifold3d](https://github.com/elalish/manifold), whose booleans are exact and always
+give closed meshes).
+
+- **Made solid first.** A plane through an open shell has no inside to close, and game meshes are
+  open shells with overlapping parts. So the model (the enhanced one, or the original) is welded,
+  duplicate triangles are dropped (two-sided cloth is often one side and its mirror), and each
+  connected part is taken in turn: already closed, it is used as it is; with small openings (fill
+  area under 30 % of the part's), each opening is closed with a fan; an open surface (a cape) is
+  thickened inwards by *Open surfaces* (1.2 mm); anything still broken (edges shared by three
+  faces) is rebuilt from voxels as a last resort. The parts are then united into one solid. The
+  solid is kept, so moving a cut only cuts again.
+- **Cuts.** Each cut is a plane (a normal and a point, in model millimetres) split exactly through
+  every piece it crosses. In the 3D view a plane is a translucent square through the model's middle;
+  dragging it slides it along its normal (the closest point between the pointer's ray and the
+  normal's line), dragging its round handle tilts it (the handle follows the pointer over a plane
+  facing the camera), and *Pick a point* moves it through a clicked point. The tab has the same as
+  a position slider, tilt and turn angles, and X / Y / Z / *Facing me* presets.
+- **Joints**, per cut, each with its own **clearance** (the gap on each side between parts that
+  fit together):
+
+  | Joint | What it makes |
+  | --- | --- |
+  | Flat | The faces as they are, to glue |
+  | Pegs | Pegs on the side the normal points to (or the other), holes wider by 2 × clearance and deeper by the clearance on the other |
+  | Dowels | Holes on both sides, and dowel pieces of the exact diameter (or none, for bought pins or filament) |
+  | Magnets | Round pockets on both sides for disc magnets, wider and deeper by the clearance |
+  | Key | A tongue shaped like the cut face inset by the wall, into a groove inset by the wall less the clearance: the pieces only fit one way |
+
+  The cut face is sliced (the solid turned into the plane's frame) and each island of it (a leg, a
+  sleeve) gets its own features: round ones go where a grid of candidates inside the face, inset by
+  the radius and the *Wall around joints* (1.6 mm), is deepest, or (two or more) as far apart as
+  they can be. A feature that would break through the far side of a piece (tested by intersecting a
+  slightly fatter probe with the piece) is shortened, tried in the middle alone, or left out, and the
+  tab says how many places were left flat.
+- **Results.** The pieces (top down, then dowels) are kept like generated models (the last three
+  sets) and shown in colour under *Show › Pieces*, spread apart with a slider. Export writes each
+  to its own file in a `<name>_pieces` folder, laid on its biggest flat cut face without pegs or a
+  tongue on it, centred on the bed. On the command line, `--cut AXIS=MM[:JOINT]` (or `AXIS=50%`)
+  and `--clearance` do the same for `export` and `enhance`.
+
 ### Step 3: export
 
 | Format | Content |
@@ -221,6 +264,7 @@ src/darkstl/
   collect.py    copies the files chosen models need into the app's own library folder
   thumbnails.py preview pictures for the library's cards, cached on disk
   pipeline.py   the three steps with their settings
+  cut.py        the model made solid and cut into pieces with joints (manifold3d)
   export.py     STL, OBJ, PLY, GLB writers
   cli.py        command line
   app/          the desktop app: service.py (the page's commands), server.py (local web
@@ -268,7 +312,10 @@ differs:
 ### Phase 2: print-ready output
 
 - [ ] Watertight option: game meshes are open shells with overlapping parts, so add a
-      solidify step (voxel or winding-number remesh) that outputs one closed manifold
+      solidify step (voxel or winding-number remesh) that outputs one closed manifold. Cut
+      pieces are watertight since 0.9.0 (openings closed, open surfaces thickened, parts
+      united); the same could be offered for the whole model
+- [x] Cut into pieces with joints (flat, pegs, dowels, magnets, key) and a clearance per cut
 - [ ] Thin-part thickening for blades and capes
 - [x] Per-material strength and on/off in the material list
 - [x] Use detail normal maps as well as the main normal map (blend maps still to do)
@@ -299,7 +346,8 @@ differs:
 
 - Of the real game files, Dark Souls Remastered weapons and Bloodborne characters, objects and
   armour have been loaded so far (Phase 1).
-- Output is not guaranteed watertight; most slicers repair it, but Phase 2 adds a proper fix.
+- Output is not guaranteed watertight (pieces cut on the Cut tab are); most slicers repair it,
+  but Phase 2 adds a proper fix.
 - Without an anibnd beside the model, skinned meshes (characters, armor) are shown in their
   bind pose, which is a T or A pose. Armour pieces take the player's animations
   (`c0000.anibnd`) only when that archive is copied next to them.

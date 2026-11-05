@@ -169,6 +169,8 @@ class Session:
     result_id: str = ""  # names the result for the page, which keeps the meshes it has shown
     mesh_key: tuple | None = None
     mesh: TriMesh | None = None
+    cut: Any = None  # CutResult: the pieces last cut from this model
+    cut_id: str = ""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def build(self, options: MeshOptions) -> TriMesh:
@@ -265,6 +267,8 @@ class Service:
     KEEP_MESHES = 2  # evened-out meshes kept, so other displacement settings are tried without making them again
     KEEP_UPSCALED = 8  # normal maps made ready (cleaned up, upsampled) kept, within KEEP_UPSCALED_BYTES
     KEEP_UPSCALED_BYTES = 768 << 20
+    KEEP_CUTS = 3  # cut models kept, so going back to a set of cuts is instant
+    KEEP_SOLIDS = 1  # the model made solid (big), so moving a cut doesn't make it solid again
 
     def __init__(self, config: Config, cache: Path, host: Host | None = None):
         self.config = config
@@ -283,6 +287,8 @@ class Service:
         self.generated: OrderedDict[tuple, Any] = OrderedDict()  # EnhanceResult by generated_key(), newest last
         self.meshes: OrderedDict[tuple, Any] = OrderedDict()  # step 1's evened-out meshes (Resampled) by mesh_key()
         self.upscaled: OrderedDict[tuple, Any] = OrderedDict()  # normal maps made ready (UpscaledMap) by _upscale_key()
+        self.cuts: OrderedDict[tuple, Any] = OrderedDict()  # CutResult by the model cut and the cut settings
+        self.solids: OrderedDict[tuple, Any] = OrderedDict()  # cut.Solid by the model made solid and the sheet thickness
         if config.oodle:
             self._use_oodle(config.oodle)
 
@@ -309,6 +315,7 @@ class Service:
                          "available": acvd_available(), "missing": "needs pyacvd"}],
             "open_patterns": _dialog_patterns(),
             "fast_solver": _importable("pyamg"),
+            "cutting": _importable("manifold3d"),
             "ai_runtime": _importable("onnxruntime"),
             "first_run": not self.config.game_folders,
             "dialogs": bool(self.host.dialogs),
@@ -735,7 +742,8 @@ class Service:
         mesh = session.build(MeshOptions())
         out = model_json(session.model, mesh)
         out.update({"sid": sid, "id": model_id, "entry": entry_json(entry) if entry else None,
-                    "enhanced": self._result_json(session) if session.result is not None else None})
+                    "enhanced": self._result_json(session) if session.result is not None else None,
+                    "cut": self._cut_json(session) if session.cut is not None else None})
         return out
 
     def _session(self, args: dict) -> Session:
@@ -770,6 +778,11 @@ class Service:
             if session.result is None:
                 raise AppError("This model hasn't been generated yet.")
             return pack_mesh(session.result.displaced, uv, extra={"which": "enhanced"})
+        if args.get("which") == "pieces":
+            if session.cut is None:
+                raise AppError("This model hasn't been cut yet.")
+            pieces = [{"name": p.name, "kind": p.kind, "center": p.stats()["center_mm"]} for p in session.cut.pieces]
+            return pack_mesh(session.cut.combined(), False, extra={"which": "pieces", "pieces": pieces})
         return pack_mesh(session.build(mesh_options(_parse_lists(args))), uv, extra={"which": "original"})
 
     def cmd_texture(self, args: dict) -> bytes:
@@ -1049,7 +1062,13 @@ class Service:
         for key, result in reversed(kept):
             if key[:2] == (session.sid, file):
                 session.result, session.result_id = result, _key_id(key)
-                return
+                break
+        with self.lock:
+            cuts = list(self.cuts.items())
+        for key, result in reversed(cuts):
+            if key[:2] == (session.sid, file):
+                session.cut, session.cut_id = result, _key_id(key)
+                break
 
     def _result_json(self, session: Session) -> dict:
         r = session.result
@@ -1066,6 +1085,8 @@ class Service:
     def cmd_export(self, args: dict) -> dict:
         session = self._session(args)
         which = args.get("which", "enhanced")
+        if which == "pieces":
+            return self._export_pieces(session, args)
         if which == "enhanced":
             if session.result is None:
                 raise AppError("Generate the enhanced model first, or export the original.")
@@ -1099,6 +1120,108 @@ class Service:
             self.generated.clear()
             self.meshes.clear()
             self.upscaled.clear()
+            self.cuts.clear()
+            self.solids.clear()
+
+    # ------------------------------------------------------------ cutting into pieces
+
+    def _cut_source(self, session: Session, args: dict) -> tuple[TriMesh, tuple]:
+        """The model the Cut tab cuts, and what it depends on: the enhanced model shown, or the original
+        with the parts, options and pose chosen."""
+        if args.get("from", "enhanced") == "enhanced":
+            if session.result is None:
+                raise AppError("Make the enhanced model first (Mesh or Displace tab), or cut the original.")
+            return session.result.displaced, ("enhanced", session.result_id)
+        options = mesh_options(args)
+        return session.build(options), ("original", _options_key(options))
+
+    def cmd_cut(self, args: dict) -> dict:
+        """Cut the model into pieces along the planes given, with each cut's joint (a job). The model made solid
+        and each set of cuts are kept, so moving one cut only cuts again, and going back to one is instant."""
+        from .. import cut as cutting
+
+        if not cutting.available():
+            raise AppError("Cutting needs the manifold3d package, which this copy of the app doesn't have.")
+        session = self._session(args)
+        data = args.get("cut") or {}
+        try:
+            settings = cutting.settings_from_json(data)
+        except (ValueError, KeyError, TypeError) as e:
+            raise AppError(f"These cuts can't be read: {e}") from None
+        if not settings.cuts:
+            raise AppError("Add a cut first.")
+        mesh, source = self._cut_source(session, args)
+        file = _file_id(session.model.path)
+        skey = (session.sid, file, source, settings.sheet_mm)
+        key = (*skey, json.dumps(data, sort_keys=True, default=str))
+        with self.lock:
+            kept = self.cuts.get(key)
+            solid = self.solids.get(skey)
+
+        def run(job: Job):
+            result = kept
+            if result is None:
+                made = solid
+                if made is None:
+                    made = cutting.make_solid(mesh, settings.sheet_mm, lambda f, m: job.report(0.6 * f, m))
+                    job.check()
+                    with self.lock:
+                        self.solids[skey] = made
+                        while len(self.solids) > self.KEEP_SOLIDS:
+                            self.solids.popitem(last=False)
+                start = 0.6 if solid is None else 0.0
+                result = cutting.cut_solid(made, settings, lambda f, m: job.report(start + (1 - start) * f, m))
+                job.check()
+                with self.lock:
+                    self.cuts[key] = result
+                    self.cuts.move_to_end(key)
+                    while len(self.cuts) > self.KEEP_CUTS:
+                        self.cuts.popitem(last=False)
+            session.cut, session.cut_id = result, _key_id(key)
+            return {**self._cut_json(session), "kept": kept is not None, "solid_reused": solid is not None}
+
+        name = session.model.variant or session.model.name
+        return {"job": self.jobs.start(f"Cutting {name}", run, stoppable=True).id}
+
+    def _cut_json(self, session: Session) -> dict:
+        r = session.cut
+        return {"id": session.cut_id, "pieces": [{**p.stats(), "index": i} for i, p in enumerate(r.pieces)],
+                "notes": list(r.notes), "joints": list(r.joints)}
+
+    def cmd_cut_state(self, args: dict) -> dict:
+        """The pieces last cut from this model, if any are kept."""
+        session = self._session(args)
+        return self._cut_json(session) if session.cut is not None else {"id": "", "pieces": []}
+
+    def _export_pieces(self, session: Session, args: dict) -> dict:
+        from .. import cut as cutting
+
+        if session.cut is None:
+            raise AppError("Cut the model first (Cut tab).")
+        ext = str(args.get("format") or ".stl").lower()
+        if ext not in FORMATS:
+            raise AppError(f"Can't export {ext} files.")
+        scale = UNITS.get(str(args.get("units") or "mm"), 1000.0)
+        parent = Path(args.get("folder") or self.config.export_folder)
+        base = _safe_name(str(args.get("name") or Path(session.model.variant or session.model.name).stem))
+        lay_flat = bool(args.get("lay_flat", True))
+        pieces = list(session.cut.pieces)
+
+        def run(job: Job):
+            folder = _free_name(parent / f"{base}_pieces")
+            folder.mkdir(parents=True, exist_ok=True)
+            paths, total = [], 0
+            for i, piece in enumerate(pieces):
+                job.report(i / len(pieces), f"Writing {piece.name}")
+                job.check()
+                mesh = cutting.print_pose(piece) if lay_flat else piece.mesh
+                slug = piece.name.lower().replace(" ", "")
+                path = export_mesh(mesh, folder / f"{base}_{slug}{ext}", ExportOptions(scale=scale))
+                paths.append(str(path))
+                total += path.stat().st_size
+            return {"path": str(folder), "files": paths, "bytes": total}
+
+        return {"job": self.jobs.start(f"Exporting {len(pieces)} pieces of {base}", run, stoppable=True).id}
 
 
 def _collection_json(path: Path, data: dict) -> dict:
