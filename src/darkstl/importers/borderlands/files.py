@@ -285,7 +285,7 @@ def _elsewhere(pkg: upk.Package, path: str, cls: str | None) -> tuple[upk.Packag
         opkg = upk.open_package(hit[0])
     except (FormatError, OSError):
         return None
-    e = opkg.find_export(hit[1], cls)
+    e = opkg.find_export(hit[1], cls) or opkg.find_export(hit[1])  # a material may be of another material class
     return (opkg, e) if e is not None else None
 
 
