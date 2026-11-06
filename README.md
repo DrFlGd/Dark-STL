@@ -85,14 +85,15 @@ neither.
 - **Resident Evil (RE Engine):** add the game's install folder as it is: Dark STL reads the
   models straight from its `.pak` archives. Paks only store hashes of the file names; the
   names come from the community file lists Dark STL ships (Ekey's, from
-  [REE.PAK.Tool](https://github.com/Ekey/REE.PAK.Tool), cut to meshes, textures and
-  materials) for Resident Evil 2, 3, 7 (both the ray-tracing and the original releases), 4,
+  [REE.PAK.Tool](https://github.com/Ekey/REE.PAK.Tool), cut to meshes, textures,
+  materials and animations) for Resident Evil 2, 3, 7 (both the ray-tracing and the original releases), 4,
   Village and Devil May Cry 5. After a game update, a newer `.list` file put in the game's
   folder is read too. A folder extracted with a pak tool (REtool, ree-pak), holding
   `natives/`, works as well.
   Models are `.mesh` files with their materials in a `.mdf2` and textures in `.tex` files;
   the full-size textures and the most detailed geometry of newer games (Resident Evil 4) sit
-  under `natives/stm/streaming/` and are used when present. Games whose archives are
+  under `natives/stm/streaming/` and are used when present. Characters can be posed on the
+  Pose tab with the game's `.motlist` animations filed under their id (`pl0000`, `cha0`...). Games whose archives are
   encrypted (Monster Hunter Wilds and later) need extracting first; their GDeflate textures
   are not read yet.
 

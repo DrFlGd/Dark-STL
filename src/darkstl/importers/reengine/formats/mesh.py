@@ -160,6 +160,13 @@ class ReMesh:
     uv_count: int
     streamed_count: int  # streamed buffers the file refers to
     streamed_found: bool
+    skin_bones: list[int] = field(default_factory=list)  # bone index per joint number the weights use
+
+    @property
+    def joint_count(self) -> int:
+        """Bone indices per vertex in the weights: 6 packed 10-bit ones in Street Fighter 6, Monster Hunter
+        Wilds and Pragmata, 8 bytes in every other game."""
+        return 6 if self.era in (ERA_SF6, ERA_WILDS, ERA_PRAG) else 8
 
     @property
     def game(self) -> str | None:
@@ -198,6 +205,8 @@ class SubMeshData:
     normals: np.ndarray | None  # (n, 3) float32
     uvs: np.ndarray | None  # (n, 2) float32
     triangles: np.ndarray  # (m, 3) int64, into positions
+    joints: np.ndarray | None = None  # (n, k) int64 bone indices (into ReMesh.bones), -1 for none
+    weights: np.ndarray | None = None  # (n, k) float32, summing to 1 for a skinned vertex
 
 
 # ---------------------------------------------------------------------------
@@ -396,13 +405,15 @@ def _read_names(r: Reader, h: dict) -> list[str]:
     return [r.cstring(o) for o in offsets]
 
 
-def _read_bones(r: Reader, h: dict, names: list[str]) -> list[Bone]:
+def _read_bones(r: Reader, h: dict, names: list[str]) -> tuple[list[Bone], list[int]]:
+    """The bones, and the bone index of each joint number the vertex weights refer to."""
     if not h.get("skeleton"):
-        return []
+        return [], []
     r.seek(h["skeleton"])
     bone_count, remap_count = r.unpack("2I")
     r.u64()
     bone_offset, local_offset, _world_offset, _inverse_offset = r.unpack("4Q")
+    skin = list(r.unpack(f"{remap_count}h")) if 0 < remap_count <= bone_count else []
     bone_names: list[str] = []
     if h.get("bone_names"):
         r.seek(h["bone_names"])
@@ -412,8 +423,9 @@ def _read_bones(r: Reader, h: dict, names: list[str]) -> list[Bone]:
     info = [r.unpack("H7h") for _ in range(bone_count)]
     r.seek(local_offset)
     locals_ = [np.array(r.unpack("16f"), np.float32).reshape(4, 4) for _ in range(bone_count)]
-    return [Bone(bone_names[i] if i < len(bone_names) else f"bone{i}", info[i][1], locals_[i])
-            for i in range(bone_count)]
+    bones = [Bone(bone_names[i] if i < len(bone_names) else f"bone{i}", info[i][1], locals_[i])
+             for i in range(bone_count)]
+    return bones, [b if 0 <= b < bone_count else -1 for b in skin]
 
 
 # ---------------------------------------------------------------------------
@@ -440,11 +452,32 @@ def read_mesh(data: bytes, version: int | None = None, streaming: bytes | None =
         r.seek(h["material_names"])
         remap = [r.u16() for _ in range(material_count)]
         material_names = [names[i] if i < len(names) else f"material{i}" for i in remap]
-    bones = _read_bones(r, h, names)
-    return ReMesh(version, era, lods, buffers, material_names, bones, index_32, bmin, bmax, uv_count, streamed, found)
+    bones, skin_bones = _read_bones(r, h, names)
+    return ReMesh(version, era, lods, buffers, material_names, bones, index_32, bmin, bmax, uv_count, streamed, found,
+                  skin_bones)
 
 
-def _decode_streams(buffer: VertexBuffer) -> dict:
+def _decode_weights(buffer: VertexBuffer, n: int, kind: int, joint_count: int,
+                    skin_bones: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+    """(n, k) bone indices and raw weights of one weights element: per vertex 8 bytes of joint numbers
+    (or two 32-bit words of three 10-bit ones) then 8 weight bytes."""
+    s = buffer.stream(kind, n)
+    if not s or s[1] < 16 or len(s[0]) < n * s[1]:
+        return None
+    raw = np.frombuffer(s[0], np.uint8, count=n * s[1]).reshape(n, s[1])
+    if joint_count == 6:
+        words = raw[:, :8].copy().view("<u4").astype(np.int64)
+        joints = np.stack([(words[:, w] >> shift) & 0x3FF for w in (0, 1) for shift in (0, 10, 20)], axis=1)
+    else:
+        joints = raw[:, :8].astype(np.int64)
+    weights = raw[:, 8:8 + joint_count].astype(np.float32) / 255.0
+    bones = np.where(joints < len(skin_bones), skin_bones[np.clip(joints, 0, max(len(skin_bones) - 1, 0))], -1) \
+        if len(skin_bones) else np.full_like(joints, -1)
+    weights = np.where(bones >= 0, weights, 0.0).astype(np.float32)
+    return bones, weights
+
+
+def _decode_streams(buffer: VertexBuffer, joint_count: int = 8, skin_bones: np.ndarray | None = None) -> dict:
     n = buffer.vertex_count()
     out: dict = {"count": n}
     pos = buffer.stream(EL_POSITION, n)
@@ -458,6 +491,16 @@ def _decode_streams(buffer: VertexBuffer) -> dict:
     out["uvs"] = None
     if uv and len(uv[0]) >= n * 4:
         out["uvs"] = np.frombuffer(uv[0], "<f2", count=n * 2).reshape(n, 2).astype(np.float32)
+    out["joints"] = out["weights"] = None
+    skin = np.asarray(skin_bones if skin_bones is not None else [], np.int64)
+    parts = [w for w in (_decode_weights(buffer, n, k, joint_count, skin) for k in (EL_WEIGHT, EL_EXTRA_WEIGHT))
+             if w is not None]
+    if parts:
+        joints = np.concatenate([p[0] for p in parts], axis=1)
+        weights = np.concatenate([p[1] for p in parts], axis=1)
+        total = weights.sum(axis=1, keepdims=True)
+        out["joints"] = np.where(weights > 0, joints, -1)
+        out["weights"] = np.where(total > 0, weights / np.where(total > 0, total, 1), 0).astype(np.float32)
     return out
 
 
@@ -478,7 +521,7 @@ def submeshes(mesh: ReMesh, lod_index: int | None = None) -> list[SubMeshData]:
                 continue
             buf = mesh.buffers[sub.vertex_buffer]
             if sub.vertex_buffer not in decoded:
-                decoded[sub.vertex_buffer] = _decode_streams(buf)
+                decoded[sub.vertex_buffer] = _decode_streams(buf, mesh.joint_count, np.asarray(mesh.skin_bones, np.int64))
             streams = decoded[sub.vertex_buffer]
             start = sub.face_start * index_size
             count = (sub.face_count // 3) * 3
@@ -499,7 +542,9 @@ def submeshes(mesh: ReMesh, lod_index: int | None = None) -> list[SubMeshData]:
             out.append(SubMeshData(
                 gi, sub.material_index, np.ascontiguousarray(streams["positions"][used]),
                 np.ascontiguousarray(streams["normals"][used]) if streams["normals"] is not None else None,
-                np.ascontiguousarray(streams["uvs"][used]) if streams["uvs"] is not None else None, tris))
+                np.ascontiguousarray(streams["uvs"][used]) if streams["uvs"] is not None else None, tris,
+                streams["joints"][used] if streams["joints"] is not None else None,
+                streams["weights"][used] if streams["weights"] is not None else None))
     return out
 
 

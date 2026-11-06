@@ -14,10 +14,11 @@ from pathlib import Path
 import numpy as np
 
 from ...collect import RelatedFile
+from ...errors import FormatError
 from ...geometry.mesh import TriMesh, weld
 from ...model import CatalogEntry, MeshOptions, Part, SourceModel, Texture
 from ..base import Importer, ScanProgress
-from . import catalog, files, materials
+from . import animation, catalog, files, materials
 from . import games as profiles
 from .formats import mdf as mdffmt
 from .formats import mesh as meshfmt
@@ -90,16 +91,30 @@ class REEngineImporter(Importer):
         if not subs:
             notes.append(f"{asset.name} has no geometry.")
         game = mesh.game or profiles.detect_game(Path(path).parent)
+        skinned = mesh.bones and any(s.joints is not None for s in subs)
+        motion_files = files.find_motion_lists(Path(path)) if skinned else []
+        anims = animation.REAnimations(mesh.bones, motion_files, self.cache / "motions" if self.cache else None) \
+            if motion_files else None
 
         def build(options: MeshOptions) -> TriMesh:
             chosen = [(i, s) for i, s in enumerate(subs) if options.parts is None or i in options.parts]
             if not chosen:
                 return TriMesh(np.zeros((0, 3)), np.zeros((0, 3), np.int64), np.zeros((0, 3, 2), np.float32))
+            skin = None
+            if options.pose is not None:
+                if anims is None:
+                    raise FormatError(f"{asset.name} has no animations to pose it with")
+                anim, frame = options.pose
+                skin = anims.skin_matrices(anim, anims.clamp(anim, frame))
             positions, normals, faces, uvs, mats, groups = [], [], [], [], [], []
             offset = 0
             for i, s in chosen:
-                positions.append(s.positions.astype(np.float64))
-                normals.append(s.normals.astype(np.float64) if s.normals is not None else np.zeros_like(positions[-1]))
+                pos = s.positions.astype(np.float64)
+                nor = s.normals.astype(np.float64) if s.normals is not None else None
+                if skin is not None and s.joints is not None:
+                    pos, nor = animation.skin(pos, nor, s.joints, s.weights, skin)
+                positions.append(pos)
+                normals.append(nor if nor is not None else np.zeros_like(pos))
                 faces.append(s.triangles + offset)
                 uv = s.uvs if s.uvs is not None else np.zeros((len(s.positions), 2), np.float32)
                 uvs.append(uv[s.triangles])
@@ -130,7 +145,7 @@ class REEngineImporter(Importer):
             name=asset.name, path=Path(path), importer=self.key, build=build, game=game, parts=parts,
             materials=[materials.to_material(i) for i in infos],
             textures={k: _texture(ref) for k, ref in asset.textures.items()},
-            info=info, notes=notes,
+            info=info, notes=notes, animations=anims,
         )
 
     def describe(self, path: Path) -> list[str] | None:
@@ -162,7 +177,10 @@ class REEngineImporter(Importer):
     def related_files(self, path: Path, textures: bool = True, animations: bool = True,
                       lod: bool = False) -> list[RelatedFile]:
         out = []
-        for p, kind in files.related_files(Path(path), textures):
+        pairs = files.related_files(Path(path), textures)
+        if animations:
+            pairs += [(p, "animation") for p in self._motion_files(Path(path))]
+        for p, kind in pairs:
             found = files.locate(p)
             if found is None:
                 out.append(RelatedFile(p, kind))
@@ -170,6 +188,19 @@ class REEngineImporter(Importer):
                 pak, entry = found
                 out.append(RelatedFile(p, kind, entry.name or p.name, lambda pk=pak, e=entry: pk.read(e), entry.size))
         return out
+
+    def _motion_files(self, path: Path) -> list[Path]:
+        """The motion files that hold animations for a model (none when it has no skinned parts)."""
+        try:
+            mesh = files.load_model(path).mesh
+        except FormatError:
+            return []
+        if not mesh.bones:
+            return []
+        found = files.find_motion_lists(path)
+        if not found:
+            return []
+        return animation.REAnimations(mesh.bones, found, self.cache / "motions" if self.cache else None).files_used()
 
     @staticmethod
     def texture_file(path: Path) -> dict[str, Texture]:

@@ -1,6 +1,7 @@
 """The RE Engine importer: its format readers, a fake game folder (extracted and packed), the library,
 the app's engine, previews and Collect."""
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -352,8 +353,8 @@ def test_a_pak_without_a_file_list_says_so(re2_pak_dir):
 
 
 def test_the_bundled_file_lists_name_a_games_paks(tmp_path):
-    """No .list in the folder: the lists that come with Dark STL (Ekey's, cut to meshes, textures
-    and materials) name the game's pak entries."""
+    """No .list in the folder: the lists that come with Dark STL (Ekey's, cut to meshes, textures,
+    materials and animations) name the game's pak entries."""
     import gzip
 
     from darkstl.importers.reengine import games
@@ -362,7 +363,8 @@ def test_the_bundled_file_lists_name_a_games_paks(tmp_path):
         assert games.bundled_lists(g.name), g.name
     listed = [n for f in games.bundled_lists("Resident Evil 2") for n in gzip.decompress(f.read_bytes()).decode().splitlines()]
     name = next(n for n in listed if n.lower().endswith(".mesh.1808312334"))
-    assert all(".mesh." in n or ".tex." in n or ".mdf2." in n for n in listed[:2000])
+    assert all(re.search(r"\.(mesh|tex|mdf2|motlist|mot)\.", n) for n in listed[:2000])
+    assert any(".motlist." in n for n in listed)
     root = tmp_path / "RESIDENT EVIL 2  BIOHAZARD RE2"
     root.mkdir()
     (root / "re2.exe").write_bytes(b"MZ")
