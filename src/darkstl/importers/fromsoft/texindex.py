@@ -168,11 +168,9 @@ def _names(data: bytes) -> list[str]:
 
 def walk(root: Path) -> list[Path]:
     """Every file under ``root``, folders in name order."""
-    out = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames.sort()
-        out += [Path(dirpath) / n for n in sorted(filenames)]
-    return out
+    from ...listing import files_under
+
+    return list(files_under(root))
 
 
 def build(root: str | os.PathLike, paths: Iterable[Path] | None = None, cache: Path | None = None,

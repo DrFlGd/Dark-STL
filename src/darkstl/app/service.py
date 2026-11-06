@@ -509,14 +509,17 @@ class Service:
 
     def load_folders(self) -> Job | None:
         """Read every saved game folder (at start-up). Each folder's last scan is kept on disk, so the library
-        is listed at once; then the folders are scanned again behind it (scanning also readies what opening
-        a model needs, such as the texture index), each replacing its listing as it's done."""
+        is listed at once. Then each folder is checked: one that hasn't changed since (no file added, removed
+        or renamed, no archive changed: see listing.Fingerprint) gets back what its scan readied for opening
+        models (such as the texture index); any other is scanned again behind the listing, replacing it
+        when done. Rescan scans a folder whatever its fingerprint says."""
         folders = [(Path(f["path"]), f.get("game") or None) for f in self.config.game_folders]
         if not folders:
             return None
 
         def run(job: Job):
             lib = Library()
+            snaps: dict[Path, Snapshot] = {}
             for path, game in folders:
                 if not path.is_dir():
                     lib.roots[path] = game or path.name
@@ -524,6 +527,7 @@ class Service:
                     continue
                 snap = Snapshot.load(self.snapshots, path, game, __version__)
                 if snap is not None:
+                    snaps[path] = snap
                     lib.add_scanned(path, snap.game, snap.found, snap.notes, snap.configs)
                 else:
                     lib.roots[path] = game or path.name  # listed in order, filled in when scanned below
@@ -532,11 +536,17 @@ class Service:
             for i, (path, game) in enumerate(folders):
                 if not path.is_dir():
                     continue
-                job.report(i / len(folders), f"Reading {path.name}")
-                one = Library()
-                self._scan_folder(one, path, game, job)
-                with self.lock:
-                    self.library.merge(one)
+                snap = snaps.get(path)
+                job.report(i / len(folders), f"Checking {path.name}")
+                if snap is not None and snap.unchanged():
+                    job.report(i / len(folders), f"Getting {path.name} ready")
+                    snap.kept.restore(path)  # listed already: nothing to scan
+                else:
+                    job.report(i / len(folders), f"Reading {path.name}")
+                    one = Library()
+                    self._scan_folder(one, path, game, job)
+                    with self.lock:
+                        self.library.merge(one)
                 if _is_under(path, self.config.library_folder) and collect.read_manifest(path) is None:
                     collect.write_manifest(path, game or path.name)  # collected before version 0.5.1
             with self.lock:
@@ -550,8 +560,8 @@ class Service:
         report = (lambda i, name: job.report(job.progress, name if i < 0 else f"{i:,} files: {name}")) if job else None
         found = lib.add_root(path, game, report)
         g = lib.roots[path]
-        Snapshot(path, g, found, lib.notes.get(path, []), lib.found_configs.get(path, []), __version__) \
-            .save(self.snapshots)
+        Snapshot(path, g, found, lib.notes.get(path, []), lib.found_configs.get(path, []), __version__,
+                 lib.kept.get(path)).save(self.snapshots)
 
     def _scan_job(self, label: str, fn: Callable[[Job], Any], stoppable: bool = True) -> Job:
         with self.lock:

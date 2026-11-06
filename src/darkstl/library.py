@@ -8,6 +8,7 @@ and a folder of extracted files, say); they are listed together.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import hashlib
 import os
@@ -17,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from . import listing
+from .listing import Fingerprint
 from .model import CATEGORY_ORDER, LOD_SUFFIX, CatalogEntry
 
 OTHER_MODELS = "Other models"  # the "game" for folders of plain model files
@@ -49,18 +52,56 @@ def scan(root: str | os.PathLike, game: str | None = None,
 def scan_folder(root: str | os.PathLike, game: str | None = None,
                 progress: Callable[[int, str], None] | None = None) -> tuple[list[CatalogEntry], list[str]]:
     """Every model any importer finds under ``root``, and what the user should know about the folder."""
+    found, notes, _kept = scan_folder_kept(root, game, progress)
+    return found, notes
+
+
+@dataclass
+class Kept:
+    """What a scan leaves besides its models: the folder's fingerprint (to tell at the next start whether
+    it changed) and what each importer readied for opening models (:meth:`Importer.scan_state`)."""
+    fingerprint: Fingerprint | None = None
+    state: dict = field(default_factory=dict)  # importer key -> its state
+
+    def restore(self, root: Path) -> None:
+        from .importers import IMPORTERS
+
+        for imp in IMPORTERS:
+            if imp.key in self.state:
+                try:
+                    imp.restore_state(Path(root), self.state[imp.key])
+                except Exception:  # noqa: BLE001 - that importer's models just open as they did before 0.18
+                    pass
+
+
+def scan_folder_kept(root: str | os.PathLike, game: str | None = None,
+                     progress: Callable[[int, str], None] | None = None) \
+        -> tuple[list[CatalogEntry], list[str], Kept]:
+    """:func:`scan_folder`, and what the scan leaves to keep (:class:`Kept`). The folder is listed once for
+    every importer."""
     from .importers import IMPORTERS
 
     root = Path(root)
     game = game or detect_game(root) or root.name
     found: list[CatalogEntry] = []
-    for imp in IMPORTERS:
-        found += imp.scan(root, game, progress)
-    notes = [n for imp in IMPORTERS for n in imp.folder_notes(root, found)]
+    with listing.one_listing():
+        listed = listing.listing(root)
+        for imp in IMPORTERS:
+            found += imp.scan(root, game, progress)
+        notes = [n for imp in IMPORTERS for n in imp.folder_notes(root, found)]
+        kept = Kept(listed.fingerprint())
+        for imp in IMPORTERS:
+            try:
+                state = imp.scan_state(root)
+            except Exception:  # noqa: BLE001 - nothing kept: the folder is scanned again next start
+                kept.fingerprint = None
+                continue
+            if state is not None:
+                kept.state[imp.key] = state
     if not found and not notes:
         notes.append("No models were found in this folder. Choose the game's folder (unpacked), or a folder of "
                      "extracted model files such as .partsbnd, .chrbnd, .objbnd, .flver or .obj.")
-    return sorted(found, key=lambda e: e.sort_key), notes
+    return sorted(found, key=lambda e: e.sort_key), notes, kept
 
 
 def folder_configurations(root: Path, game: str, found: list[CatalogEntry]) -> list:
@@ -86,7 +127,7 @@ def folder_configurations(root: Path, game: str, found: list[CatalogEntry]) -> l
 # (the folders are scanned again behind it)
 
 
-SNAPSHOT_VERSION = 1
+SNAPSHOT_VERSION = 2  # 2: with the folder's fingerprint and the importers' state (Kept)
 
 
 @dataclass
@@ -97,6 +138,12 @@ class Snapshot:
     notes: list[str]
     configs: list
     version: str = ""
+    kept: Kept | None = None
+
+    def unchanged(self) -> bool:
+        """Whether the folder is as it was when scanned, so its listing (and the importers' state) can be
+        used as they are, without scanning it again."""
+        return self.kept is not None and self.kept.fingerprint is not None and self.kept.fingerprint.unchanged()
 
     @staticmethod
     def file(folder: Path, root: Path) -> Path:
@@ -146,12 +193,15 @@ class Library:
     _first: dict[tuple[str, str], str] | None = field(default=None, repr=False)  # (game, stem) -> the entry shown
     _root: dict[str, Path | None] | None = field(default=None, repr=False)  # entry id -> the folder holding it
     found_configs: dict[Path, list] = field(default_factory=dict)  # folder -> configurations its scan found
+    kept: dict[Path, Kept] = field(default_factory=dict)  # folder -> what its last scan here left (scan_folder_kept)
     config_notes: dict[str, list[str]] = field(default_factory=dict)  # game -> what couldn't be found for them
     _configs: list[CatalogEntry] | None = field(default=None, repr=False)
     _all: list[CatalogEntry] | None = field(default=None, repr=False)
+    _overview: dict[bool, list[dict]] = field(default_factory=dict, repr=False)  # include_lod -> overview()
 
     def _changed(self) -> None:
         self._by_id = self._full = self._first = self._configs = self._all = self._root = None
+        self._overview = {}
 
     def configs_changed(self) -> None:
         """Read the configuration lists again (the user saved one)."""
@@ -207,8 +257,9 @@ class Library:
                  progress: Callable[[int, str], None] | None = None) -> list[CatalogEntry]:
         root = Path(root)
         game = game or detect_game(root) or root.name
-        found, notes = scan_folder(root, game, progress)
+        found, notes, kept = scan_folder_kept(root, game, progress)
         self.add_scanned(root, game, found, notes, folder_configurations(root, game, found))
+        self.kept[root] = kept
         return found
 
     def add_scanned(self, root: Path, game: str, found: list[CatalogEntry], notes: list[str], configs: list) -> None:
@@ -279,8 +330,10 @@ class Library:
     def root_of(self, entry: CatalogEntry) -> Path | None:
         if self._root is None:
             self._root = {}
+            roots = [(r, _prefix(r)) for r in self.roots]
             for e in self.entries:  # a game's library can hold 100,000 models: worked out once
-                self._root[e.id] = next((r for r in self.roots if _is_under(e.path, r)), None)
+                p = os.path.normcase(os.fspath(e.path))
+                self._root[e.id] = next((r for r, pre in roots if p.startswith(pre) or p == pre[:-1]), None)
         if entry.id in self._root:
             return self._root[entry.id]
         return next((r for r in self.roots if _is_under(entry.path, r)), None)
@@ -315,14 +368,23 @@ class Library:
         return tree
 
     def overview(self, include_lod: bool = False) -> list[dict]:
-        """Each game with its folders, and its categories and groups with how many models each holds."""
+        """Each game with its folders, and its categories and groups with how many models each holds
+        (worked out once per change to the library: the page asks often)."""
+        if include_lod not in self._overview:
+            self._overview[include_lod] = self._make_overview(include_lod)
+        games = copy.deepcopy(self._overview[include_lod])
+        for g in games:
+            for f in g["folders"]:
+                f["missing"] = not Path(f["path"]).is_dir()
+        return games
+
+    def _make_overview(self, include_lod: bool) -> list[dict]:
         tree = self.grouped(include_lod)
         counts: dict[Path | None, int] = {}
         for e in self.entries:
             if not self.hides(e, include_lod, copies=False):
-                for root in self.roots:
-                    if _is_under(e.path, root):
-                        counts[root] = counts.get(root, 0) + 1
+                root = self.root_of(e)  # worked out once per library change
+                counts[root] = counts.get(root, 0) + 1
         games = []
         for game in self.games() + [g for g in tree if g not in self.roots.values()]:
             cats = tree.get(game, {})
@@ -331,8 +393,7 @@ class Library:
                 groups = cats[cat]
                 categories.append({"name": cat, "count": sum(len(v) for v in groups.values()),
                                    "groups": [{"name": g, "count": len(v)} for g, v in groups.items() if g]})
-            folders = [{"path": str(r), "count": counts.get(r, 0), "notes": self.notes.get(r, []),
-                        "missing": not r.is_dir()}
+            folders = [{"path": str(r), "count": counts.get(r, 0), "notes": list(self.notes.get(r, []))}
                        for r, g in self.roots.items() if g == game]
             games.append({"name": game, "count": sum(c["count"] for c in categories),
                           "folders": folders, "categories": categories})
@@ -341,6 +402,12 @@ class Library:
 
 def _category_index(name: str) -> int:
     return CATEGORY_ORDER.index(name) if name in CATEGORY_ORDER else len(CATEGORY_ORDER)
+
+
+def _prefix(root: Path) -> str:
+    """``root`` as the start of the paths inside it, for comparing as text (see _is_under)."""
+    r = os.path.normcase(os.fspath(root))
+    return r if r.endswith(("/", os.sep)) else r + os.sep
 
 
 def _is_under(path: Path, root: Path) -> bool:

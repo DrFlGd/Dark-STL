@@ -250,15 +250,14 @@ class WavefrontImporter(Importer):
         return Path(path).suffix.lower() == ".obj"
 
     def scan(self, folder: Path, game: str, progress: ScanProgress | None = None) -> list[CatalogEntry]:
+        from ..listing import files_under
+
         out = []
-        for dirpath, dirnames, filenames in os.walk(folder):
-            dirnames.sort()
-            for name in sorted(filenames):
-                if name.lower().endswith(".obj"):
-                    path = Path(dirpath) / name
-                    rel = path.parent.relative_to(folder).as_posix()
-                    out.append(CatalogEntry(game, "Models", "" if rel == "." else rel, path.stem, path.stem, path,
-                                            importer=self.key, packed=False))
+        for path in files_under(folder):
+            if path.name.lower().endswith(".obj"):
+                rel = path.parent.relative_to(folder).as_posix()
+                out.append(CatalogEntry(game, "Models", "" if rel == "." else rel, path.stem, path.stem, path,
+                                        importer=self.key, packed=False))
         return out
 
     def load(self, path: Path, variant: str | None = None, texture_dirs: tuple[str, ...] = ()) -> SourceModel:

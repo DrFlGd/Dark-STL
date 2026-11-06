@@ -170,15 +170,15 @@ def _game_from_packages(folder: Path) -> str | None:
 
 
 def iter_packages(folder: Path, limit: int | None = None):
+    from ...listing import files_under
+
     n = 0
-    for dirpath, dirs, files in os.walk(folder):
-        dirs.sort()
-        for f in sorted(files):
-            if f.lower().endswith((".upk", ".u")):
-                yield Path(dirpath) / f
-                n += 1
-                if limit is not None and n >= limit:
-                    return
+    for p in files_under(folder):
+        if p.name.lower().endswith((".upk", ".u")):
+            yield p
+            n += 1
+            if limit is not None and n >= limit:
+                return
 
 
 class PackageIndex:
