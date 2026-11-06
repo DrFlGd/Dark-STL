@@ -27,13 +27,14 @@ import numpy as np
 
 from .. import __version__
 from .. import collect
+from .. import configs
 from ..errors import FormatError
 from ..export import FORMATS, ExportOptions, export_mesh
 from ..geometry.mesh import TriMesh
 from ..library import Library, detect_game, folder_relation, known_games
 from ..model import CatalogEntry, MeshOptions, SourceModel, path_id
 from ..thumbnails import ThumbnailCache
-from .config import Config, filelists_dir, models_dir
+from .config import Config, config_dir, filelists_dir, models_dir
 from .meshpack import pack_mesh
 
 UNITS = {"mm": 1000.0, "m": 1.0, "cm": 100.0, "in": 39.3701}
@@ -235,8 +236,12 @@ def parse_pose(value) -> tuple[str, int] | None:
 
 
 def entry_json(e: CatalogEntry) -> dict:
-    return {"id": e.id, "label": e.label, "stem": e.stem, "game": e.game, "category": e.category, "group": e.group,
-            "packed": e.packed, "lod": e.is_lod, "importer": e.importer, "file": str(e.path), "name": e.path.name}
+    out = {"id": e.id, "label": e.label, "stem": e.stem, "game": e.game, "category": e.category, "group": e.group,
+           "packed": e.packed, "lod": e.is_lod, "importer": e.importer, "file": str(e.path), "name": e.path.name}
+    if e.config is not None:
+        out["configurable"] = {"slots": len(e.config.slots), "options": sum(len(s.options) for s in e.config.slots),
+                               "guessed": e.config.guessed}
+    return out
 
 
 def model_json(m: SourceModel, mesh: TriMesh) -> dict:
@@ -251,6 +256,7 @@ def model_json(m: SourceModel, mesh: TriMesh) -> dict:
                        "guessed": x.guessed, "details": x.details} for x in m.materials],
         "textures": [{"key": k, "name": t.name, "source": t.source} for k, t in sorted(m.textures.items())],
         "info": m.info, "notes": m.notes, "stats": mesh_stats(mesh), "animated": m.animations is not None,
+        "configuration": m.configuration,
     }
 
 
@@ -292,6 +298,8 @@ class Service:
         self.solids: OrderedDict[tuple, Any] = OrderedDict()  # cut.Solid by the model made solid and the sheet thickness
         self.cache = Path(cache)
         self.unpack_plans: dict[tuple, Any] = {}  # unpack.Plan by (game folder, destination), the last few
+        self.part_models: OrderedDict[tuple, SourceModel] = OrderedDict()  # models opened to assemble configurations
+        configs.set_user_folder((config.path.parent if config.path else config_dir()) / "configurations")
         if config.oodle:
             self._use_oodle(config.oodle)
 
@@ -756,6 +764,7 @@ class Service:
                 entries = self.library.query(str(args["game"]), args.get("category") or None, args.get("group") or None,
                                              str(args.get("q") or ""), bool(args.get("lod")))
             roots = [r for r, g in self.library.roots.items()]
+        entries = self._expand_configs(entries)
         entries = [e for e in entries if not self._is_collection(self.library.root_of(e) or e.path.parent)]
         if not entries:
             raise AppError("Nothing to collect: choose a model, a kind or a game.")
@@ -780,6 +789,23 @@ class Service:
 
         game_roots = [r for r in roots if self.library.roots.get(r) == games[0]]
         return collect.plan(self.config.library_folder, games[0], entries, game_roots, options, related, extras)
+
+    def _expand_configs(self, entries: list[CatalogEntry]) -> list[CatalogEntry]:
+        """A configurable model stands for its base and every part that fits it."""
+        import dataclasses
+
+        with self.lock:
+            by_path = {e.path: e for e in self.library.entries}
+        out: dict[Path, CatalogEntry] = {}
+        for e in entries:
+            if e.config is None:
+                out.setdefault(e.path, e)
+                continue
+            files = [e.config.base.file] + [o.model.file for s in e.config.slots for o in s.options]
+            for f in files:
+                p = Path(f)
+                out.setdefault(p, by_path.get(p) or dataclasses.replace(e, stem=p.stem, label=p.stem, path=p, config=None))
+        return list(out.values())
 
     def cmd_collect_plan(self, args: dict) -> dict:
         return self._collect_plan(args).summary()
@@ -849,11 +875,22 @@ class Service:
             if path is None:
                 raise AppError("That model isn't in the library any more (was its folder removed?)")
         variant = args.get("variant") or None
-        sid = f"{model_id}|{variant or ''}"
+        config = entry.config if entry is not None else None
+        if config is not None:
+            chosen = config.choose(args.get("choices") if isinstance(args.get("choices"), dict) else None)
+            sid = f"{model_id}|config|{configs.choices_key(chosen)}"
+        else:
+            sid = f"{model_id}|{variant or ''}"
         with self.lock:
             session = self.sessions.get(sid)
         if session is None:
-            model = open_model(path, variant, tuple(self.config.texture_dirs))
+            if config is not None:
+                try:
+                    model = configs.assemble(config, chosen, self._part_model)
+                except FormatError as exc:
+                    raise AppError(f"{config.label} couldn't be put together: {exc}") from exc
+            else:
+                model = open_model(path, variant, tuple(self.config.texture_dirs))
             session = Session(sid, model, entry)
             self._show_kept(session)
             with self.lock:
@@ -869,6 +906,113 @@ class Service:
                     "enhanced": self._result_json(session) if session.result is not None else None,
                     "cut": self._cut_json(session) if session.cut is not None else None})
         return out
+
+    def _part_model(self, path: str, variant: str | None) -> SourceModel:
+        """A model a configuration is made of, kept open for the next choice of parts."""
+        from ..importers import open_model
+
+        key = (path, variant, _file_id(Path(path)))
+        with self.lock:
+            model = self.part_models.get(key)
+            if model is not None:
+                self.part_models.move_to_end(key)
+                return model
+        model = open_model(path, variant, tuple(self.config.texture_dirs))
+        with self.lock:
+            self.part_models[key] = model
+            while len(self.part_models) > 24:
+                self.part_models.popitem(last=False)
+        return model
+
+    # ------------------------------------------------------------ configurations
+
+    def cmd_configs(self, args: dict) -> dict:
+        """The configurable models of a game (or all), and the parts of their lists that weren't found."""
+        game = args.get("game") or None
+        with self.lock:
+            items = [e for e in self.library.configurations if not game or e.game == game]
+            notes = {g: n for g, n in self.library.config_notes.items() if not game or g == game}
+        return {"items": [entry_json(e) for e in items], "missing": notes,
+                "folder": str(configs.USER_DIRS[0]) if configs.USER_DIRS else None}
+
+    def _relative(self, path: str) -> str:
+        """A model file as a configuration list names it: below its game folder when it's in one."""
+        p = Path(path)
+        with self.lock:
+            root = next((r for r in self.library.roots if _is_under(p, r)), None)
+        return p.relative_to(root).as_posix() if root is not None else str(p)
+
+    def cmd_config_save(self, args: dict) -> dict:
+        """Keep a configuration in the user's own list (in place of one of the same id, whichever list
+        that came from). ``configuration`` is as the page shows it; ``base_id`` names the base model's
+        library entry for a new one."""
+        raw = args.get("configuration")
+        if not isinstance(raw, dict):
+            raise AppError("No configuration was sent.")
+        raw = json.loads(json.dumps(raw))
+        base_entry = self._entry(str(args.get("base_id") or "")) if args.get("base_id") else None
+        if base_entry is not None:
+            raw["base"] = {"file": str(base_entry.path)}
+            raw.setdefault("game", base_entry.game)
+            raw.setdefault("category", base_entry.category)
+            raw.setdefault("group", base_entry.group)
+        if isinstance(raw.get("base"), str):
+            raw["base"] = {"file": raw["base"]}
+        game = str(raw.get("game") or "")
+        if not game:
+            raise AppError("A configuration belongs to a game.")
+        for s in raw.get("slots") or []:
+            for o in s.get("options") or []:
+                if not o.get("model") and o.get("path"):
+                    o["model"] = {"file": o["path"], "variant": o.get("variant"), "parts": o.get("parts")}
+                o.pop("path", None)
+                o.pop("file", None)
+                o.pop("variant", None)
+                o.pop("parts", None)
+                if o.get("model"):
+                    o["model"]["file"] = self._relative(o["model"]["file"])
+                    o["model"] = {k: v for k, v in o["model"].items() if v is not None}
+                if isinstance(o.get("attach"), dict) and configs.parse_attach(o["attach"]).is_identity():
+                    o.pop("attach", None)
+        raw["base"]["file"] = self._relative(raw["base"]["file"])
+        presets = raw.get("presets")
+        if isinstance(presets, list):  # as the page shows them
+            raw["presets"] = {p["name"]: p.get("choices") or {} for p in presets if p.get("name")}
+        if not raw.get("id"):  # a new one: an id no configuration of the game has yet
+            with self.lock:
+                taken = {e.config.id for e in self.library.configurations if e.game == game}
+            stem = "my:" + Path(raw["base"]["file"]).name.split(".")[0].lower()
+            raw["id"], n = stem, 2
+            while raw["id"] in taken:
+                raw["id"], n = f"{stem}-{n}", n + 1
+        for k in ("chosen", "defaults", "source", "guessed", "base_name"):
+            raw.pop(k, None)
+        try:
+            config = configs.parse({"configurations": [raw]}, game, configs.USER_SOURCE)[0]
+            path = configs.save_user(config)
+        except FormatError as exc:
+            raise AppError(str(exc)) from exc
+        with self.lock:
+            self.library.configs_changed()
+            entry = next((e for e in self.library.configurations if e.game == game and e.config.id == config.id), None)
+            for sid in [k for k in self.sessions if entry is not None and k.startswith(entry.id + "|")]:
+                del self.sessions[sid]
+        if entry is None:
+            raise AppError("It was saved, but its base model isn't in the library, so it isn't listed.")
+        return {"id": entry.id, "file": str(path), "entry": entry_json(entry)}
+
+    def cmd_config_delete(self, args: dict) -> dict:
+        """Remove a configuration from the user's own list (one from another list shows again)."""
+        entry = self._entry(str(args.get("id") or ""))
+        if entry is None or entry.config is None:
+            raise AppError("That isn't a configurable model.")
+        removed = configs.delete_user(entry.game, entry.config.id)
+        with self.lock:
+            self.library.configs_changed()
+            for sid in [k for k in self.sessions if k.startswith(entry.id + "|")]:
+                del self.sessions[sid]
+            still = self.library.find(entry.id)
+        return {"removed": removed, "still_listed": still is not None}
 
     def _session(self, args: dict) -> Session:
         sid = str(args.get("sid") or "")
@@ -1240,6 +1384,7 @@ class Service:
     def _forget_models(self) -> None:
         with self.lock:
             self.sessions.clear()
+            self.part_models.clear()
             self.textures_png.clear()
             self.generated.clear()
             self.meshes.clear()

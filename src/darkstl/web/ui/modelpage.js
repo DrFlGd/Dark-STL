@@ -5,7 +5,8 @@
 // evened out to a count), Displace (step 2: the vertices pushed by the textures'
 // detail), Cut (planes placed in the 3D view split it into pieces with joints between
 // them, for printing) and Export tabs. A file holding several models (a weapon and its sheath)
-// gets a switch between them in the command bar.
+// gets a switch between them in the command bar. A configurable model (a weapon and the parts that
+// fit it) has a Configure tab first, to choose its parts (configure.js).
 import { html, useState, useEffect, useLayoutEffect, useRef, useMemo } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui, setPref, resolvedTheme } from "./state.js";
@@ -16,6 +17,7 @@ import { api, binUrl, info, plural, bytesText, followJob, stopJob, toast, showIn
 import { CommandBar } from "./layout.js";
 import { Inspector, useWidth } from "./inspector.js";
 import { Viewer, PIECE_COLORS } from "../viewer.js";
+import { ConfigureTab } from "./configure.js";
 
 const ENHANCE = { target_vertices: 1_000_000, method: "subdivide", smooth: true, source: "normal", strength: 1, height_range_mm: 1,
   green: "auto", detail_fraction: 0.0625, max_displacement_mm: 0, integration: "mesh", edge_keeping: 0, deblock: "off",
@@ -72,11 +74,20 @@ export function ModelPage({ route }) {
   const { id, variant } = modelOf(route);
   const [m, setM] = useState(null);
   const [error, setError] = useState("");
+  // a configurable model: the part chosen in each slot, kept per model (see ConfigureTab)
+  const choices = useStore(ui, (st) => (st.configChoices || {})[id] || null);
+  const choicesKey = JSON.stringify(choices);
+  const rev = useStore(ui, (st) => st.configRev);
+  const [switching, setSwitching] = useState(false);
   useEffect(() => {
     let live = true;
-    api("model_open", { id, variant }).then((v) => { if (live) { setM(v); setError(""); } }, (e) => { if (live) setError(msg(e)); });
+    setSwitching(true);
+    api("model_open", { id, variant, choices }).then((v) => { if (live) { setM(v); setError(""); setSwitching(false); } },
+      (e) => { if (live) { setError(msg(e)); setSwitching(false); } });
     return () => { live = false; };
-  }, [id, variant]);
+  }, [id, variant, choicesKey, rev]);
+  // a configurable model opens on its Configure tab
+  useEffect(() => { if (m?.configuration && m.id === id) ui.set({ inspectorAsk: { page: "model", tab: "configure" } }); }, [m?.id, !!m?.configuration]);
   const entry = m?.entry;
   const placeKey = entry ? JSON.stringify([entry.game, entry.category, entry.group]) : null;
   useEffect(() => {
@@ -98,6 +109,8 @@ export function ModelPage({ route }) {
     collectModelItem({ id: m.id, file: m.file, label: entry?.label || m.name, category: entry?.category, group: entry?.group }, entry?.game),
     { sep: true },
     { id: "open-file", label: "Open another model file…", icon: "file", run: () => ui.set({ dialog: { type: "open-file" } }) },
+    ...(entry && !m.configuration ? [{ sep: true }, { id: "make-configurable", label: "Make configurable…", icon: "box",
+      run: () => makeConfigurable(m, entry) }] : []),
   ];
   return html`<${CommandBar} ...${bar} up=${up.filter(([, href]) => href)} title=${html`<h1 id="mp-name" title=${entry?.label || m.name}>${entry?.label || m.name}</h1>`}
       count=${html`<span class="page-count" id="mp-count" title=${m.file}>${fileName}</span>`}
@@ -107,11 +120,20 @@ export function ModelPage({ route }) {
           ${m.variants.map((v) => html`<option key=${v} value=${v}>${variantName(v)}</option>`)}</select></label>` : null}
       more=${{ id: "mp-more", items: more }} />
     <div class="model-page" id="model-page" data-model=${m.id}>
-      <${Workspace} key=${m.sid} m=${m} variant=${variant} />
+      <${Workspace} key=${m.sid} m=${m} variant=${variant} switching=${switching} />
     </div>`;
 }
 
-function Workspace({ m, variant }) {
+/** A configuration of the model's own: the model as its base, no slots yet; it opens with the editor. */
+async function makeConfigurable(m, entry) {
+  try {
+    const r = await api("config_save", { base_id: entry.id, configuration: { label: entry.label || m.name, slots: [] } });
+    ui.set({ configEdit: r.id });
+    location.hash = routeHash(`model:${r.id}`);
+  } catch (e) { toast(msg(e), { error: true }); }
+}
+
+function Workspace({ m, variant, switching }) {
   const [off, setOff] = useState(() => new Set());
   const [flags, setFlags] = useState(() => Object.fromEntries(m.options.map((o) => [o.key, o.default])));
   const [stats, setStats] = useState(m.stats);
@@ -207,6 +229,7 @@ function Workspace({ m, variant }) {
         cutting=${cutting} showCuts=${cutOpen} onBounds=${setBounds} />
     </section>
     <${Inspector} page="model" crowded=${crowded} label="Panels" tabs=${[
+      ...(m.configuration ? [{ id: "configure", label: "Configure", icon: "layers", body: html`<${ConfigureTab} m=${m} switching=${switching} />` }] : []),
       { id: "model", label: "Model", icon: "box", body: html`<${ModelTab} m=${m} off=${off} setOff=${setOff} flags=${flags} setFlags=${setFlags} stats=${stats} />` },
       { id: "textures", label: "Textures", icon: "image", body: html`<${TexturesTab} ...${shared} over=${over} upscale=${upscale} />` },
       ...(m.animated ? [{ id: "pose", label: "Pose", icon: "play", body: html`<${PoseTab} m=${m} pose=${pose} setPose=${setPose} busy=${busy} call=${call} />` }] : []),
