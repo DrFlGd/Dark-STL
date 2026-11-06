@@ -893,7 +893,7 @@ class Service:
             bones = len(anims.skeleton)
         except Exception as exc:  # noqa: BLE001 - a broken archive is reported, not fatal
             raise AppError(f"The animations couldn't be read: {exc}") from exc
-        return {"animations": [i.as_dict() for i in infos], "bones": bones}
+        return {"animations": [i.as_dict() for i in infos], "bones": bones, "note": getattr(anims, "note", None)}
 
     def cmd_model_mesh(self, args: dict) -> bytes:
         session = self._session(args)

@@ -359,7 +359,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="importer option (see 'info'), e.g. --option mm=on for an OBJ in millimetres")
         sp.add_argument("--no-bones", action="store_true", help="same as --option bones=off")
         sp.add_argument("--pose", metavar="ANIMATION@FRAME",
-                        help="pose the model with an animation from its anibnd (see 'info'), e.g. a000_003000@12")
+                        help=("pose the model with one of its animations (see 'info'): from its anibnd, e.g. "
+                              "a000_003000@12, or for RE Engine models from the game's motlists, "
+                              "e.g. \"pl0000_move / wave@12\""))
         sp.add_argument("--scale", type=float, default=1000.0, help="unit scale (default 1000: metres -> mm)")
         sp.add_argument("--ascii", action="store_true", help="ASCII STL")
         sp.add_argument("--textures", action="append", help="extra folder to search for textures")

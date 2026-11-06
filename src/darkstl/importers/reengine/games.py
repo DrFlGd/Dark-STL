@@ -24,23 +24,38 @@ class GameProfile:
     markers: tuple[str, ...]  # file names in the game folder
     path_hint: re.Pattern
     notes: str = ""
+    lists: tuple[str, ...] = ()  # the bundled file lists for the game's paks (filelists/<name>.list.gz)
 
 
 GAME_PROFILES: tuple[GameProfile, ...] = (
     GameProfile("Resident Evil 2", ("re2.exe",),
-                re.compile(r"resident\s*evil\s*2\b|\bre2(r|rt)?\b|biohazard\s*re[:\s]*2", re.I)),
+                re.compile(r"resident\s*evil\s*2\b|\bre2(r|rt)?\b|biohazard\s*re[:\s]*2", re.I),
+                lists=("RE2_RT_STM_Release", "RE2_STM_Release")),
     GameProfile("Resident Evil 3", ("re3.exe",),
-                re.compile(r"resident\s*evil\s*3\b|\bre3(r|rt)?\b|biohazard\s*re[:\s]*3", re.I)),
+                re.compile(r"resident\s*evil\s*3\b|\bre3(r|rt)?\b|biohazard\s*re[:\s]*3", re.I),
+                lists=("RE3_RT_STM_Release", "RE3_STM_Release")),
     GameProfile("Resident Evil 4", ("re4.exe",),
-                re.compile(r"resident\s*evil\s*4\b|\bre4(r|rt)?\b|biohazard\s*re[:\s]*4", re.I)),
+                re.compile(r"resident\s*evil\s*4\b|\bre4(r|rt)?\b|biohazard\s*re[:\s]*4", re.I),
+                lists=("RE4_STM_Release",)),
     GameProfile("Resident Evil 7", ("re7.exe",), re.compile(r"resident\s*evil\s*7\b|\bre7(rt)?\b|biohazard\s*7", re.I),
-                notes="the ray-tracing re-release; the original RE7 uses an older format"),
+                notes="the ray-tracing re-release; the original RE7 uses an older format",
+                lists=("RE7_RT_STM_Release", "RE7_STM_Release")),
     GameProfile("Resident Evil Village", ("re8.exe",),
-                re.compile(r"resident\s*evil\s*(village|8)\b|\bre8\b|biohazard\s*village", re.I)),
-    GameProfile("Devil May Cry 5", ("devilmaycry5.exe",), re.compile(r"devil\s*may\s*cry\s*5|\bdmc5\b", re.I)),
+                re.compile(r"resident\s*evil\s*(village|8)\b|\bre8\b|biohazard\s*village", re.I),
+                lists=("RE8_STM_Release",)),
+    GameProfile("Devil May Cry 5", ("devilmaycry5.exe",), re.compile(r"devil\s*may\s*cry\s*5|\bdmc5\b", re.I),
+                lists=("DMC5_STM_Release",)),
 )
 
 GAMES = tuple(p.name for p in GAME_PROFILES)
+
+LIST_FOLDER = Path(__file__).with_name("filelists")
+
+
+def bundled_lists(game: str | None) -> list[Path]:
+    """The file lists that come with Dark STL for ``game``'s paks (every game's when it isn't one of them)."""
+    profiles = [p for p in GAME_PROFILES if p.name == game] or list(GAME_PROFILES)
+    return [f for p in profiles for f in (LIST_FOLDER / f"{n}.list.gz" for n in p.lists) if f.is_file()]
 
 MESH_FILE = re.compile(r"\.mesh(\.\d+)?$", re.I)
 TEX_FILE = re.compile(r"\.tex(\.\d+)?$", re.I)

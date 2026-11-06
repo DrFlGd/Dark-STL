@@ -30,6 +30,8 @@ class SynthSub:
     material: int = 0
     group: int = 0
     streamed: bool = False  # in the streamed buffer (RE4 era), not the file's own
+    joints: np.ndarray | None = None  # (n, 8) joint numbers (into the skin list, which is every bone here)
+    weights: np.ndarray | None = None  # (n, 8) weight bytes
 
 
 @dataclass
@@ -52,7 +54,8 @@ def _f16(a: np.ndarray) -> bytes:
 
 def _pack_buffer(subs: list[SynthSub]) -> _Buffer:
     buf = _Buffer(subs)
-    pos, nt, uv, faces = bytearray(), bytearray(), bytearray(), bytearray()
+    pos, nt, uv, faces, wt = bytearray(), bytearray(), bytearray(), bytearray(), bytearray()
+    skinned = any(s.joints is not None for s in subs)
     v = f = 0
     for s in subs:
         n = len(s.positions)
@@ -63,6 +66,10 @@ def _pack_buffer(subs: list[SynthSub]) -> _Buffer:
         nortan[:, 1, 3] = 127
         nt += nortan.tobytes()
         uv += _f16(s.uvs)
+        if skinned:
+            j = np.zeros((n, 8), np.uint8) if s.joints is None else np.asarray(s.joints, np.uint8)
+            w = np.zeros((n, 8), np.uint8) if s.weights is None else np.asarray(s.weights, np.uint8)
+            wt += np.concatenate([j, w], axis=1).tobytes()
         tris = np.asarray(s.triangles, np.int64)
         faces += tris.astype("<u2").tobytes()
         if (len(tris) * 3) % 2:  # each sub-mesh's indices padded to 4 bytes
@@ -80,14 +87,22 @@ def _pack_buffer(subs: list[SynthSub]) -> _Buffer:
     buf.elements.append((M.EL_UV, 4, len(data)))
     data += uv
     _pad16(data)
+    if skinned:
+        buf.elements.append((M.EL_WEIGHT, 16, len(data)))
+        data += wt
+        _pad16(data)
     buf.data = bytes(data)
     buf.faces = bytes(faces)
     return buf
 
 
 def build_mesh(subs: list[SynthSub], materials: list[str], version: int = RE2_MESH,
-               bones: list[str] = ()) -> tuple[bytes, bytes | None]:
+               bones: list[str] = (), parents: list[int] | None = None,
+               locals_: list[np.ndarray] | None = None) -> tuple[bytes, bytes | None]:
     """A mesh file with one level of detail; returns ``(mesh bytes, streaming bytes or None)``.
+
+    Bones form a chain unless ``parents`` are given; ``locals_`` are their bind transforms relative to
+    the parent (column-vector 4x4 matrices; identity by default).
 
     Sub-meshes marked ``streamed`` go in the streaming file (RE4-era versions only)."""
     era = M.era_of(version)
@@ -150,21 +165,27 @@ def build_mesh(subs: list[SynthSub], materials: list[str], version: int = RE2_ME
     out += main + lod
     mesh_group_offset = lod_offset_pos
 
-    # bones (names only matter here)
+    # bones
     skeleton_offset = 0
     if bones:
         skeleton_offset = len(out)
         n = len(bones)
+        par = list(parents) if parents is not None else [i - 1 for i in range(n)]
+        loc = [np.asarray(m, np.float64) for m in locals_] if locals_ is not None else [np.eye(4)] * n
+        world = []
+        for i in range(n):
+            world.append(world[par[i]] @ loc[i] if par[i] >= 0 else loc[i])
         sk = bytearray(struct.pack("<2IQ4Q", n, n, 0, 0, 0, 0, 0))
         sk += b"".join(struct.pack("<H", i) for i in range(n))
         while len(sk) % 16:
             sk.append(0)
         bone_hdr = skeleton_offset + len(sk)
         for i in range(n):
-            sk += struct.pack("<H7h", i, i - 1, -1, -1, -1, 0, 0, 0)
+            sk += struct.pack("<H7h", i, par[i], -1, -1, -1, 0, 0, 0)
         local = skeleton_offset + len(sk)
-        ident = np.eye(4, dtype="<f4").tobytes()
-        sk += ident * n * 3
+        # stored with the translation in the last row
+        for mats in (loc, world, [np.linalg.inv(w) for w in world]):
+            sk += b"".join(np.asarray(m.T, "<f4").tobytes() for m in mats)
         struct.pack_into("<4Q", sk, 16, bone_hdr, local, local + 64 * n, local + 128 * n)
         out += sk
 
@@ -424,3 +445,164 @@ def bc1_flat(width: int, height: int, color565: int) -> bytes:
 
 def rgba_surface(img: np.ndarray) -> bytes:
     return np.ascontiguousarray(img, np.uint8).tobytes()
+
+
+# ---------------------------------------------------------------------------
+# Animations: .mot motions and .motlist lists
+
+RE2_MOTLIST, RE2_MOT, RE4_MOTLIST, RE4_MOT = 85, 65, 663, 613
+
+
+def murmur(name: str) -> int:
+    """MurmurHash3 (seed 0xFFFFFFFF) of a name as UTF-16LE, case kept: how motions name bones."""
+    data = name.encode("utf-16-le")
+    h, c1, c2, mask = 0xFFFFFFFF, 0xCC9E2D51, 0x1B873593, 0xFFFFFFFF
+
+    def rotl(x, r):
+        return ((x << r) | (x >> (32 - r))) & mask
+
+    full = len(data) // 4 * 4
+    for i in range(0, full, 4):
+        k = int.from_bytes(data[i:i + 4], "little")
+        k = rotl((k * c1) & mask, 15) * c2 & mask
+        h = (rotl(h ^ k, 13) * 5 + 0xE6546B64) & mask
+    tail = data[full:]
+    if tail:
+        k = int.from_bytes(tail, "little")
+        h ^= rotl((k * c1) & mask, 15) * c2 & mask
+    h ^= len(data)
+    h ^= h >> 16
+    h = h * 0x85EBCA6B & mask
+    h ^= h >> 13
+    h = h * 0xC2B2AE35 & mask
+    return h ^ (h >> 16)
+
+
+@dataclass
+class SynthTrack:
+    frames: list[int]
+    values: np.ndarray  # (k, 3) translations/scales or (k, 4) quaternions xyzw (w >= 0)
+    packing: str = "full"  # vectors: full, 16bit; rotations: 3comp, 10bit, 16bit
+
+
+def _encode_track(track: SynthTrack, rotation: bool, version: int) -> tuple[int, bytes, list[float] | None]:
+    """(compression code, key bytes, unpack data) of a track."""
+    v = np.asarray(track.values, np.float64)
+    old = version <= RE2_MOT
+    if rotation:
+        xyz = v[:, :3]
+        if track.packing == "3comp":
+            return (0xB0000 if old else 0xC0000), np.asarray(xyz, "<f4").tobytes(), None
+        lo, hi = xyz.min(0), xyz.max(0)
+        span = np.where(hi - lo > 0, hi - lo, 1.0)
+        unpack = [*span, 0.0, *lo, 0.0]
+        if track.packing == "10bit":
+            q = np.round((xyz - lo) / span * 1023).astype(np.uint32)
+            words = q[:, 0] | (q[:, 1] << 10) | (q[:, 2] << 20)
+            return (0x30000 if old else 0x40000), words.astype("<u4").tobytes(), unpack
+        if track.packing == "16bit" and not old:
+            q = np.round((xyz - lo) / span * 65535).astype("<u2")
+            return 0x60000, q.tobytes(), unpack
+        raise ValueError(track.packing)
+    if track.packing == "full":
+        return 0x00000, np.asarray(v, "<f4").tobytes(), None
+    if track.packing == "16bit" and not old:  # 48 bits, read big-endian, x in the low bits
+        lo, hi = v.min(0), v.max(0)
+        span = np.where(hi - lo > 0, hi - lo, 1.0)
+        q = np.round((v - lo) / span * 65535).astype(np.uint64)
+        packed = q[:, 0] | (q[:, 1] << np.uint64(16)) | (q[:, 2] << np.uint64(32))
+        raw = b"".join(int(x).to_bytes(6, "big") for x in packed)
+        return 0x60000, raw, [*span, *lo, 0.0, 0.0]
+    raise ValueError(track.packing)
+
+
+def build_mot(name: str, clips: list[tuple[str, dict[str, SynthTrack]]], frame_count: float,
+              version: int = RE2_MOT, fps: int = 60) -> bytes:
+    """One motion: per bone a dict of tracks under 't', 'r' and 's'."""
+    new = version >= 78
+    out = bytearray(b"\0" * 0x80)
+    _pad16(out)
+    clips_offset = len(out)
+    clip_size = 12 if new else 24
+    out += b"\0" * (clip_size * len(clips))
+    _pad16(out)
+    track_size = 20 if new else 40
+    pending = []  # (header position, key data, frames, unpack)
+    for ci, (bone, tracks) in enumerate(clips):
+        flags = sum(bit for key, bit in (("t", 1), ("r", 2), ("s", 4)) if key in tracks)
+        at = len(out)
+        pos = clips_offset + clip_size * ci
+        if new:
+            struct.pack_into("<HBBII", out, pos, ci, flags, 255, murmur(bone), at)
+        else:
+            struct.pack_into("<HBBIf4xQ", out, pos, ci, flags, 0, murmur(bone), 1.0, at)
+        for key in ("t", "r", "s"):
+            if key not in tracks:
+                continue
+            tr = tracks[key]
+            code, raw, unpack = _encode_track(tr, key == "r", version)
+            kind = 274 if key == "r" else 242
+            flags_word = kind | code | (4 << 20)  # 16-bit frame numbers
+            pending.append((len(out), raw, tr.frames, unpack, flags_word, len(tr.frames)))
+            out += b"\0" * track_size
+    for hpos, raw, frames, unpack, flags_word, count in pending:
+        _pad16(out)
+        index_off = len(out) if count > 1 else 0
+        if count > 1:
+            out += np.asarray(frames, "<i2").tobytes()
+            _pad16(out)
+        data_off = len(out)
+        out += raw
+        _pad16(out)
+        unpack_off = 0
+        if unpack is not None:
+            unpack_off = len(out)
+            out += np.asarray(unpack, "<f4").tobytes()
+        if new:
+            struct.pack_into("<Ii3I", out, hpos, flags_word, count, index_off, data_off, unpack_off)
+        else:
+            struct.pack_into("<IiIf3Q", out, hpos, flags_word, count, fps, float(max(frames)), index_off, data_off,
+                             unpack_off)
+    _pad16(out)
+    name_offset = len(out)
+    out += name.encode("utf-16-le") + b"\0\0"
+    _pad16(out)
+    h = bytearray(struct.pack("<4I", version, 0x20746F6D, 0, len(out)))
+    h += struct.pack("<4Q", 0, clips_offset, 0, 0)
+    h += struct.pack("<3Q", 0, 0, 0)
+    if version >= 456:
+        h += struct.pack("<Q", 0)
+    h += struct.pack("<2Q", 0, name_offset)
+    h += struct.pack("<4f", frame_count, -1.0, 0.0, frame_count)
+    h += struct.pack("<2H2B", len(clips), len(clips), 0, 0)
+    if version >= 458:
+        h += struct.pack("<H", 0)
+    h += struct.pack("<3H", fps, 0, 0)
+    assert len(h) <= 0x80
+    out[:len(h)] = h
+    return bytes(out)
+
+
+def build_motlist(name: str, mots: list[bytes], version: int = RE2_MOTLIST) -> bytes:
+    out = bytearray(struct.pack("<4I", version, 0x74736C6D, 0, 0))
+    out += struct.pack("<3Q", 0, 0, 0)  # pointers, indices, name (patched)
+    if version > 60:
+        out += struct.pack("<Q", 0)
+    out += struct.pack("<i", len(mots))
+    if version >= 528:
+        out += struct.pack("<h", 0)
+    _pad16(out)
+    pointers = len(out)
+    out += b"\0" * (8 * len(mots))
+    _pad16(out)
+    for i, m in enumerate(mots):
+        _pad16(out)
+        struct.pack_into("<Q", out, pointers + 8 * i, len(out))
+        out += m
+    _pad16(out)
+    indices = len(out)
+    out += b"".join(struct.pack("<QHH", 0, i, 0) + b"\0" * 12 for i in range(len(mots)))
+    name_offset = len(out)
+    out += name.encode("utf-16-le") + b"\0\0"
+    struct.pack_into("<3Q", out, 16, pointers, indices, name_offset)
+    return bytes(out)

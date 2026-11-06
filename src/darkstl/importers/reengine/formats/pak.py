@@ -200,7 +200,12 @@ def _murmur3_rows(units: np.ndarray, lengths: np.ndarray) -> np.ndarray:
 
 def read_name_list(path: str | os.PathLike) -> dict[int, str]:
     """A community file list (one path per line, ``#`` comments) as hash -> path."""
-    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    raw = Path(path).read_bytes()
+    if raw[:2] == b"\x1f\x8b":  # the bundled lists are gzipped
+        import gzip
+
+        raw = gzip.decompress(raw)
+    text = raw.decode("utf-8", errors="replace")
     names = [_normalise(ln) for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
     hashes = hash_names(names)
     return {int(h): n for h, n in zip(hashes, names)}

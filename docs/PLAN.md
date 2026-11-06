@@ -120,6 +120,15 @@ part of the mesh options, so Generate and Export, the cache of generated models 
 previews all take it into account without knowing about animations. Root motion
 (`extractedMotion`) is ignored: the model stays where its bind pose puts it.
 
+RE Engine models are posed the same way (`reengine/animation.py`): the mesh's bone weights
+(eight joints per vertex, six 10-bit ones in Street Fighter 6 and later) pick bones through the
+mesh's skin list, and the game's `.motlist` / `.mot` motions (`formats/motion.py`, following
+shadowcookie's REE-Lib, MIT) move them by name hash (MurmurHash3 of the UTF-16 bone name).
+A model's motions are the ones filed under its character id (`pl0000`, RE4's `cha0` family
+folder for `cha000`, Village's `ch01`): those of its own animation folders first, cutscenes
+after, and only motion files that move one of the model's bones are offered. What each motion
+file holds is kept in the importer's cache. Root bones' translation is left out, as above.
+
 The library groups models by their FromSoftware naming:
 
 | Prefix | Category | Grouped by |
@@ -305,8 +314,9 @@ src/darkstl/
                 from import tables, groups by depot path)
     reengine/   formats/ (mesh, tex, mdf2, pak with MurmurHash3 names), games.py (RE Engine games and
                 how a folder is recognised), files.py (a model, its streamed half, materials and textures,
-                on disk or inside a pak), materials.py (texture roles from slot types), catalog.py
-                (classifies models by the engine's folder layout)
+                on disk or inside a pak, and its animations), materials.py (texture roles from slot
+                types), catalog.py (classifies models by the engine's folder layout), animation.py
+                (.motlist / .mot motions -> poses, skinning)
     wavefront.py  OBJ + MTL
   geometry/     TriMesh, subdivision, isotropic remesh, UV seam matching, closest-point queries,
                 displacement
@@ -403,7 +413,9 @@ differs:
   armour have been loaded so far (Phase 1). The RE Engine importer has only seen synthetic files.
 - RE Engine: `.pak` archives with an encrypted table of contents (Monster Hunter Wilds and later)
   and GDeflate-compressed textures are not read; extract those games with a pak tool first.
-  MPLY stage meshes, blend shapes and the skeleton's poses are not read.
+  MPLY stage meshes and blend shapes are not read. Posing RE models has only been tried on
+  synthetic motions; motion trees, additive layers and animations kept in `.motbank` /
+  `.motfsm2` setups (rather than in the motlists themselves) are not used.
 - Output is not guaranteed watertight (pieces cut on the Cut tab are); most slicers repair it,
   but Phase 2 adds a proper fix.
 - Without an anibnd beside the model, skinned meshes (characters, armor) are shown in their

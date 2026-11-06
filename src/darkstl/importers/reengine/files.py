@@ -4,8 +4,8 @@ Files come in two shapes:
 
 * extracted, below the game's ``natives/<platform>/`` tree (``x64`` for RE2, RE3 and RE7, ``stm``
   from Resident Evil Village on), or in any folder of loose files
-* still inside a ``.pak`` archive, named through a community file list (``*.list``) kept in the
-  game folder; such a file is addressed by a path made of the archive's path and the entry's
+* still inside a ``.pak`` archive, named through the community file lists bundled for the game
+  (``filelists/``, Ekey's) and any ``*.list`` kept in the game folder; such a file is addressed by a path made of the archive's path and the entry's
   name inside it (``re_chunk_000.pak/natives/stm/.../x.mesh.221108797``)
 
 Materials (``.mdf2``) sit beside the mesh and name their textures by path below the platform
@@ -32,12 +32,13 @@ from .formats import mdf as mdffmt
 from .formats import mesh as meshfmt
 from .formats import pak as pakfmt
 from .formats import tex as texfmt
-from .games import MESH_FILE, PAK_FILE, version_of
+from .games import MESH_FILE, PAK_FILE, bundled_lists, version_of
 
 MDF_FILE = re.compile(r"\.mdf2(\.\d+)?$", re.I)
 LIST_FILE = re.compile(r"\.list$", re.I)
 PLATFORMS = ("x64", "stm", "ps4", "ps5", "nsw", "msg", "mac")
-INDEX_VERSION = 1
+MOTION_FILE = re.compile(r"\.(motlist|mot)\.\d+$", re.I)
+INDEX_VERSION = 2
 
 ScanProgress = Callable[[int, str], None]
 
@@ -45,7 +46,7 @@ ScanProgress = Callable[[int, str], None]
 def split_name(name: str) -> tuple[str, str, int | None]:
     """'pl0000.mesh.1808312334' -> ('pl0000', 'mesh', 1808312334); 'a.tex' -> ('a', 'tex', None)."""
     base = name.replace("\\", "/").rsplit("/", 1)[-1]
-    m = re.match(r"^(.*?)\.(mesh|tex|mdf2|pak)(?:\.(\d+))?$", base, re.I)
+    m = re.match(r"^(.*?)\.(mesh|tex|mdf2|pak|motlist|mot)(?:\.(\d+))?$", base, re.I)
     if not m:
         stem, _, ext = base.rpartition(".")
         return stem or base, ext.lower(), None
@@ -200,10 +201,11 @@ def size_of(path: Path) -> int:
 # Walking a game folder
 
 
-def walk(root: Path, cache: Path | None = None,
-         progress: ScanProgress | None = None) -> tuple[list[ModelPath], list[str]]:
+def walk(root: Path, cache: Path | None = None, progress: ScanProgress | None = None,
+         game: str | None = None) -> tuple[list[ModelPath], list[str]]:
     """Every file under ``root`` as a :class:`ModelPath`, pak entries included (named through the
-    ``*.list`` files in the folder), and notes about archives that could not be listed."""
+    ``*.list`` files in the folder and the lists bundled for ``game``), and notes about archives that
+    could not be listed."""
     root = Path(root)
     files: list[ModelPath] = []
     paks: list[Path] = []
@@ -229,6 +231,7 @@ def walk(root: Path, cache: Path | None = None,
                 progress(n, name)
     notes: list[str] = []
     if paks:
+        lists = lists + bundled_lists(game)  # a .list in the folder adds what a game update brought
         names = _list_names(lists, cache) if lists else {}
         encrypted: list[str] = []
         unnamed: list[str] = []
@@ -256,10 +259,10 @@ def walk(root: Path, cache: Path | None = None,
             notes.append(f"{_join(encrypted)}: the archive's table of contents is encrypted, which Dark STL "
                          "cannot read. Extract the game's files with a pak tool (REtool, ree-pak) and add that folder.")
         if unnamed:
-            what = "no file list was found" if not lists else "the file lists found don't name their entries"
-            notes.append(f"{_join(unnamed)}: pak archives don't store file names and {what}. Put the game's "
-                         "file list (a .list file from the RE Engine modding community) in this folder and rescan, "
-                         "or extract the archives with a pak tool.")
+            notes.append(f"{_join(unnamed)}: pak archives don't store file names, and the file lists that come "
+                         "with Dark STL (and any .list file in this folder) don't name these entries. If the game "
+                         "was updated, put its newest file list (a .list file from Ekey's REE.PAK.Tool) in this "
+                         "folder and rescan, or extract the archives with a pak tool.")
     return files, notes
 
 
@@ -277,6 +280,7 @@ class FileIndex:
     by_name: dict[str, list[str]] = field(default_factory=dict)  # lower-case name without version -> rels
     paks: dict[str, str] = field(default_factory=dict)  # rel of a pak entry -> rel of its pak
     sizes: dict[str, int] = field(default_factory=dict)
+    motions: list[str] = field(default_factory=list)  # rels of every .motlist and .mot file
 
     def path(self, rel: str) -> Path:
         pak = self.paks.get(rel)
@@ -291,9 +295,12 @@ class FileIndex:
 
     def add(self, mp: ModelPath, pak_rel: str | None) -> None:
         kind = mp.kind
-        if kind not in ("tex", "mdf2", "mesh"):
+        if kind in ("motlist", "mot") and MOTION_FILE.search(mp.name):
+            self.motions.append(mp.rel)
+        elif kind in ("tex", "mdf2", "mesh"):
+            self.by_name.setdefault(_name_key(mp.name), []).append(mp.rel)
+        else:
             return
-        self.by_name.setdefault(_name_key(mp.name), []).append(mp.rel)
         if pak_rel:
             self.paks[mp.rel] = pak_rel
         self.sizes[mp.rel] = mp.size
@@ -327,7 +334,8 @@ def build_index(root: Path, files: Iterable[ModelPath], cache: Path | None = Non
         try:
             cache.mkdir(parents=True, exist_ok=True)
             (cache / (re.sub(r"[^\w.-]", "_", _norm(root))[-120:] + ".json")).write_text(json.dumps(
-                {"version": INDEX_VERSION, "root": str(root), "by_name": index.by_name, "paks": index.paks}))
+                {"version": INDEX_VERSION, "root": str(root), "by_name": index.by_name, "paks": index.paks,
+                 "motions": index.motions}))
         except OSError:
             pass
     return index
@@ -599,6 +607,64 @@ def load_model(path: os.PathLike | str, texture_dirs: tuple[str, ...] = ()) -> M
     return asset
 
 
+# ---------------------------------------------------------------------------
+# A model's animations
+
+_CHARACTER_ID = re.compile(r"^([a-z]+)(\d+)")
+_CUTSCENE = re.compile(r"/(event|cutscene|ev|cs|presentation)/", re.I)
+MAX_MOTION_LISTS = 400
+
+
+def character_id(stem: str) -> str | None:
+    """The id a model's animations are filed under: the letters and digits its name starts with
+    (``pl0000`` for pl0000_body, ``cha000`` for RE4's cha000_00, ``ch01`` for Village's ch01_1201_upperbody)."""
+    m = _CHARACTER_ID.match(stem.lower())
+    return m.group(0) if m else None
+
+
+def _id_score(cid: str, rel: str) -> int:
+    """How well a motion file's path names character ``cid``: 3 the same id (pl0000), 2 a family it belongs
+    to (RE4's cha0 folder for cha000, RE2's pl00 for pl0000), 1 a sibling (pl1000's animations for
+    pl1001), 0 not at all."""
+    letters, digits = _CHARACTER_ID.match(cid).groups()
+    best = 0
+    for token in re.split(r"[/_.\-]", rel.lower()):
+        m = _CHARACTER_ID.fullmatch(token)
+        if not m or m.group(1) != letters:
+            continue
+        d = m.group(2)
+        if d == digits:
+            return 3
+        if digits.startswith(d):
+            best = max(best, 2)
+        elif len(d) == len(digits) >= 3 and d[:-1] == digits[:-1]:
+            best = max(best, 1)
+    return best
+
+
+def find_motion_lists(path: Path) -> list[Path]:
+    """The .motlist (and .mot) files that may animate a model: the game's motion files whose path names the
+    model's character id, the character's own animation folders first and cutscenes after."""
+    path = Path(path)
+    cid = character_id(file_stem(path.name))
+    if cid is None:
+        return []
+    index = index_for(path)
+    if index is not None:
+        rels = [(r, index.path(r)) for r in index.motions]
+    else:  # a file opened on its own: look beside it and a little way up
+        rels = []
+        seen: set[str] = set()
+        for folder in [path.parent, *list(path.parent.parents)[:2]]:
+            for name, p in _listing(folder).items():
+                if MOTION_FILE.search(name) and str(p) not in seen:
+                    seen.add(str(p))
+                    rels.append((p.as_posix(), p))
+    scored = [(s, r, p) for r, p in rels if (s := _id_score(cid, r))]
+    scored.sort(key=lambda x: (bool(_CUTSCENE.search("/" + x[1])), -x[0], x[1].lower()))
+    return [p for _, _, p in scored[:MAX_MOTION_LISTS]]
+
+
 def related_files(path: Path, textures: bool = True) -> list[tuple[Path, str]]:
     """The files a model needs when copied elsewhere: the mesh, its streamed half, its materials and its
     textures (both the small copy and the streamed full-size one)."""
@@ -638,5 +704,5 @@ def _small_copy(path: Path) -> Path | None:
 
 
 __all__ = ["FileIndex", "ModelAsset", "ModelPath", "TexRef", "build_index", "exists", "file_stem", "find_mdf",
-           "find_texture", "forget", "index_for", "is_mesh_file", "is_streaming", "load_model", "locate", "natives_root", "read_bytes",
+           "find_motion_lists", "find_texture", "forget", "index_for", "is_mesh_file", "is_streaming", "load_model", "locate", "natives_root", "read_bytes",
            "related_files", "size_of", "split_name", "streaming_partner", "walk"]
