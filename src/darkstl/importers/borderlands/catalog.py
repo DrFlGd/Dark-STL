@@ -25,6 +25,7 @@ from .formats import upk
 
 VERSION = 2
 # what materials need too, so an object cooked into some other package can be found (see object_index)
+MATERIAL_CLASSES = ("MaterialInstanceConstant", "MaterialInstanceTimeVarying", "Material")
 LOOKUP_CLASSES = {"Material", "MaterialInstanceConstant", "MaterialInstanceTimeVarying", "Texture2D",
                   "TextureFlipBook"}
 KEEP_CLASSES = set(files.MODEL_CLASSES) | {"GestaltSkeletalMeshDefinition", "WeaponPartDefinition",
@@ -121,15 +122,22 @@ class ObjectIndex:
         if not class_name:
             return None
         want = low.split(".")
-        best, best_score = None, 0
-        for file, p in self.by_name.get((want[-1], class_name), []):
-            have = p.lower().split(".")
-            score = 0
-            while score < min(len(want), len(have)) and want[-1 - score] == have[-1 - score]:
-                score += 1
-            if score > best_score:
-                best, best_score = (Path(file), p), score
-        return best
+        # a material's copy may be of another material class than the reference says (a parent that's a
+        # MaterialInstanceTimeVarying where a MaterialInstanceConstant was named, say): those count too, after
+        classes = [class_name] + ([c for c in MATERIAL_CLASSES if c != class_name] if class_name in MATERIAL_CLASSES
+                                  else [])
+        for cls in classes:
+            best, best_score = None, 0
+            for file, p in self.by_name.get((want[-1], cls), []):
+                have = p.lower().split(".")
+                score = 0
+                while score < min(len(want), len(have)) and want[-1 - score] == have[-1 - score]:
+                    score += 1
+                if score > best_score:
+                    best, best_score = (Path(file), p), score
+            if best is not None:
+                return best
+        return None
 
 
 _OBJECT_INDEXES: dict[str, ObjectIndex] = {}

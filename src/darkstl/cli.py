@@ -97,6 +97,23 @@ def cmd_unpack(args) -> int:
     return 0 if not result["failed_count"] else 1
 
 
+def cmd_find(args) -> int:
+    """Where objects are in a Borderlands (Unreal 3) game folder: for tracking down a missing material."""
+    from .importers.borderlands.diagnose import find_objects
+
+    def progress(i, n):
+        if i % 100 == 0:
+            print(f"  {i:,} / {n:,} packages", file=sys.stderr, flush=True)
+
+    report = find_objects(Path(args.folder), args.names, progress)
+    text = "\n".join(report.lines())
+    print(text)
+    if args.output:
+        Path(args.output).write_text(text + "\n", "utf-8")
+        print(f"\nWritten to {args.output}", file=sys.stderr)
+    return 0
+
+
 def cmd_info(args) -> int:
     from .errors import FormatError
     from .importers import IMPORTERS, importer_for
@@ -402,6 +419,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dry-run", action="store_true", help="only say what would be unpacked")
     s.add_argument("--download-lists", action="store_true", help="first download newer file lists (UXM Selective Unpacker's)")
     s.set_defaults(func=cmd_unpack)
+
+    s = sub.add_parser("find", help="find where objects are stored in a Borderlands (Unreal 3) game folder")
+    s.add_argument("folder", help="the game's install folder")
+    s.add_argument("names", nargs="+", help="part of an object's name, e.g. Mati_DahlEpicAR")
+    s.add_argument("-o", "--output", help="also write the list to this text file")
+    s.set_defaults(func=cmd_find)
 
     s = sub.add_parser("info", help="describe a model, texture pack or archive")
     s.add_argument("file")
