@@ -489,7 +489,7 @@ def located_textures(path: Path) -> list[tuple[str, Path]]:
         except (FormatError, OSError):
             asset = None
         _located[key] = list(asset.located) if asset else []
-        while len(_located) > 4096:
+        while len(_located) > 65536:  # a whole game, so collecting it reads each model once
             _located.pop(next(iter(_located)))
     return _located[key]
 

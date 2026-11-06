@@ -205,13 +205,25 @@ function Collect({ game, category, group, model }) {
   const args = { ...(scopes.find((s) => s.key === scope) || scopes[0]).args, textures: opts.textures, animations: opts.animations,
     player_animations: opts.player_animations, lod: opts.lod, lod_copies: opts.lod };
   const argsKey = JSON.stringify(args);
+  const [reading, setReading] = useState("");
   useEffect(() => {
+    // a job: reading every model of a game takes a while. Changing an option (or closing) stops it.
     const n = ++seq.current;
-    const t = setTimeout(() => {
-      api("collect_plan", args).then((p) => { if (n === seq.current) { setPlan(p); setPlanError(null); } },
-        (e) => { if (n === seq.current) { setPlan(null); setPlanError(String(e.message || e)); } });
+    let job = null;
+    setPlan(null); setPlanError(null); setReading("");
+    const t = setTimeout(async () => {
+      try {
+        ({ job } = await api("collect_plan", { ...args, job: 1 }));
+        if (n !== seq.current) { api("job_stop", { id: job }).catch(() => {}); return; }
+        const p = await followJob(job, "Working out what to copy", (j) => {
+          if (n === seq.current) setReading(`${j.message || ""}${j.progress ? ` · ${Math.round(j.progress * 100)}%` : ""}`);
+        });
+        if (n === seq.current) { setPlan(p); setPlanError(null); }
+      } catch (e) {
+        if (n === seq.current && !e.stopped) { setPlan(null); setPlanError(String(e.message || e)); }
+      }
     }, 200);
-    return () => clearTimeout(t);
+    return () => { seq.current++; clearTimeout(t); if (job) api("job_stop", { id: job }).catch(() => {}); };
   }, [argsKey]);
   const submit = async () => {
     if (!plan) { setError(planError || "Still working out what to copy…"); return; }
@@ -249,7 +261,7 @@ function Collect({ game, category, group, model }) {
     </div>
     <div class="collect-plan" id="collect-plan" aria-live="polite">
       ${planError ? html`<p class="warn-text" id="collect-plan-error">${planError}</p>`
-      : !plan ? html`<p class="muted">Working out what to copy…</p>`
+      : !plan ? html`<p class="muted" id="collect-plan-reading">Working out what to copy…${reading ? html`<br /><small>${reading}</small>` : null}</p>`
       : html`<p id="collect-plan-text"><b>${plural(plan.models, "model")}</b> · ${plural(plan.files, "file")} · ${bytesText(plan.bytes)}
           ${plan.present ? html`<span class="muted"> · ${plan.to_copy ? `${plural(plan.present, "file")} already there, ${bytesText(plan.bytes_to_copy)} to copy` : "all already there"}</span>` : null}</p>
         <p class="muted" id="collect-plan-kinds">${kinds.join(" · ")}</p>

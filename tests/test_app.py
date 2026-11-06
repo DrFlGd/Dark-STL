@@ -11,6 +11,8 @@ import struct
 
 import pytest
 
+import darkstl
+
 from darkstl.app.config import Config
 from darkstl.app.meshpack import pack_mesh, unpack_mesh
 from darkstl.app.server import AppServer
@@ -84,6 +86,37 @@ def test_folders_are_kept_between_runs(service, home, weapon_dir):  # noqa: F811
     assert not again.call("app_info", {})["first_run"]
     wait(again, again.load_folders().id)
     assert again.call("overview", {})["total"] == 4
+
+    # the next start lists the library from the last scan at once, while the folder is scanned again
+    import threading
+
+    from darkstl import library as library_mod
+
+    release, scanning = threading.Event(), threading.Event()
+    real = library_mod.Library.add_root
+
+    def slow(self, *a, **k):
+        scanning.set()
+        release.wait(30)
+        return real(self, *a, **k)
+
+    third = make_service(home)
+    library_mod.Library.add_root = slow
+    try:
+        job = third.load_folders()
+        assert scanning.wait(30)
+        assert third.call("overview", {})["total"] == 4 and third.call("overview", {})["scanning"]
+        opened = third.call("models_query", {"game": "Dark Souls III"})["items"][0]["id"]
+        assert third.call("model_open", {"id": opened})["sid"]
+    finally:
+        release.set()
+        library_mod.Library.add_root = real
+    wait(third, job.id)
+    assert third.call("overview", {})["total"] == 4
+    # a snapshot from another version, or of another game, is not used
+    assert library_mod.Snapshot.load(third.snapshots, weapon_dir, "Dark Souls III", "0.0.0") is None
+    assert library_mod.Snapshot.load(third.snapshots, weapon_dir, "Elden Ring", darkstl.__version__) is None
+    assert library_mod.Snapshot.load(third.snapshots, weapon_dir, "Dark Souls III", darkstl.__version__) is not None
 
     again.call("folder_set_game", {"path": str(weapon_dir), "game": "My DS3"})
     assert [g["name"] for g in again.call("overview", {})["games"]] == ["My DS3"]
