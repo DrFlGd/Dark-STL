@@ -68,8 +68,16 @@ def split_member(path: Path) -> tuple[Path, str, str]:
 
 
 def game_root(path: Path) -> Path:
-    """The folder that holds a package's game: above ``WillowGame``/``Cooked*`` when there is one."""
-    path = Path(path)
+    """The folder that holds a package's game: above ``WillowGame``/``Cooked*`` when there is one, and for a
+    DLC's packages (``<game>/DLC/<name>/...``) the game's own folder above the ``DLC`` folder."""
+    root = _root(Path(path))
+    if root.parent.name.lower() == "dlc" and root.parent.parent != root.parent:
+        up = root.parent.parent
+        return up.parent if up.name.lower() == "willowgame" else up
+    return root
+
+
+def _root(path: Path) -> Path:
     for p in [path, *path.parents]:
         if p.name.lower() == "willowgame":
             return p.parent
