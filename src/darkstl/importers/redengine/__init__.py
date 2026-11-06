@@ -83,7 +83,12 @@ class RedEngineImporter(Importer):
         return found
 
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
-        return catalog.folder_notes(folder, found)
+        from . import configurations as weapons
+
+        notes = catalog.folder_notes(folder, found)
+        if any(e.category == "Weapons" for e in found if e.importer == self.key):
+            notes += weapons.notes_for(Path(folder))
+        return notes
 
     def scan_state(self, folder: Path):
         """The folder's archives, whose names (kept in this importer's cache) are read again once one is opened."""
@@ -174,7 +179,15 @@ class RedEngineImporter(Importer):
 
     def related_files(self, path: Path, textures: bool = True, animations: bool = True,
                       lod: bool = False) -> list[RelatedFile]:
-        return depot.related_files(Path(path), textures)
+        from . import configurations as weapons
+
+        out = depot.related_files(Path(path), textures)
+        if textures and "\\weapons\\" in (depot.open_file(Path(path)).depot_path or "").lower():
+            for name, pack, h in weapons.appearance_files(Path(path), self.cache):
+                ar = archive.open_archive(pack)
+                out.append(RelatedFile(depot.member_path(pack, h, Path(name).suffix), "other",
+                                       name.replace("\\", "/"), lambda ar=ar, h=h: ar.read(h), ar.size_of(h)))
+        return out
 
     def shared_files(self, root: Path, game: str, player_animations: bool = False) -> list[RelatedFile]:
         return [RelatedFile(p, "other") for p in depot.shared_files(Path(root))]

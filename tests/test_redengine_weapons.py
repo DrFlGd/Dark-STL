@@ -234,3 +234,66 @@ def test_a_setup_without_its_mask_still_blends(tmp_path):
     rgba = model.textures[mat.albedo].decode()
     assert rgba[5, 5, 2] > 0 and rgba[5, 5, 0] == 0  # the blue layer covers everything at full opacity
     assert any("blended by their opacity" in n for n in model.notes), model.notes
+
+
+# ---------------------------------------------------------------------------- without appearance files
+
+
+def test_weapons_named_the_games_way_are_guessed_from_one_archive(tmp_path):
+    """Cyberpunk names its meshes w_<type>__<name>__<part><n>; all of them sit in one archive."""
+    from darkstl import configs
+
+    pos, nrm, uv, idx = S.grid_plane(2, 0.2)
+    mesh = S.build_mesh([S.SynthChunk(pos, nrm, uv, idx)], [("steel", STEEL_MI)])
+    d = r"base\weapons\firearms\revolver\darra_nova"
+    names = ["w_revolver__darra_nova__base1", "w_revolver__darra_nova__base2", "w_revolver__darra_nova__mag1",
+             "w_revolver__darra_nova__mag2", "w_revolver__darra_nova__scope1", "w_revolver__darra_nova__grip1",
+             "w_rifle_a__midnight__base1", "w_rifle_a__midnight__stock1"]
+    files = {f"{d}\\{n}.mesh": mesh for n in names}
+    files[r"base\weapons\w_all.ent"] = S.build_ent([], meshes=list(files))
+    game = archive_game(tmp_path / "Cyberpunk 2077", files)
+    imp = RedEngineImporter()
+    imp.cache = tmp_path / "cache"
+    entries = imp.scan(game, "Cyberpunk 2077", None)
+    assert len(entries) == 8 and all(e.category == "Weapons" for e in entries)
+    found = imp.configurations(game, "Cyberpunk 2077", entries)
+    by_id = {c.id: c for c in found}
+    assert sorted(by_id) == ["auto:w_revolver__darra_nova__base1", "auto:w_revolver__darra_nova__base2",
+                             "auto:w_rifle_a__midnight__base1"]
+    c = by_id["auto:w_revolver__darra_nova__base1"]
+    assert c.guessed and c.base.file.endswith(".mesh")
+    assert {s.id: [o.id for o in s.options] for s in c.slots} == {
+        "magazine": ["w_revolver__darra_nova__mag1", "w_revolver__darra_nova__mag2"],
+        "sight": ["w_revolver__darra_nova__scope1"], "grip": ["w_revolver__darra_nova__grip1"]}
+    assert {s.id for s in by_id["auto:w_revolver__darra_nova__base2"].slots} == {"magazine", "sight", "grip"}
+    assert [s.id for s in by_id["auto:w_rifle_a__midnight__base1"].slots] == ["stock"]
+    assert any("No weapon appearance files" in n for n in imp.folder_notes(game, entries))
+    assert configs.from_folders(entries, "Cyberpunk 2077", max_files=1) == []
+
+
+def test_folder_notes_report_the_appearance_files(tmp_path):
+    game = archive_game(tmp_path / "Cyberpunk 2077", weapon_files())
+    imp = RedEngineImporter()
+    imp.cache = tmp_path / "cache"
+    entries = imp.scan(game, "Cyberpunk 2077", None)
+    imp.configurations(game, "Cyberpunk 2077", entries)
+    (note,) = [n for n in imp.folder_notes(game, entries) if "appearance files read" in n]
+    assert note.startswith("2 weapon appearance files read: 1 weapons and 1 attachments named models of this folder, "
+                           "1 became configurable")
+
+
+def test_collect_takes_the_weapons_appearance_files_along(tmp_path):
+    game = archive_game(tmp_path / "Cyberpunk 2077", weapon_files())
+    imp = RedEngineImporter()
+    imp.cache = tmp_path / "cache"
+    entries = imp.scan(game, "Cyberpunk 2077", None)
+    rifle = next(e for e in entries if e.stem == "w_rifle_a")
+    related = imp.related_files(rifle.path)
+    saved = {r.save_as for r in related}
+    assert RIFLE_APP.replace("\\", "/") in saved and RIFLE_ENT.replace("\\", "/") in saved
+    app = next(r for r in related if r.save_as.endswith(".app"))
+    assert app.kind == "other" and app.extract is not None
+    assert entities.read_app(cr2w.read_cr2w(app.extract())).appearances[0].name == "frank"
+    mag = next(e for e in entries if e.stem == "w_rifle_a_mag_std")
+    assert any(r.save_as.endswith(".app") for r in imp.related_files(mag.path))  # a part brings its weapon's too
+    assert not any(r.save_as.endswith(".app") for r in imp.related_files(rifle.path, textures=False))

@@ -17,6 +17,7 @@ read: every scope is offered on a scope slot, every silencer on a muzzle.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +31,7 @@ from .formats import archive as arc
 from .formats import cr2w
 
 SOURCE = "Read from the game's appearance files"
+log = logging.getLogger(__name__)
 ATTACHMENT_KINDS = (  # (slot id, label, words in a slot's name, words in an attachment's name)
     ("scope", "Scope", ("scope", "sight", "optic"), ("scope", "sight", "optic")),
     ("muzzle", "Muzzle", ("muzzle", "silencer", "suppressor", "barrel"), ("silencer", "suppressor", "muzzle")),
@@ -48,6 +50,38 @@ class _Option:
     @property
     def key(self) -> tuple:
         return (self.entry.path, self.comp.appearance)
+
+
+@dataclass
+class Report:
+    """What the last build found in a folder, for its notes."""
+
+    apps: int = 0  # appearance files read
+    weapons: int = 0  # with meshes in the library
+    attachments: int = 0
+    configured: int = 0
+    unresolved: int = 0  # components naming no model of the library
+    errors: list[str] = field(default_factory=list)
+
+    def notes(self) -> list[str]:
+        if not self.apps:
+            return [("No weapon appearance files (.app) were found in this folder's archives or files, so weapons "
+                     "are put together from their names only.")]
+        text = (f"{self.apps} weapon appearance files read: {self.weapons} weapons and {self.attachments} "
+                f"attachments named models of this folder, {self.configured} became configurable")
+        if self.unresolved:
+            text += f"; {self.unresolved} components name meshes that aren't in the library"
+        if self.errors:
+            text += f". {len(self.errors)} couldn't be read ({self.errors[0]})"
+        return [text + "."]
+
+
+REPORTS: dict[str, Report] = {}  # folder -> its last report
+
+
+def notes_for(folder: Path) -> list[str]:
+    r = REPORTS.get(str(folder))
+    return r.notes() if r is not None else []
 
 
 @dataclass
@@ -138,15 +172,20 @@ def _weapon_name(stems: list[str]) -> str:
     return prefix
 
 
-def _read_weapons(folder: Path, entries: list[CatalogEntry], cache: Path | None) -> list[_Weapon]:
+def _read_weapons(folder: Path, entries: list[CatalogEntry], cache: Path | None, report: Report) -> list[_Weapon]:
     lookup = Lookup(entries)
     out: list[_Weapon] = []
     seen: set[tuple] = set()
     for source, f in _app_files(folder, entries, cache):
+        report.apps += 1
         try:
             app = entities.read_app(f)
-        except (ValueError, FormatError):
+        except (ValueError, FormatError) as exc:
+            report.errors.append(f"{source}: {exc}")
+            log.warning("Weapon appearance %s could not be read: %s", source, exc)
             continue
+        if app.partial:
+            report.errors.append(f"{source}: an appearance's components could not be read")
         w = _Weapon("", source, app)
         stems: list[str] = []
         for a in app.appearances:
@@ -168,7 +207,9 @@ def _read_weapons(folder: Path, entries: list[CatalogEntry], cache: Path | None)
                 stems.append(e.stem.lower())
             w.slots += a.slots
         if not w.options:
+            report.unresolved += w.unresolved
             continue
+        report.unresolved += w.unresolved
         w.name = _weapon_name(sorted(set(stems)))
         if app.base_entity:
             w.name = Path(app.base_entity.replace("\\", "/")).stem or w.name
@@ -363,8 +404,10 @@ def build(folder: Path, game: str, entries: list[CatalogEntry], cache: Path | No
         from ... import configs
     except ImportError:
         return []
-    weapons = _read_weapons(Path(folder), entries, cache)
+    report = REPORTS[str(folder)] = Report()
+    weapons = _read_weapons(Path(folder), entries, cache, report)
     attachments = [w for w in weapons if _is_attachment(w)]
+    report.weapons, report.attachments = len(weapons) - len(attachments), len(attachments)
     out = []
     stores: dict = {}
     for w in weapons:
@@ -374,11 +417,53 @@ def build(folder: Path, game: str, entries: list[CatalogEntry], cache: Path | No
             continue  # one mesh and nothing to fit: nothing to configure
         try:
             c = _configuration(configs, w, game, attachments, _entity_slots(w, stores))
-        except (FormatError, ValueError, KeyError, IndexError):
+        except (FormatError, ValueError, KeyError, IndexError) as exc:
+            report.errors.append(f"{w.name}: {exc}")
+            log.warning("Weapon %s (%s) could not be configured", w.name, w.source, exc_info=True)
             continue
         if c.slots:
             out.append(c)
+    report.configured = len(out)
+    log.info("Weapon configurations of %s: %s", folder, report.notes()[0])
     return out
 
 
-__all__ = ["SOURCE", "build"]
+def appearance_files(path: Path, cache: Path | None) -> list[tuple[str, Path, int]]:
+    """The appearance file(s) naming the mesh ``path`` (an archive member) and their base entities, as
+    (depot path, archive, hash): what Collect copies so the weapon keeps its configuration."""
+    if not depot.is_archive_member(path):
+        return []
+    want = depot.member_hash(path)
+    out = []
+    game = next((p for p in path.parents if (p / "bin" / "x64").is_dir()), None)
+    archives = depot.game_archives(game) if game else [path.parent]
+    for a in archives:
+        try:
+            ar = arc.open_archive(a)
+            hashes = catalog.weapon_apps(a, cache)
+        except (FormatError, OSError):
+            continue
+        for h in hashes:
+            try:
+                app = entities.read_app(cr2w.read_cr2w(ar.read(h)))
+            except (FormatError, OSError, ValueError, IndexError):
+                continue
+            if not any(c.mesh_hash == want for ap in app.appearances for c in ap.meshes):
+                continue
+            out.append((ar.name_of(h) if h in ar.names else f"_unnamed\\weapons\\{h:016x}.app", a, h))
+            if app.base_entity:
+                eh = arc.path_hash(app.base_entity)
+                holder = next((b for b in archives if _has(b, eh)), None)
+                if holder is not None:
+                    out.append((arc.normalize_path(app.base_entity), holder, eh))
+    return out
+
+
+def _has(archive: Path, h: int) -> bool:
+    try:
+        return h in arc.open_archive(archive).entries
+    except (FormatError, OSError):
+        return False
+
+
+__all__ = ["REPORTS", "SOURCE", "Report", "appearance_files", "build", "notes_for"]

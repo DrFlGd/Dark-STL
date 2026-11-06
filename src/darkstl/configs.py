@@ -414,6 +414,7 @@ SLOT_WORDS = [  # (slot id, label, words in a part's file name)
 ]
 _BASE_WORDS = ("base", "body", "receiver", "frame", "main")
 _TOKEN = re.compile(r"[a-z]+|\d+")
+_BASE_END = re.compile(r"(?:^|[_\-. ])(?:" + "|".join(_BASE_WORDS) + r")\d*$")
 
 
 def _common_prefix(a: str, b: str) -> int:
@@ -428,14 +429,18 @@ def _common_prefix(a: str, b: str) -> int:
 def from_folders(entries: Iterable[CatalogEntry], game: str, categories: tuple[str, ...] = ("Weapons",),
                  max_files: int = 48) -> list[Configuration]:
     """Configurations guessed from how a game keeps a weapon's parts: in one folder, named after it
-    (``w_rifle_ajax.mesh`` beside ``w_rifle_ajax_mag.mesh``). The model whose name is shortest, or
-    says it's the base or body, is the base; the others are its parts, sorted into slots by words in
-    their names (mag, scope, muzzle, stock...), each slot holding the parts that share a word. Parts
-    are taken to be modelled in place."""
-    folders: dict[Path, list[CatalogEntry]] = {}
+    (``w_rifle_ajax.mesh`` beside ``w_rifle_ajax_mag.mesh``), or named with the weapon's name before a
+    double underscore (Cyberpunk's ``w_revolver__darra_nova__base1``, ``w_revolver__darra_nova__mag1``;
+    these are grouped by that name, wherever the files are). The model whose name is shortest, or says
+    it's the base or body (``base``, ``body1``...), is the base; the others are its parts, sorted into
+    slots by words in their names (mag, scope, muzzle, stock...), each slot holding the parts that
+    share a word. Parts are taken to be modelled in place."""
+    folders: dict[tuple, list[CatalogEntry]] = {}
     for e in entries:
         if e.category in categories and not e.is_lod and e.config is None:
-            folders.setdefault(e.path.parent, []).append(e)
+            stem = e.stem.lower()
+            weapon = stem.rsplit("__", 1)[0] if "__" in stem else ""
+            folders.setdefault((e.path.parent, weapon), []).append(e)
     out = []
     for items in folders.values():
         if len(items) < 2 or len(items) > max_files:
@@ -443,19 +448,20 @@ def from_folders(entries: Iterable[CatalogEntry], game: str, categories: tuple[s
         stems = {e.stem.lower(): e for e in items}
 
         def is_base(s: str) -> bool:
-            rest = _TOKEN.findall(s)
-            return bool(rest) and rest[-1] in _BASE_WORDS
+            return _BASE_END.search(s) is not None
 
         bases = [s for s in stems if is_base(s)] or [min(stems, key=lambda s: (len(s), s))]
         groups: dict[str, list[str]] = {b: [] for b in bases}
         for s in stems:
             if s in groups:
                 continue
-            best = max(bases, key=lambda b: _common_prefix(b if not is_base(b) else _strip_base(b), s))
-            stem_b = _strip_base(best) if is_base(best) else best
-            if _common_prefix(stem_b, s) < max(3, int(len(stem_b) * 0.6)):
-                continue
-            groups[best].append(s)
+            score = {b: _common_prefix(b if not is_base(b) else _strip_base(b), s) for b in bases}
+            top = max(score.values())
+            for best in (b for b in bases if score[b] == top):  # several bases of one weapon share its parts
+                stem_b = _strip_base(best) if is_base(best) else best
+                if _common_prefix(stem_b, s) < max(3, int(len(stem_b) * 0.6)):
+                    continue
+                groups[best].append(s)
         for b, parts in groups.items():
             if not parts:
                 continue
