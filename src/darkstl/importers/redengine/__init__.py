@@ -65,6 +65,28 @@ def mesh_summary(m: meshfmt.RedMesh) -> list[str]:
     return lines
 
 
+_UNNAMED = ("", "None")  # an appearance without a name: the property left out, or the CName "None"
+
+
+def _label(name: str) -> str:
+    """An appearance's name as the app shows it: the game leaves the first appearance of many meshes unnamed."""
+    return "default" if name in _UNNAMED else name
+
+
+def _appearance_named(m: meshfmt.RedMesh, variant: str | None) -> str | None:
+    """The mesh appearance a chosen variant (a label from :func:`_label`) stands for, or the first one."""
+    if not m.appearances:
+        return None
+    names = [a.name for a in m.appearances]
+    if variant in names:
+        return variant
+    if variant == "default":
+        unnamed = [n for n in names if n in _UNNAMED]
+        if unnamed:
+            return unnamed[0]
+    return names[0]
+
+
 class RedEngineImporter(Importer):
     key = "redengine"
     name = "REDengine 4 (Cyberpunk 2077)"
@@ -120,14 +142,14 @@ class RedEngineImporter(Importer):
             names = depot.open_file(path).appearance_names()
         except FormatError:
             return []
-        return names if len(names) > 1 else []
+        return [_label(n) for n in names] if len(names) > 1 else []
 
     def load(self, path: Path, variant: str | None = None, texture_dirs: tuple[str, ...] = ()) -> SourceModel:
         path = Path(path)
         source = depot.open_file(path)
         m = source.mesh()
         store = depot.store_for(path, texture_dirs)
-        appearance = variant or (m.appearances[0].name if m.appearances else None)
+        appearance = _appearance_named(m, variant)
         infos, textures, notes = materials.resolve(m, source, store, appearance)
         parts = [Part(f"Chunk {i}" + (f" (LOD {c.lod_level})" if c.lod_level else ""), c.material_index,
                       c.vertex_count, c.index_count // 3) for i, c in enumerate(m.chunks)]
@@ -143,8 +165,8 @@ class RedEngineImporter(Importer):
 
         return SourceModel(
             name=source.name, path=path, importer=self.key, build=build,
-            variant=appearance if len(m.appearances) > 1 else None,
-            variants=[a.name for a in m.appearances] if len(m.appearances) > 1 else [],
+            variant=_label(appearance or "") if len(m.appearances) > 1 else None,
+            variants=[_label(a.name) for a in m.appearances] if len(m.appearances) > 1 else [],
             game=GAME, parts=parts, materials=[_material(i) for i in infos],
             textures={k: _texture(ref) for k, ref in textures.items()},
             options=[BuildOption("lod0", "Highest detail level only", True,

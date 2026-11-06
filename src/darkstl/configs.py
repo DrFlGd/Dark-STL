@@ -414,7 +414,7 @@ SLOT_WORDS = [  # (slot id, label, words in a part's file name)
 ]
 _BASE_WORDS = ("base", "body", "receiver", "frame", "main")
 _TOKEN = re.compile(r"[a-z]+|\d+")
-_BASE_END = re.compile(r"(?:^|[_\-. ])(?:" + "|".join(_BASE_WORDS) + r")\d*$")
+_BASE_END = re.compile(r"(?:^|[_\-. ])(?:" + "|".join(_BASE_WORDS) + r")\d*(?:_\d+)?$")
 
 
 def _common_prefix(a: str, b: str) -> int:
@@ -487,7 +487,7 @@ def from_folders(entries: Iterable[CatalogEntry], game: str, categories: tuple[s
 
 
 def _strip_base(stem: str) -> str:
-    return re.sub(r"[_\-. ]*(" + "|".join(_BASE_WORDS) + r")\d*$", "", stem)
+    return re.sub(r"[_\-. ]*(" + "|".join(_BASE_WORDS) + r")\d*(?:_\d+)?$", "", stem)
 
 
 # ---------------------------------------------------------------- assembling

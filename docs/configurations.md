@@ -21,7 +21,7 @@ Later sources replace earlier ones when a game has two configurations with the s
    `w_rifle_ajax_scope.mesh`), or the files named with the weapon's name before a double
    underscore (`w_revolver__darra_nova__base1`, `w_revolver__darra_nova__mag1`, wherever they
    are), become a configuration: the model with the shortest name, or one ending in `base`/`body`
-   (digits allowed: `base1`), is the base; the others are sorted into slots by words in their
+   (digits allowed: `base1`, `base1_01`), is the base; the others are sorted into slots by words in their
    names (mag, scope, muzzle, stock, barrel, grip...). These say *Guessed* on the Configure tab.
    An importer works configurations out through its `configurations(folder, game, entries)` hook;
    the Home page's folder notes say how many Cyberpunk appearance files it read and used.

@@ -246,7 +246,7 @@ def test_weapons_named_the_games_way_are_guessed_from_one_archive(tmp_path):
     pos, nrm, uv, idx = S.grid_plane(2, 0.2)
     mesh = S.build_mesh([S.SynthChunk(pos, nrm, uv, idx)], [("steel", STEEL_MI)])
     d = r"base\weapons\firearms\revolver\darra_nova"
-    names = ["w_revolver__darra_nova__base1", "w_revolver__darra_nova__base2", "w_revolver__darra_nova__mag1",
+    names = ["w_revolver__darra_nova__base1_01", "w_revolver__darra_nova__base2", "w_revolver__darra_nova__mag1",
              "w_revolver__darra_nova__mag2", "w_revolver__darra_nova__scope1", "w_revolver__darra_nova__grip1",
              "w_rifle_a__midnight__base1", "w_rifle_a__midnight__stock1"]
     files = {f"{d}\\{n}.mesh": mesh for n in names}
@@ -258,9 +258,9 @@ def test_weapons_named_the_games_way_are_guessed_from_one_archive(tmp_path):
     assert len(entries) == 8 and all(e.category == "Weapons" for e in entries)
     found = imp.configurations(game, "Cyberpunk 2077", entries)
     by_id = {c.id: c for c in found}
-    assert sorted(by_id) == ["auto:w_revolver__darra_nova__base1", "auto:w_revolver__darra_nova__base2",
+    assert sorted(by_id) == ["auto:w_revolver__darra_nova__base1_01", "auto:w_revolver__darra_nova__base2",
                              "auto:w_rifle_a__midnight__base1"]
-    c = by_id["auto:w_revolver__darra_nova__base1"]
+    c = by_id["auto:w_revolver__darra_nova__base1_01"]  # the game's own numbering: base1_01
     assert c.guessed and c.base.file.endswith(".mesh")
     assert {s.id: [o.id for o in s.options] for s in c.slots} == {
         "magazine": ["w_revolver__darra_nova__mag1", "w_revolver__darra_nova__mag2"],
@@ -297,3 +297,43 @@ def test_collect_takes_the_weapons_appearance_files_along(tmp_path):
     mag = next(e for e in entries if e.stem == "w_rifle_a_mag_std")
     assert any(r.save_as.endswith(".app") for r in imp.related_files(mag.path))  # a part brings its weapon's too
     assert not any(r.save_as.endswith(".app") for r in imp.related_files(rifle.path, textures=False))
+
+
+# ---------------------------------------------------------------------------- appearance names and layer sampling
+
+
+def test_an_unnamed_first_appearance_is_shown_as_default(tmp_path):
+    """Many game meshes leave their first appearance unnamed; the app lists it as "default"."""
+    pos, nrm, uv, idx = S.grid_plane(2, 0.2)
+    mesh = S.build_mesh([S.SynthChunk(pos, nrm, uv, idx)], [("steel", STEEL_MI), ("rust", STEEL_MI)],
+                        appearances=[("", ["steel"]), ("military1", ["rust"])])
+    files = rifle_files()
+    files[RIFLE] = mesh
+    root = tmp_path / "exported"
+    write_loose(root, files)
+    path = root.joinpath(*RIFLE.split("\\"))
+    imp = RedEngineImporter()
+    assert imp.variants(path) == ["default", "military1"]
+    model = open_model(path)
+    assert model.variant == "default" and model.variants == ["default", "military1"]
+    assert model.materials[model.parts[0].material].name == "steel"
+    model = open_model(path, variant="military1")
+    assert model.variant == "military1"
+    assert model.materials[model.parts[0].material].name == "rust"
+    assert open_model(path, variant="default").variant == "default"
+
+
+def test_finely_tiled_layers_are_averaged_not_sparkled():
+    from darkstl.importers.redengine import multilayer
+
+    # a 64x64 checkerboard tiled 32 times across a 64-texel output: each output texel covers 32 texture texels
+    tex = np.zeros((64, 64, 1), np.uint8)
+    tex[::2, ::2] = 255
+    tex[1::2, 1::2] = 255
+    rows = np.arange(64)
+    out = multilayer._sample(tex, rows, 64, 64, 32.0, (0.0, 0.0))
+    assert out.shape == (64, 64, 1)
+    assert abs(int(out.mean()) - 128) <= 2 and out.max() - out.min() <= 2  # the checkerboard averages to grey
+    # untiled, the same texture samples texel for texel
+    out = multilayer._sample(tex, rows, 64, 64, 1.0, (0.0, 0.0))
+    assert out[0, 0, 0] == 255 and out[0, 1, 0] == 0

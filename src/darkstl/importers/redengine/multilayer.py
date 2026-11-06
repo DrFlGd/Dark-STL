@@ -129,9 +129,21 @@ def output_size(mask_w: int, mask_h: int) -> tuple[int, int]:
     return min(mask_w * k, MAX_SIZE), min(mask_h * k, MAX_SIZE)
 
 
+def _reduce(tex: np.ndarray, k: int) -> np.ndarray:
+    """``tex`` box-filtered ``k`` times smaller along each side (k texels of the tile per output texel)."""
+    th, tw = tex.shape[:2]
+    h, w = max(th // k, 1), max(tw // k, 1)
+    t = tex[:h * k, :w * k].astype(np.float32).reshape(h, k, w, k, -1).mean(axis=(1, 3))
+    return t.astype(tex.dtype) if tex.dtype != np.uint8 else (t + 0.5).astype(np.uint8)
+
+
 def _sample(tex: np.ndarray, rows: np.ndarray, out_w: int, out_h: int, tile: float, offset: tuple[float, float]) \
         -> np.ndarray:
-    """A tiled texture at the texels of ``rows`` (nearest texel), as (len(rows), out_w, channels)."""
+    """A tiled texture at the texels of ``rows`` (nearest texel of the texture reduced to about the output's
+    texel size, so a finely tiled texture averages rather than sparkles), as (len(rows), out_w, channels)."""
+    k = int(tex.shape[1] * max(tile, 1e-6) // out_w)
+    if k > 1:
+        tex = _reduce(tex, k)
     th, tw = tex.shape[:2]
     u = ((np.arange(out_w) + 0.5) / out_w * tile + offset[0]) * tw
     v = ((rows + 0.5) / out_h * tile + offset[1]) * th
