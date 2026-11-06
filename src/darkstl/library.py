@@ -76,6 +76,7 @@ class Library:
     _by_id: dict[str, CatalogEntry] | None = field(default=None, repr=False)
     _full: set[tuple[str, str]] | None = field(default=None, repr=False)  # (game, stem) of every full model
     _first: dict[tuple[str, str], str] | None = field(default=None, repr=False)  # (game, stem) -> the entry shown
+    _root: dict[str, Path | None] | None = field(default=None, repr=False)  # entry id -> the folder holding it
 
     def add_root(self, root: str | os.PathLike, game: str | None = None,
                  progress: Callable[[int, str], None] | None = None) -> list[CatalogEntry]:
@@ -86,7 +87,7 @@ class Library:
         self.notes[root] = notes
         self.entries = [e for e in self.entries if not _is_under(e.path, root)] + found
         self.entries.sort(key=lambda e: e.sort_key)
-        self._by_id = self._full = self._first = None
+        self._by_id = self._full = self._first = self._root = None
         return found
 
     def remove_root(self, root: str | os.PathLike) -> None:
@@ -94,7 +95,7 @@ class Library:
         self.roots.pop(root, None)
         self.notes.pop(root, None)
         self.entries = [e for e in self.entries if not _is_under(e.path, root)]
-        self._by_id = self._full = self._first = None
+        self._by_id = self._full = self._first = self._root = None
 
     def set_game(self, root: str | os.PathLike, game: str) -> None:
         """File a folder's models under another game."""
@@ -104,7 +105,7 @@ class Library:
         self.roots[root] = game
         self.entries = sorted((dataclasses.replace(e, game=game) if _is_under(e.path, root) else e
                                for e in self.entries), key=lambda e: e.sort_key)
-        self._by_id = self._full = self._first = None
+        self._by_id = self._full = self._first = self._root = None
 
     def merge(self, other: "Library") -> None:
         """Take over ``other``'s roots, replacing any entries this library already had under them."""
@@ -113,7 +114,7 @@ class Library:
             self.notes[root] = other.notes.get(root, [])
             self.entries = [e for e in self.entries if not _is_under(e.path, root)]
         self.entries = sorted(self.entries + other.entries, key=lambda e: e.sort_key)
-        self._by_id = self._full = self._first = None
+        self._by_id = self._full = self._first = self._root = None
 
     def find(self, entry_id: str) -> CatalogEntry | None:
         if self._by_id is None:
@@ -143,6 +144,12 @@ class Library:
         return self._first.get((entry.game, entry.stem.lower()), entry.id) != entry.id
 
     def root_of(self, entry: CatalogEntry) -> Path | None:
+        if self._root is None:
+            self._root = {}
+            for e in self.entries:  # a game's library can hold 100,000 models: worked out once
+                self._root[e.id] = next((r for r in self.roots if _is_under(e.path, r)), None)
+        if entry.id in self._root:
+            return self._root[entry.id]
         return next((r for r in self.roots if _is_under(entry.path, r)), None)
 
     def games(self) -> list[str]:
@@ -177,6 +184,12 @@ class Library:
     def overview(self, include_lod: bool = False) -> list[dict]:
         """Each game with its folders, and its categories and groups with how many models each holds."""
         tree = self.grouped(include_lod)
+        counts: dict[Path | None, int] = {}
+        for e in self.entries:
+            if not self.hides(e, include_lod, copies=False):
+                for root in self.roots:
+                    if _is_under(e.path, root):
+                        counts[root] = counts.get(root, 0) + 1
         games = []
         for game in self.games() + [g for g in tree if g not in self.roots.values()]:
             cats = tree.get(game, {})
@@ -185,9 +198,8 @@ class Library:
                 groups = cats[cat]
                 categories.append({"name": cat, "count": sum(len(v) for v in groups.values()),
                                    "groups": [{"name": g, "count": len(v)} for g, v in groups.items() if g]})
-            folders = [{"path": str(r), "count": sum(1 for e in self.entries if _is_under(e.path, r)
-                                                     and not self.hides(e, include_lod, copies=False)),
-                        "notes": self.notes.get(r, []), "missing": not r.is_dir()}
+            folders = [{"path": str(r), "count": counts.get(r, 0), "notes": self.notes.get(r, []),
+                        "missing": not r.is_dir()}
                        for r, g in self.roots.items() if g == game]
             games.append({"name": game, "count": sum(c["count"] for c in categories),
                           "folders": folders, "categories": categories})
@@ -199,8 +211,12 @@ def _category_index(name: str) -> int:
 
 
 def _is_under(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
+    """Whether ``path`` is ``root`` or inside it (compared as text: Path.relative_to took seconds over a
+    100,000-model library)."""
+    p = os.path.normcase(os.fspath(path))
+    r = os.path.normcase(os.fspath(root))
+    if p == r:
         return True
-    except ValueError:
-        return False
+    if not r.endswith(("/", os.sep)):
+        r += os.sep
+    return p.startswith(r)

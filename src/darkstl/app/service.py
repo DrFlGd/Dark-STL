@@ -264,6 +264,9 @@ def mesh_stats(mesh: TriMesh) -> dict:
 
 class Service:
     BYTES = {"model_mesh", "texture", "thumb", "texture_crop"}
+    # opening a model and what its page shows first: library previews pause while these run
+    FOREGROUND = {"model_open", "model_mesh", "model_stats", "model_animations", "texture", "texture_info",
+                  "texture_maps", "texture_crop"}
     KEEP_GENERATED = 3  # enhanced models kept, so generating one again with the same settings is instant
     KEEP_MESHES = 2  # evened-out meshes kept, so other displacement settings are tried without making them again
     KEEP_UPSCALED = 8  # normal maps made ready (cleaned up, upsampled) kept, within KEEP_UPSCALED_BYTES
@@ -301,6 +304,9 @@ class Service:
         fn = getattr(self, f"cmd_{cmd}", None)
         if fn is None:
             raise AppError(f"Unknown command '{cmd}'")
+        if cmd in self.FOREGROUND:
+            with self.thumbs.foreground():
+                return fn(args or {})
         return fn(args or {})
 
     # ------------------------------------------------------------ the app

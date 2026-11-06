@@ -160,8 +160,13 @@ class CatalogEntry:
 
     @property
     def id(self) -> str:
-        """A short stable id for the file, used by the app's pages and its preview cache."""
-        return path_id(self.path)
+        """A short stable id for the file, used by the app's pages and its preview cache (worked out once:
+        the library asks for it over and over across 100,000 models)."""
+        known = self.__dict__.get("_id")
+        if known is None or known[0] is not self.path:
+            known = (self.path, path_id(self.path))
+            self.__dict__["_id"] = known
+        return known[1]
 
     @property
     def sort_key(self) -> tuple:
