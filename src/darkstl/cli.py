@@ -223,7 +223,7 @@ def _write_pieces(args, mesh) -> int:
     from .export import ExportOptions, export_mesh
 
     try:
-        settings = cut.CutSettings([cut.parse_cut(c, mesh) for c in args.cut])
+        settings = cut.CutSettings([cut.parse_cut(c, mesh) for c in args.cut], sheet_mm=args.sheet)
         for c in settings.cuts:
             c.joint.clearance_mm = args.clearance
         result = cut.cut_mesh(mesh, settings, _progress)
@@ -242,6 +242,30 @@ def _write_pieces(args, mesh) -> int:
     return 0
 
 
+def _watertight(args, mesh):
+    """With --watertight: the model as one watertight solid, the surfaces inside it removed (finish.py)."""
+    from . import finish
+
+    settings = finish.WatertightSettings(sheet_mm=args.sheet, fill_hollows=not args.keep_hollows,
+                                         close_gaps_mm=args.close_gaps, loose_percent=args.drop_loose)
+    result = finish.make_watertight(mesh, settings, _progress)
+    sys.stderr.write("\n")
+    for n in result.notes:
+        print(f"note: {n}", file=sys.stderr)
+    return result.mesh
+
+
+def _finish(args, mesh):
+    """The post-processing asked for on the command line, or None with an error printed."""
+    if not getattr(args, "watertight", False):
+        return mesh
+    try:
+        return _watertight(args, mesh)
+    except (ValueError, RuntimeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return None
+
+
 def cmd_export(args) -> int:
     from .export import export_mesh
 
@@ -249,6 +273,9 @@ def cmd_export(args) -> int:
     mesh = model.build_mesh(_mesh_options(args))
     if mesh.n_faces == 0:
         print(f"error: {model.name} has no triangles to export", file=sys.stderr)
+        return 1
+    mesh = _finish(args, mesh)
+    if mesh is None:
         return 1
     if args.cut:
         return _write_pieces(args, mesh)
@@ -290,10 +317,15 @@ def cmd_enhance(args) -> int:
     sys.stderr.write("\n")
     for w in result.warnings:
         print(f"warning: {w}", file=sys.stderr)
+    out_mesh = _finish(args, result.displaced)
+    if out_mesh is None:
+        return 1
     if args.cut:
-        return _write_pieces(args, result.displaced)
-    path = export_mesh(result.displaced, args.output, _export_options(args, model, result.displaced))
+        return _write_pieces(args, out_mesh)
+    path = export_mesh(out_mesh, args.output, _export_options(args, model, out_mesh))
     st = result.stats()
+    if out_mesh is not result.displaced:
+        st = {**st, "vertices": out_mesh.n_vertices, "faces": out_mesh.n_faces}
     print(f"Wrote {path}: {st['vertices']:,} vertices, {st['faces']:,} triangles "
           f"(from {st['source_vertices']:,}); max displacement {st['max_displacement_mm']:.3f} mm "
           f"[{time.time() - t0:.1f}s]")
@@ -370,6 +402,16 @@ def build_parser() -> argparse.ArgumentParser:
                              "dowels, magnets or key (default pegs); repeat for more cuts. Each piece is written as "
                              "<output>_pieceN, laid on a cut face")
         sp.add_argument("--clearance", type=float, default=0.2, help="gap in mm between parts of a joint (with --cut)")
+        sp.add_argument("--watertight", action="store_true",
+                        help="wrap the model into one watertight solid: parts joined, the surfaces inside one another "
+                             "removed, hollows sealed inside filled (before --cut, if given)")
+        sp.add_argument("--close-gaps", type=float, default=0.0, metavar="MM",
+                        help="with --watertight: also close gaps between parts up to this wide")
+        sp.add_argument("--drop-loose", type=float, default=0.0, metavar="PERCENT",
+                        help="with --watertight: remove loose bits smaller than this %% of the model's volume")
+        sp.add_argument("--keep-hollows", action="store_true", help="with --watertight: leave hollows sealed inside open")
+        sp.add_argument("--sheet", type=float, default=1.2, metavar="MM",
+                        help="with --watertight or --cut: thickness given to open surfaces (default 1.2)")
 
     s = sub.add_parser("textures", help="save a model's textures as PNG")
     s.add_argument("file")

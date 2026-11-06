@@ -172,6 +172,8 @@ class Session:
     mesh: TriMesh | None = None
     cut: Any = None  # CutResult: the pieces last cut from this model
     cut_id: str = ""
+    finished: Any = None  # finish.FinishResult: the model last made watertight (Finish tab)
+    finished_id: str = ""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def build(self, options: MeshOptions) -> TriMesh:
@@ -270,6 +272,7 @@ class Service:
     KEEP_UPSCALED_BYTES = 768 << 20
     KEEP_CUTS = 3  # cut models kept, so going back to a set of cuts is instant
     KEEP_SOLIDS = 1  # the model made solid (big), so moving a cut doesn't make it solid again
+    KEEP_FINISHED = 2  # models made watertight, so switching between two settings is instant
 
     def __init__(self, config: Config, cache: Path, host: Host | None = None):
         self.config = config
@@ -290,6 +293,7 @@ class Service:
         self.upscaled: OrderedDict[tuple, Any] = OrderedDict()  # normal maps made ready (UpscaledMap) by _upscale_key()
         self.cuts: OrderedDict[tuple, Any] = OrderedDict()  # CutResult by the model cut and the cut settings
         self.solids: OrderedDict[tuple, Any] = OrderedDict()  # cut.Solid by the model made solid and the sheet thickness
+        self.finished: OrderedDict[tuple, Any] = OrderedDict()  # finish.FinishResult by the model and the settings
         self.cache = Path(cache)
         self.unpack_plans: dict[tuple, Any] = {}  # unpack.Plan by (game folder, destination), the last few
         if config.oodle:
@@ -867,7 +871,8 @@ class Service:
         out = model_json(session.model, mesh)
         out.update({"sid": sid, "id": model_id, "entry": entry_json(entry) if entry else None,
                     "enhanced": self._result_json(session) if session.result is not None else None,
-                    "cut": self._cut_json(session) if session.cut is not None else None})
+                    "cut": self._cut_json(session) if session.cut is not None else None,
+                    "finished": self._finished_json(session) if session.finished is not None else None})
         return out
 
     def _session(self, args: dict) -> Session:
@@ -902,6 +907,10 @@ class Service:
             if session.result is None:
                 raise AppError("This model hasn't been generated yet.")
             return pack_mesh(session.result.displaced, uv, extra={"which": "enhanced"})
+        if args.get("which") == "finished":
+            if session.finished is None:
+                raise AppError("This model hasn't been made watertight yet.")
+            return pack_mesh(session.finished.mesh, False, extra={"which": "finished"})
         if args.get("which") == "pieces":
             if session.cut is None:
                 raise AppError("This model hasn't been cut yet.")
@@ -1193,6 +1202,12 @@ class Service:
             if key[:2] == (session.sid, file):
                 session.cut, session.cut_id = result, _key_id(key)
                 break
+        with self.lock:
+            finished = list(self.finished.items())
+        for key, result in reversed(finished):
+            if key[:2] == (session.sid, file):
+                session.finished, session.finished_id = result, _key_id(key)
+                break
 
     def _result_json(self, session: Session) -> dict:
         r = session.result
@@ -1215,6 +1230,10 @@ class Service:
             if session.result is None:
                 raise AppError("Generate the enhanced model first, or export the original.")
             mesh = session.result.displaced
+        elif which == "finished":
+            if session.finished is None:
+                raise AppError("Make the model watertight first (Finish tab).")
+            mesh = session.finished.mesh
         else:
             mesh = session.build(mesh_options(args))
         if mesh.n_faces == 0:
@@ -1246,12 +1265,17 @@ class Service:
             self.upscaled.clear()
             self.cuts.clear()
             self.solids.clear()
+            self.finished.clear()
 
     # ------------------------------------------------------------ cutting into pieces
 
     def _cut_source(self, session: Session, args: dict) -> tuple[TriMesh, tuple]:
         """The model the Cut tab cuts, and what it depends on: the enhanced model shown, or the original
-        with the parts, options and pose chosen."""
+        with the parts, options and pose chosen, or the model made watertight (Finish tab)."""
+        if args.get("from") == "finished":
+            if session.finished is None:
+                raise AppError("Make the model watertight first (Finish tab), or cut another model.")
+            return session.finished.mesh, ("finished", session.finished_id)
         if args.get("from", "enhanced") == "enhanced":
             if session.result is None:
                 raise AppError("Make the enhanced model first (Mesh or Displace tab), or cut the original.")
@@ -1306,6 +1330,50 @@ class Service:
 
         name = session.model.variant or session.model.name
         return {"job": self.jobs.start(f"Cutting {name}", run, stoppable=True).id}
+
+    # ------------------------------------------------------------ finishing for printing
+
+    def cmd_finish(self, args: dict) -> dict:
+        """Make the model watertight (a job): every part made solid and joined, the surfaces inside one another
+        removed, hollows filled, and as asked gaps closed and loose bits removed. Each result is kept."""
+        from .. import finish
+
+        if not finish.available():
+            raise AppError("Making models watertight needs the manifold3d package, which this copy of the app doesn't have.")
+        session = self._session(args)
+        settings = finish.settings_from_json(args.get("watertight") or {})
+        src = "original" if args.get("from") == "original" else "enhanced"
+        if src == "enhanced" and session.result is None:
+            raise AppError("Make the enhanced model first (Mesh or Displace tab), or use the original.")
+        mesh, source = self._cut_source(session, {**args, "from": src})
+        if mesh.n_faces == 0:
+            raise AppError("There's nothing to make watertight: no parts are switched on.")
+        key = (session.sid, _file_id(session.model.path), source, settings.key())
+        with self.lock:
+            kept = self.finished.get(key)
+
+        def run(job: Job):
+            result = kept
+            if result is None:
+                try:
+                    result = finish.make_watertight(mesh, settings, lambda f, m: job.report(f, m))
+                except ValueError as e:
+                    raise AppError(str(e)) from None
+                job.check()
+                with self.lock:
+                    self.finished[key] = result
+                    self.finished.move_to_end(key)
+                    while len(self.finished) > self.KEEP_FINISHED:
+                        self.finished.popitem(last=False)
+            session.finished, session.finished_id = result, _key_id(key)
+            return {**self._finished_json(session), "kept": kept is not None}
+
+        name = session.model.variant or session.model.name
+        return {"job": self.jobs.start(f"Making {name} watertight", run, stoppable=True).id}
+
+    def _finished_json(self, session: Session) -> dict:
+        r = session.finished
+        return {"id": session.finished_id, "stats": r.stats(), "notes": list(r.notes)}
 
     def _cut_json(self, session: Session) -> dict:
         r = session.cut

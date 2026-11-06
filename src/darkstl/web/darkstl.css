@@ -163,3 +163,4 @@ a.chip-btn.on { background: var(--sel); }
 .piece-list li > span:first-child small { grid-column: 2; }
 .piece-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; grid-row: span 2; }
 #cut-explode { width: 100%; }
+#finish-stats li > span:last-child { flex: none; text-align: right; }
