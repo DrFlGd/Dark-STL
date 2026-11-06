@@ -37,6 +37,12 @@ class Importer:
         """Things to tell the user about a folder they added (for example that its files are still packed)."""
         return []
 
+    def configurations(self, folder: Path, game: str, entries: list[CatalogEntry]) -> list:
+        """Models in ``folder`` that are built from parts chosen per slot (a weapon and its magazines,
+        sights, barrels), as :class:`~darkstl.configs.Configuration` objects. Called after the folder is
+        scanned, with what the scan found. Files may be named as in a configuration list (see configs.py)."""
+        return []
+
     def can_open(self, path: Path) -> bool:
         raise NotImplementedError
 
