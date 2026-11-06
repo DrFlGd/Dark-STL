@@ -32,8 +32,10 @@ GAME = "Cyberpunk 2077"
 _MODEL = re.compile(r"\.mesh$", re.IGNORECASE)
 
 
-def _texture(ref: depot.TextureRef) -> Texture:
+def _texture(ref) -> Texture:
     def describe() -> str:
+        if hasattr(ref, "describe"):  # a blended multilayer map
+            return ref.describe()
         t = ref.texture()
         return f"{t.width} x {t.height}, {t.codec}, {t.mips} mips"
 
@@ -96,10 +98,14 @@ class RedEngineImporter(Importer):
             archive.when_first_opened(paths, lambda: catalog.restore_names(paths, cache))
 
     def configurations(self, folder: Path, game: str, entries: list[CatalogEntry]) -> list:
-        """Weapons kept as a body and separate parts in one folder, guessed from their names."""
+        """Weapons as their appearance files put them together (see :mod:`.configurations`); for folders of
+        loose meshes without those files, weapons guessed from the files' names."""
         from ...configs import from_folders
+        from . import configurations as weapons
 
-        return from_folders(entries, game)
+        out = weapons.build(Path(folder), game, entries, self.cache)
+        covered = {c.base.file for c in out}
+        return out + [c for c in from_folders(entries, game) if c.base.file not in covered]
 
     def can_open(self, path: Path) -> bool:
         return bool(_MODEL.search(path.name)) or depot.is_archive_member(path)

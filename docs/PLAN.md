@@ -31,7 +31,7 @@ importer and registering it in `importers/__init__.py`:
 | Importer | Reads | Status |
 | --- | --- | --- |
 | FromSoftware | FLVER2 models in BND/DCX archives, TPF/DDS textures. Per-game differences (markers, compression, PS4 textures, where material data lives) are profiles in `importers/fromsoft/games.py` | Dark Souls Remastered and Bloodborne checked on real files; the rest on synthetic files |
-| REDengine 4 (Cyberpunk 2077) | `.mesh` and `.xbm` in the CR2W container, loose (WolvenKit exports under their depot paths) or inside the game's `.archive` packs, read directly; `.mi`/`.mt` material chains; Kraken buffers through the game's `oo2ext_7_win64.dll`. Formats worked out with WolvenKit as the reference | Built on synthetic files; awaiting a check against the game |
+| REDengine 4 (Cyberpunk 2077) | `.mesh` and `.xbm` in the CR2W container, loose (WolvenKit exports under their depot paths) or inside the game's `.archive` packs, read directly; `.mi`/`.mt` material chains; multilayered materials (`.mlsetup`, `.mltemplate`, `.mlmask`) blended into one colour and one normal map; `.app`/`.ent` appearance packages for weapon configurations; Kraken buffers through the game's `oo2ext_7_win64.dll`. Formats worked out with WolvenKit as the reference | Built on synthetic files; awaiting a check against the game |
 | RE Engine (Capcom) | `.mesh` models (every generation from RE2 to RE Requiem, streamed buffers included), `.mdf2` materials, `.tex` textures, read from extracted files or from `.pak` archives through a community file list. Games in `importers/reengine/games.py` | Synthetic RE2 and RE4 files; real files next |
 | Wavefront OBJ | OBJ + MTL with PNG/JPG/TGA/DDS textures, from any other tool | Done |
 
@@ -274,8 +274,11 @@ and Export steps need nothing new. The library lists each configuration as a mod
 (*Configurable: N slots, M parts*), and its page opens on a **Configure** tab.
 
 Relationships come per game from lists, the later winning when two share an id: what an
-importer works out from a folder (its `configurations` hook: Cyberpunk and RE Engine weapons are
-guessed from the part files beside each weapon), lists shipped with the app
+importer works out from a folder (its `configurations` hook: Cyberpunk weapons are read from the
+game's `.app` appearance files, each appearance's components giving the slots, options, body
+finish and presets, and its `.ent` slot components the attachment points; RE Engine weapons, and
+Cyberpunk folders without appearance files, are guessed from the part files beside each weapon),
+lists shipped with the app
 (`importers/<importer>/configurations/*.json`), `*.darkstl-configs.json` files in a game folder,
 and the user's own list, which *Edit…* and *Make configurable…* write. The list format is in
 `docs/configurations.md`. Parts are placed in place (game parts usually are), on a named socket of
