@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 
 import numpy as np
+import struct
+
 import pytest
 
 from darkstl.app.config import Config
@@ -303,6 +305,24 @@ def test_settings_round_trip(home, tmp_path):
     assert make_service(home).call("prefs_get", {}) == {"ds-ui": {"theme": "night"}}
     with pytest.raises(AppError, match="Unknown command"):
         s.call("nothing_like_this", {})
+
+
+def test_unreal_keys_and_type_mappings_settings(home, tmp_path):
+    s = make_service(home)
+    with pytest.raises(AppError):
+        s.call("settings_set", {"unreal_keys": "0x1234"})
+    key = "0x" + "ab" * 32
+    r = s.call("settings_set", {"unreal_keys": key + "  # Wonderlands"})
+    assert r["unreal_keys"].startswith(key) and (home / "unreal-keys.txt").is_file()
+    bad = tmp_path / "bad.usmap"
+    bad.write_bytes(b"nope")
+    with pytest.raises(AppError):
+        s.call("settings_set", {"usmap_add": str(bad)})
+    good = tmp_path / "BL4.usmap"
+    good.write_bytes(struct.pack("<HBiBII", 0x30C4, 3, 0, 0, 12, 12) + struct.pack("<III", 0, 0, 0))
+    r = s.call("settings_set", {"usmap_add": str(good)})
+    assert r["usmaps"] == ["BL4.usmap"]
+    assert s.call("settings_set", {"usmap_remove": "BL4.usmap"})["usmaps"] == []
 
 
 def test_packed_mesh_splits_uv_seams_and_groups_materials():

@@ -29,7 +29,8 @@ other games come next (Phase 1 of the plan).
 Importing is modular: each game family has its own importer, and everything after import
 (the explorer, the three steps, export) is shared. FromSoftware files (Dark Souls, Bloodborne,
 Dark Souls III, Sekiro, Elden Ring), Cyberpunk 2077 files, Capcom RE Engine files (Resident Evil
-2, 3, 4, 7 and Village, Devil May Cry 5) and Wavefront OBJ are supported today.
+2, 3, 4, 7 and Village, Devil May Cry 5), Borderlands (Borderlands, Borderlands 2, The
+Pre-Sequel, Borderlands 3, Tiny Tina's Wonderlands, Borderlands 4) and Wavefront OBJ are supported today.
 
 ## Install
 
@@ -96,6 +97,25 @@ neither.
   Pose tab with the game's `.motlist` animations filed under their id (`pl0000`, `cha0`...). Games whose archives are
   encrypted (Monster Hunter Wilds and later) need extracting first; their GDeflate textures
   are not read yet.
+
+- **Borderlands, Borderlands 2, The Pre-Sequel (Unreal Engine 3):** add the game's install
+  folder as it is. The models are read straight from the `.upk` packages in
+  `WillowGame\CookedPCConsole` (`CookedPC` for the first game), LZO-compressed as they are;
+  the large texture mips come from the `.tfc` texture caches beside them. The first scan
+  opens every package once and keeps what it found. Borderlands 2 and The Pre-Sequel keep
+  every gun part of a weapon type in one shared mesh in `Startup.upk`; it is listed under
+  Weapons with each part as a part of the model, and each weapon type is also a
+  configurable model (body, grip, barrel, sight, stock, elemental, accessory) built from the
+  game's own part definitions in the `GD_Weap_*` packages.
+
+- **Borderlands 3, Tiny Tina's Wonderlands (Unreal Engine 4), Borderlands 4 (Unreal Engine 5):**
+  add the game's install folder as it is. Models are read from the `.pak` files (BL3, Wonderlands)
+  or the IoStore `.utoc`/`.ucas` containers (BL4) in `OakGame\Content\Paks`. Encrypted files need
+  the game's AES key (Borderlands 3's is included; paste others in *Settings > Unreal games* or
+  put them in `unreal-keys.txt` in the game folder). Borderlands 4 also needs a `.usmap` type
+  mappings file for the installed version of the game, added the same way, because it cooks
+  its objects without property names. Guns are configurable from their part meshes, the slots
+  guessed from the part names.
 
 ## Using the app
 

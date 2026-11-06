@@ -7,6 +7,8 @@ const SHORT = {
   "Bloodborne": "BB", "Sekiro": "SEK", "Elden Ring": "ER", "Cyberpunk 2077": "CP77", "Other models": "3D",
   "Resident Evil 2": "RE2", "Resident Evil 3": "RE3", "Resident Evil 4": "RE4", "Resident Evil 7": "RE7",
   "Resident Evil Village": "RE8", "Resident Evil Requiem": "RE9", "Devil May Cry 5": "DMC",
+  "Borderlands": "BL1", "Borderlands 2": "BL2", "Borderlands: The Pre-Sequel": "TPS", "Borderlands 3": "BL3",
+  "Tiny Tina's Wonderlands": "TTW", "Borderlands 4": "BL4",
 };
 
 export const gameShort = (name) => SHORT[name] || (name || "?").split(/\s+/).filter(Boolean).map((w) => w[0]).join("").slice(0, 3).toUpperCase();
