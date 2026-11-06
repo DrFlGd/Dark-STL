@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import hashlib
+import logging
 import os
 import pickle
 import threading
@@ -114,8 +115,8 @@ def folder_configurations(root: Path, game: str, found: list[CatalogEntry]) -> l
     for imp in IMPORTERS:
         try:
             out += imp.configurations(Path(root), game, [e for e in found if e.importer == imp.key])
-        except Exception:  # noqa: BLE001 - a guess that fails leaves the models as they are
-            pass
+        except Exception:  # a guess that fails leaves the models as they are
+            logging.getLogger(__name__).warning("Configurations of %s from %s failed", root, imp.key, exc_info=True)
     listed, _problems = configs.in_folder(Path(root))
     for c in listed:
         c.game = c.game or game

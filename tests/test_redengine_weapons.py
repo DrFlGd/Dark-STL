@@ -234,3 +234,143 @@ def test_a_setup_without_its_mask_still_blends(tmp_path):
     rgba = model.textures[mat.albedo].decode()
     assert rgba[5, 5, 2] > 0 and rgba[5, 5, 0] == 0  # the blue layer covers everything at full opacity
     assert any("blended by their opacity" in n for n in model.notes), model.notes
+
+
+# ---------------------------------------------------------------------------- without appearance files
+
+
+def test_weapons_named_the_games_way_are_guessed_from_one_archive(tmp_path):
+    """Cyberpunk names its meshes w_<type>__<name>__<part><n>; all of them sit in one archive."""
+    from darkstl import configs
+
+    pos, nrm, uv, idx = S.grid_plane(2, 0.2)
+    mesh = S.build_mesh([S.SynthChunk(pos, nrm, uv, idx)], [("steel", STEEL_MI)])
+    d = r"base\weapons\firearms\revolver\darra_nova"
+    names = ["w_revolver__darra_nova__base1_01", "w_revolver__darra_nova__base2", "w_revolver__darra_nova__mag1",
+             "w_revolver__darra_nova__mag2", "w_revolver__darra_nova__scope1", "w_revolver__darra_nova__grip1",
+             "w_rifle_a__midnight__base1", "w_rifle_a__midnight__stock1"]
+    files = {f"{d}\\{n}.mesh": mesh for n in names}
+    files[r"base\weapons\w_all.ent"] = S.build_ent([], meshes=list(files))
+    game = archive_game(tmp_path / "Cyberpunk 2077", files)
+    imp = RedEngineImporter()
+    imp.cache = tmp_path / "cache"
+    entries = imp.scan(game, "Cyberpunk 2077", None)
+    assert len(entries) == 8 and all(e.category == "Weapons" for e in entries)
+    found = imp.configurations(game, "Cyberpunk 2077", entries)
+    by_id = {c.id: c for c in found}
+    assert sorted(by_id) == ["auto:w_revolver__darra_nova__base1_01", "auto:w_revolver__darra_nova__base2",
+                             "auto:w_rifle_a__midnight__base1"]
+    c = by_id["auto:w_revolver__darra_nova__base1_01"]  # the game's own numbering: base1_01
+    assert c.guessed and c.base.file.endswith(".mesh")
+    assert {s.id: [o.id for o in s.options] for s in c.slots} == {
+        "magazine": ["w_revolver__darra_nova__mag1", "w_revolver__darra_nova__mag2"],
+        "sight": ["w_revolver__darra_nova__scope1"], "grip": ["w_revolver__darra_nova__grip1"]}
+    assert {s.id for s in by_id["auto:w_revolver__darra_nova__base2"].slots} == {"magazine", "sight", "grip"}
+    assert [s.id for s in by_id["auto:w_rifle_a__midnight__base1"].slots] == ["stock"]
+    assert any("No weapon appearance files" in n for n in imp.folder_notes(game, entries))
+    assert configs.from_folders(entries, "Cyberpunk 2077", max_files=1) == []
+
+
+def test_folder_notes_report_the_appearance_files(tmp_path):
+    game = archive_game(tmp_path / "Cyberpunk 2077", weapon_files())
+    imp = RedEngineImporter()
+    imp.cache = tmp_path / "cache"
+    entries = imp.scan(game, "Cyberpunk 2077", None)
+    imp.configurations(game, "Cyberpunk 2077", entries)
+    (note,) = [n for n in imp.folder_notes(game, entries) if "appearance files read" in n]
+    assert note.startswith("2 weapon appearance files read: 1 weapons and 1 attachments named models of this folder, "
+                           "1 became configurable")
+
+
+def test_collect_takes_the_weapons_appearance_files_along(tmp_path):
+    game = archive_game(tmp_path / "Cyberpunk 2077", weapon_files())
+    imp = RedEngineImporter()
+    imp.cache = tmp_path / "cache"
+    entries = imp.scan(game, "Cyberpunk 2077", None)
+    rifle = next(e for e in entries if e.stem == "w_rifle_a")
+    related = imp.related_files(rifle.path)
+    saved = {r.save_as for r in related}
+    assert RIFLE_APP.replace("\\", "/") in saved and RIFLE_ENT.replace("\\", "/") in saved
+    app = next(r for r in related if r.save_as.endswith(".app"))
+    assert app.kind == "other" and app.extract is not None
+    assert entities.read_app(cr2w.read_cr2w(app.extract())).appearances[0].name == "frank"
+    mag = next(e for e in entries if e.stem == "w_rifle_a_mag_std")
+    assert any(r.save_as.endswith(".app") for r in imp.related_files(mag.path))  # a part brings its weapon's too
+    assert not any(r.save_as.endswith(".app") for r in imp.related_files(rifle.path, textures=False))
+
+
+# ---------------------------------------------------------------------------- appearance names and layer sampling
+
+
+def test_an_unnamed_first_appearance_is_shown_as_default(tmp_path):
+    """Many game meshes leave their first appearance unnamed; the app lists it as "default"."""
+    pos, nrm, uv, idx = S.grid_plane(2, 0.2)
+    mesh = S.build_mesh([S.SynthChunk(pos, nrm, uv, idx)], [("steel", STEEL_MI), ("rust", STEEL_MI)],
+                        appearances=[("", ["steel"]), ("military1", ["rust"])])
+    files = rifle_files()
+    files[RIFLE] = mesh
+    root = tmp_path / "exported"
+    write_loose(root, files)
+    path = root.joinpath(*RIFLE.split("\\"))
+    imp = RedEngineImporter()
+    assert imp.variants(path) == ["default", "military1"]
+    model = open_model(path)
+    assert model.variant == "default" and model.variants == ["default", "military1"]
+    assert model.materials[model.parts[0].material].name == "steel"
+    model = open_model(path, variant="military1")
+    assert model.variant == "military1"
+    assert model.materials[model.parts[0].material].name == "rust"
+    assert open_model(path, variant="default").variant == "default"
+
+
+def test_finely_tiled_layers_are_averaged_not_sparkled():
+    from darkstl.importers.redengine import multilayer
+
+    # a 64x64 checkerboard tiled 32 times across a 64-texel output: each output texel covers 32 texture texels
+    tex = np.zeros((64, 64, 1), np.uint8)
+    tex[::2, ::2] = 255
+    tex[1::2, 1::2] = 255
+    rows = np.arange(64)
+    out = multilayer._sample(tex, rows, 64, 64, 32.0, (0.0, 0.0))
+    assert out.shape == (64, 64, 1)
+    assert abs(int(out.mean()) - 128) <= 2 and out.max() - out.min() <= 2  # the checkerboard averages to grey
+    # untiled, the same texture samples texel for texel
+    out = multilayer._sample(tex, rows, 64, 64, 1.0, (0.0, 0.0))
+    assert out[0, 0, 0] == 255 and out[0, 1, 0] == 0
+
+
+def test_each_mask_of_a_setup_gets_its_own_blend(tmp_path):
+    """A weapon draws one setup through a first-person mask and a third-person one (masksset / maskssettpp):
+    the chunks using each must get their own blend, not the last material's."""
+    files = multilayer_files()
+    pos, nrm, uv, idx = S.grid_plane(4, 1.0)
+    tpp_mask = RIFLE_DIR + r"\w_rifle_a_tpp.mlmask"
+    cover = np.zeros((16, 16), np.uint8)
+    cover[:8, :] = 255  # the blue layer covers the top half for the third-person mask (right half for the other)
+    files[tpp_mask] = S.build_mlmask([np.full((16, 16), 255, np.uint8), cover])
+    fpp = S.material_instance(METAL_MT, {"MultilayerSetup": MLSETUP, "MultilayerMask": MLMASK})
+    tpp = S.material_instance(METAL_MT, {"MultilayerSetup": MLSETUP, "MultilayerMask": tpp_mask})
+    files[RIFLE] = S.build_mesh([S.SynthChunk(pos, nrm, uv, idx), S.SynthChunk(pos, nrm, uv, idx)],
+                                [("steel", fpp), ("steel_tpp", tpp)])
+    root = tmp_path / "exported"
+    write_loose(root, files)
+    model = open_model(root.joinpath(*RIFLE.split("\\")))
+    a, b = model.materials
+    assert a.albedo != b.albedo and a.albedo.endswith("#color") and b.albedo.endswith("#color")
+    first, second = model.textures[a.albedo].decode(), model.textures[b.albedo].decode()
+    assert first[1024, 256, 0] == 255 and first[1024, 1792, 2] > 0  # blue on the right
+    assert second[256, 1024, 2] > 0 and second[1792, 1024, 0] == 255  # blue at the top
+
+
+def test_mesh_uvs_run_down_the_texture(tmp_path):
+    """The game's V runs up the image; Dark STL's runs down, so the mesh's V is flipped (the masks and
+    textures land where the game puts them, checked on a real revolver)."""
+    from darkstl.importers.redengine.formats.mesh import read_mesh
+    from darkstl.importers.redengine.mesh import RedMeshOptions, chunks_to_trimesh
+
+    pos, nrm, uv, idx = S.grid_plane(2, 2.0)
+    data = S.build_mesh([S.SynthChunk(pos, nrm, uv, idx)], [("m", S.material_instance(METAL_MT, {}))])
+    tm = chunks_to_trimesh(read_mesh(cr2w.read_cr2w(data)), RedMeshOptions())
+    corners = tm.vertices[tm.faces]  # the plane's UV is its position over its size, so V = y / 2 in the file
+    assert np.allclose(tm.corner_uvs[..., 0], corners[..., 0] / 2.0, atol=1e-3)
+    assert np.allclose(tm.corner_uvs[..., 1], 1.0 - corners[..., 1] / 2.0, atol=1e-3)

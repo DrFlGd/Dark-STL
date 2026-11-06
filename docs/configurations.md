@@ -16,12 +16,15 @@ Later sources replace earlier ones when a game has two configurations with the s
    the presets. The attachment points of the weapon's `.ent` (slots named scope, muzzle...)
    become slots offering the attachment entities of that kind (which attachments a weapon can
    take in the game is in TweakDB, which isn't read, so every scope is offered). For the RE
-   Engine games, and Cyberpunk folders without appearance files, each weapon folder whose files
-   are named after one model (`w_rifle_ajax.mesh`, `w_rifle_ajax_mag_std.mesh`,
-   `w_rifle_ajax_scope.mesh`) becomes a configuration: the model with the shortest name, or one
-   ending in `base`/`body`, is the base; the others are sorted into slots by words in their names
-   (mag, scope, muzzle, stock, barrel, grip...). These say *Guessed* on the Configure tab. An
-   importer works configurations out through its `configurations(folder, game, entries)` hook.
+   Engine games, and Cyberpunk weapons whose appearance files can't be read, each weapon folder
+   whose files are named after one model (`w_rifle_ajax.mesh`, `w_rifle_ajax_mag_std.mesh`,
+   `w_rifle_ajax_scope.mesh`), or the files named with the weapon's name before a double
+   underscore (`w_revolver__darra_nova__base1`, `w_revolver__darra_nova__mag1`, wherever they
+   are), become a configuration: the model with the shortest name, or one ending in `base`/`body`
+   (digits allowed: `base1`, `base1_01`), is the base; the others are sorted into slots by words in their
+   names (mag, scope, muzzle, stock, barrel, grip...). These say *Guessed* on the Configure tab.
+   An importer works configurations out through its `configurations(folder, game, entries)` hook;
+   the Home page's folder notes say how many Cyberpunk appearance files it read and used.
 2. **Shipped with Dark STL:** `src/darkstl/importers/<importer>/configurations/*.json`.
 3. **In a game folder:** any `*.darkstl-configs.json` at the top of a folder you added, or one
    folder down. Lists you share with others go here.

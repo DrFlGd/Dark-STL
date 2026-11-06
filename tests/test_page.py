@@ -150,8 +150,22 @@ def test_add_a_folder_browse_open_enhance_export(page, app, weapon_dir, tmp_path
     page.wait_for_selector("text=Displaced:")
     assert "evened out first" not in page.text_content("#toast")
 
-    # the Textures tab: upsampling settings, AI models, and the maps made ready with before and after to zoom into
+    # the Textures tab: a chosen texture can be draped over the whole model (to compare the maps on it)
     page.click("#rail-textures")
+    tiles = page.locator(".tex-tile")
+    assert tiles.count() >= 2
+    tiles.nth(1).click()
+    second = page.get_attribute(".tex-tile[aria-selected='true']", "data-texture")
+    page.check("#texture-on-model")
+    page.wait_for_function(f"document.querySelector('#stage-canvas').dataset.texture === {second!r}")
+    tiles.nth(0).click()  # the drape follows the selection
+    first = page.get_attribute(".tex-tile[aria-selected='true']", "data-texture")
+    assert first != second
+    page.wait_for_function(f"document.querySelector('#stage-canvas').dataset.texture === {first!r}")
+    page.uncheck("#texture-on-model")
+    page.wait_for_function("!document.querySelector('#stage-canvas').dataset.texture")
+
+    # upsampling settings, AI models, and the maps made ready with before and after to zoom into
     page.select_option("#upsample", "ai")
     page.wait_for_selector("#ai-models #ai-model-add")
     page.wait_for_selector("#ai-models-folder")  # the list has come

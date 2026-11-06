@@ -100,7 +100,7 @@ export function ModelPage({ route }) {
   const placeKey = entry ? JSON.stringify([entry.game, entry.category, entry.group]) : null;
   useEffect(() => {
     ui.set({ modelPlace: entry ? { game: entry.game, category: entry.category, group: entry.group } : null });
-    return () => ui.set({ modelPlace: null, paintPreview: null });
+    return () => ui.set({ modelPlace: null, paintPreview: null, texturePreview: null });
   }, [placeKey]);
   const back = () => (history.length > 1 ? history.back() : (location.hash = entry ? routeHash(placeRoute(entry.game, entry.category)) : "#/"));
   const bar = { id: "mp-head", back: { id: "mp-back", run: back } };
@@ -295,16 +295,20 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
   // each material's colour texture, for the textured view; in the paint colours when the Export tab asks
   const paintPreview = useStore(ui, (s) => s.paintPreview);
   const paint = paintPreview?.sid === m.sid ? JSON.stringify(paintPreview.settings) : "";
+  // the Textures tab's chosen texture draped over every part, to see it on the model
+  const texturePreview = useStore(ui, (s) => s.texturePreview);
+  const draped = texturePreview?.sid === m.sid && m.textures.some((t) => t.key === texturePreview.key) ? texturePreview.key : "";
   const textures = useMemo(() => {
     const have = new Set(m.textures.map((t) => t.key));
     const out = {};
     m.materials.forEach((mat, i) => {
-      if (!mat.albedo || !have.has(mat.albedo)) return;
-      out[i] = paint ? binUrl("paint_texture", { sid: m.sid, key: mat.albedo, max: 2048, settings: paint, ...args.url })
-        : binUrl("texture", { sid: m.sid, key: mat.albedo, max: 2048 });
+      const key = draped || mat.albedo;
+      if (!key || !have.has(key)) return;
+      out[i] = paint && !draped ? binUrl("paint_texture", { sid: m.sid, key, max: 2048, settings: paint, ...args.url })
+        : binUrl("texture", { sid: m.sid, key, max: 2048 });
     });
     return out;
-  }, [m.sid, paint, paint ? args.key : ""]);
+  }, [m.sid, paint, paint ? args.key : "", draped]);
   const key = JSON.stringify([which, which === "enhanced" ? result?.id || result?.rev : which === "pieces" ? cutting.pieces?.id : which === "finished" ? finished?.id : args.key]);
   useEffect(() => {
     let live = true;
@@ -345,7 +349,7 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
       onBusy?.(false);
     })().catch((e) => { if (live) { setState({ loading: false, error: msg(e), size: null, key }); onBusy?.(false); } });
     return () => { live = false; };
-  }, [key, view.shading, paint ? JSON.stringify(textures) : ""]);
+  }, [key, view.shading, paint || draped ? JSON.stringify(textures) : ""]);
   // the Cut tab's planes, shown while it is open (not over the pieces they made)
   const { cuts, cutSel, setCuts, setCutSel, explode } = cutting;
   const live = useRef(null);
@@ -370,7 +374,7 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
   const noTextures = !Object.keys(textures).length;
   return html`<section class="mp-stage workspace-stage" id="workspace-stage" aria-label="3D view">
     <div class="stage-3d">
-      <div class="stage-canvas" id="stage-canvas" data-loading=${state.loading || state.key !== key ? "1" : null}>
+      <div class="stage-canvas" id="stage-canvas" data-loading=${state.loading || state.key !== key ? "1" : null} data-texture=${draped || null}>
         <canvas ref=${canvas} tabindex="0" aria-label="The model in 3D: drag to turn it, right-drag to move, wheel to zoom"></canvas>
         ${state.loading && !shown.current ? html`<div class="stage-note muted">Loading the model…</div>` : null}
         ${state.error ? html`<div class="stage-note"><p class="warn-note" role="alert" id="stage-error">${state.error}</p></div>` : null}
@@ -430,6 +434,13 @@ function TexturesTab({ m, args, s, set, run, setRun, call, sendSettings, over, u
   const [sel, setSel] = useState(m.textures[0]?.key || null);
   const [about, setAbout] = useState(null);
   const tex = m.textures.find((t) => t.key === sel);
+  // "Show on the model": the chosen texture draped over every part in the 3D view, following the selection
+  const onModel = useStore(ui, (st) => st.texturePreview?.sid === m.sid);
+  const drape = (on) => {
+    ui.set({ texturePreview: on && sel ? { sid: m.sid, key: sel } : null });
+    if (on) setPref({ view: { ...VIEW, ...(ui.get().view || {}), shading: "textured" } });
+  };
+  useEffect(() => { if (onModel && sel) ui.set({ texturePreview: { sid: m.sid, key: sel } }); }, [sel]);
   useEffect(() => {
     if (!sel) return;
     let live = true;
@@ -501,6 +512,8 @@ function TexturesTab({ m, args, s, set, run, setRun, call, sendSettings, over, u
       <a class="tex-big" href=${binUrl("texture", { sid: m.sid, key: tex.key, max: 4096 })} target="_blank" rel="noopener" title="Open at full size">
         <img src=${binUrl("texture", { sid: m.sid, key: tex.key, max: 1024 })} alt=${tex.name} /></a>
       <dl class="insp-dl"><dt>Image</dt><dd id="texture-info">${about || "…"}</dd><dt>From</dt><dd class="note-path">${tex.source}</dd></dl>
+      <label class="check-row"><input type="checkbox" id="texture-on-model" checked=${onModel} onChange=${(e) => drape(e.target.checked)} />
+        <span>Show on the model<small class="muted">Drapes this texture over every part in the 3D view, in place of the materials' own colour maps, and follows the texture chosen here.</small></span></label>
       <div class="insp-actions"><button type="button" class="ghost" id="texture-save" onClick=${save}>${Icon.download(14)} Save as PNG</button></div></section>` : null}
     <section class="insp-section" id="texture-upscale"><h3>Upscale for displacement</h3>
       <p class="muted">Displace reads the normal maps below. Clean them up and upsample them here to see what the settings do, texel by texel, and change
