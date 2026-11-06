@@ -7,14 +7,15 @@ gives the full set of parameters, among them the textures: ``BaseColor``
 (or ``DiffuseTexture``), ``Normal`` (``NormalTexture``, ``GlobalNormal`` for
 multilayered materials), ``Roughness``, ``Metalness``, detail normals. The
 many-layered skin and metal materials (``MultilayerSetup`` + ``MultilayerMask``)
-blend several tiled layers at run time; only their global normal map is used
-here, and the model says so.
+blend several tiled layers at run time; :mod:`.multilayer` blends them here
+into one colour map and one normal map (with the global normal map added).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from . import multilayer
 from .depot import Source, Store, TextureRef
 from .formats import archive as arc
 from .formats.cr2w import Red, Ref
@@ -99,6 +100,40 @@ def _tex(values: dict, names: tuple[str, ...]) -> tuple[str, str] | None:
     return None
 
 
+def _blend(info: MaterialInfo, values: dict, store: Store, textures: dict, blends: dict) -> None:
+    """Give a multilayered material its blended colour and normal maps."""
+    setup = values.get("MultilayerSetup")
+    if not (isinstance(setup, Ref) and setup.path):
+        return
+    mask = values.get("MultilayerMask")
+    glob = _tex(values, ("GlobalNormal",))
+    scale = values.get("GlobalNormalUVScale")
+    uv = (1.0, 1.0)
+    if isinstance(scale, Red):
+        x, y = scale.vec("X", "Y", default=1.0)
+        uv = (x or 1.0, y or 1.0)
+    key = (arc.normalize_path(setup.path), arc.normalize_path(mask.path) if isinstance(mask, Ref) else None,
+           glob[1] if glob else None, uv)
+    blend = blends.get(key)
+    if blend is None:
+        ms = multilayer.read_setup(store, key[0], key[1])
+        if not ms.layers:
+            info.missing += ms.missing
+            return
+        blend = blends[key] = multilayer.Blend(store, ms, key[2], uv)
+        if ms.mask and store.locate(ms.mask) is None:
+            blend.notes.append(f"{ms.mask} was not found; the layers are blended by their opacity alone")
+            ms.mask = None
+    where = store.describe_location(key[0])
+    color_key, normal_key = key[0] + "#color", key[0] + "#normal"
+    textures[color_key] = multilayer.BlendRef(key[0] + " (blended colour)", where, blend.albedo,
+                                              lambda b=blend: b.describe("colour"))
+    textures[normal_key] = multilayer.BlendRef(key[0] + " (blended normal)", where, blend.normal,
+                                               lambda b=blend: b.describe("normal"))
+    info.albedo, info.normal = color_key, normal_key
+    info.slots.append(("MultilayerSetup layers", f"{len(blend.setup.layers)} templates"))
+
+
 def resolve(m: RedMesh, source: Source, store: Store, appearance: str | None) \
         -> tuple[list[MaterialInfo], dict[str, TextureRef], list[str]]:
     """Material descriptions for the mesh (one per material name), the textures they need, and notes."""
@@ -106,8 +141,9 @@ def resolve(m: RedMesh, source: Source, store: Store, appearance: str | None) \
     textures: dict[str, TextureRef] = {}
     infos: list[MaterialInfo] = []
     notes: list[str] = []
-    multilayer = []
+    blended: list[str] = []
     missing_all: list[str] = []
+    blends: dict[tuple, multilayer.Blend] = {}
 
     def texture_key(depot: str) -> str | None:
         key = depot
@@ -138,7 +174,6 @@ def resolve(m: RedMesh, source: Source, store: Store, appearance: str | None) \
                 info.slots.append((n, arc.normalize_path(v.path)))
         if "MultilayerSetup" in values or "MultilayerMask" in values:
             info.multilayer = True
-            multilayer.append(name)
         for role, names in (("albedo", ALBEDO), ("normal", NORMAL), ("height", HEIGHT), ("specular", ROUGHNESS),
                             ("detail_normal", DETAIL_NORMAL)):
             hit = _tex(values, names)
@@ -160,13 +195,20 @@ def resolve(m: RedMesh, source: Source, store: Store, appearance: str | None) \
                 if x > 0 and y > 0:
                     info.detail_scale = (x, y)
                     break
+        if info.multilayer:
+            _blend(info, values, store, textures, blends)
+            if info.albedo and info.albedo.endswith("#color"):
+                blended.append(name)
         infos.append(info)
     if not infos:
         infos.append(MaterialInfo("default"))
-    if multilayer:
-        notes.append("Multilayered materials (" + ", ".join(sorted(set(multilayer))[:4]) +
-                     ("..." if len(set(multilayer)) > 4 else "") + ") blend several tiled layers in the game; "
-                     "only their global normal map is used here, so fine surface grain from the layers is missing.")
+    if blended:
+        notes.append("Multilayered materials (" + ", ".join(sorted(set(blended))[:4]) +
+                     ("..." if len(set(blended)) > 4 else "") + ") are blended here from their layers into one "
+                     "colour map and one normal map, as the game draws them; the fine microblend grain is left out.")
+    for b in blends.values():
+        notes += b.notes[:2]
+    missing_all += [m for b in blends.values() for m in b.setup.missing]
     unique_missing = sorted(set(missing_all))
     if unique_missing:
         where = "the game's archives" if store.archive_paths else "a folder of extracted files or the game's folder"
