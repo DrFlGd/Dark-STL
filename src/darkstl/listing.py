@@ -58,19 +58,24 @@ class Listing:
             (subdirs if is_dir else files).append(e)
         for e in sorted(files, key=lambda e: e.name):
             try:
-                st = e.stat()  # free on Windows: the folder listing carries it
-                size, mtime = st.st_size, st.st_mtime_ns
+                size = e.stat().st_size  # free on Windows: the folder listing carries it
             except OSError:
-                size = mtime = 0
+                size = 0
             self.files.append(Path(e.path))
             self.sizes.append(size)
-            if size >= BIG_FILE:
-                self.big.append((e.path, size, mtime))
+            if size >= BIG_FILE:  # dated as Fingerprint.unchanged will see it (see below)
+                try:
+                    st = os.stat(e.path)
+                    self.big.append((e.path, st.st_size, st.st_mtime_ns))
+                except OSError:
+                    pass
         for e in sorted(subdirs, key=lambda e: e.name):
             try:
                 if e.is_symlink():
                     continue
-                mtime = e.stat().st_mtime_ns
+                # asked of the folder itself: on Windows the date a folder listing gives for a folder in it is
+                # a copy NTFS doesn't always keep up to date, so it wouldn't match a later os.stat
+                mtime = os.stat(e.path).st_mtime_ns
             except OSError:
                 continue
             self.dirs.append((e.path, mtime))
