@@ -332,6 +332,36 @@ def clip_hashes(data: bytes, header: MotionHeader) -> list[int]:
     return out
 
 
+def clip_key_counts(data: bytes, header: MotionHeader) -> list[int]:
+    """Per bone clip, the most keys any of its tracks has (1 for a pose the motion holds still), read from
+    the track headers only."""
+    out = []
+    base, version = header.offset, header.version
+    step, _ = _clip_layout(version)
+    size = 20 if version >= MOT_RE3 else 40
+    for i in range(header.clip_count if header.clips_offset else 0):
+        pos = base + header.clips_offset + i * step
+        try:
+            (flags,) = struct.unpack_from("<B", data, pos + 2)
+            if version >= MOT_RE3:
+                (tracks,) = struct.unpack_from("<I", data, pos + 8)
+            elif version >= MOT_RE2:
+                (tracks,) = struct.unpack_from("<Q", data, pos + 16)
+            else:
+                (tracks,) = struct.unpack_from("<Q", data, pos + 8)
+            most = 0
+            at = tracks
+            for kind in (TRANSLATION, ROTATION, SCALE):
+                if flags & kind:
+                    (count,) = struct.unpack_from("<i", data, base + at + 4)
+                    most = max(most, count)
+                    at += size
+        except struct.error:
+            most = 0
+        out.append(most)
+    return out
+
+
 def _clip_layout(version: int) -> tuple[int, int]:
     """(bytes per clip header, where its bone hash is)."""
     if version >= MOT_RE3:
@@ -459,5 +489,5 @@ def read_motlist(data: bytes) -> Motlist:
     return out
 
 
-__all__ = ["BoneClip", "MotBone", "MotionHeader", "Motlist", "Track", "clip_hashes", "is_mot", "is_motlist",
-           "read_bones", "read_clips", "read_header", "read_motlist"]
+__all__ = ["BoneClip", "MotBone", "MotionHeader", "Motlist", "Track", "clip_hashes", "clip_key_counts", "is_mot",
+           "is_motlist", "read_bones", "read_clips", "read_header", "read_motlist"]
