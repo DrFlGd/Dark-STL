@@ -22,6 +22,7 @@ from ..formats.upk import Reader
 
 TAG = 0x9E2A83C1
 PKG_FILTER_EDITOR_ONLY = 0x80000000
+PKG_UNVERSIONED_PROPERTIES = 0x2000
 
 # Custom versions the mesh and texture readers ask about: their GUID (four u32) and, for packages that don't list
 # them, the value each engine version has. A table entry (v, n) means "engines older than v have n"
@@ -125,6 +126,9 @@ class Package:
     payload: Callable[[str], bytes | None] | None = None
     virtual: str = ""  # where the game keeps it (OakGame/Content/...uasset)
     files: object | None = None  # the GameFiles it came from, to follow imports
+    package_flags: int = 0
+    bulk_map: list | None = None  # zen packages: the bulk data entries their objects point at by index
+    unversioned_props: Callable | None = None  # reads an unversioned object's properties: (reader, export)
     _payloads: dict[str, bytes | None] = field(default_factory=dict, repr=False)
 
     # The same object API as the UE3 reader, so the property and material code reads both.
@@ -332,7 +336,7 @@ def read_package(name: str, uasset: bytes, uexp: bytes | None = None,
     del header_size
     if not (0 < name_offset < len(uasset)) and name_count:
         raise FormatError(f"{name}: bad name table position")
-    pkg = Package(name, v, [], [], [], uasset + (uexp or b""), bulk_start, payload)
+    pkg = Package(name, v, [], [], [], uasset + (uexp or b""), bulk_start, payload, package_flags=flags)
     r = Reader(uasset, pkg, name_offset)
     for _ in range(name_count):
         pkg.names.append(r.fstring())
@@ -410,6 +414,12 @@ class Bulk:
 
 
 def read_bulk_header(r: Reader) -> Bulk:
+    bulk_map = getattr(r.pkg, "bulk_map", None)
+    if bulk_map:  # Unreal 5.2+: an index into the package's bulk data map
+        i = r.i32()
+        if 0 <= i < len(bulk_map):
+            return bulk_map[i]
+        r.pos -= 4
     flags = r.u32()
     if flags & BULK_SIZE64:
         count, size = r.i64(), r.i64()
@@ -504,5 +514,6 @@ def strip_flags(r: Reader) -> tuple[int, int]:
     return r.u8(), r.u8()
 
 
-__all__ = ["Bulk", "CUSTOM_VERSIONS", "Export", "Import", "Package", "Versions", "bulk_array", "bulk_payload",
-           "is_inline", "read_bulk", "read_bulk_header", "read_package", "skip_bulk", "strip_flags"]
+__all__ = ["Bulk", "CUSTOM_VERSIONS", "Export", "Import", "PKG_UNVERSIONED_PROPERTIES", "Package", "Versions",
+           "bulk_array", "bulk_payload", "is_inline", "read_bulk", "read_bulk_header", "read_package", "skip_bulk",
+           "strip_flags"]

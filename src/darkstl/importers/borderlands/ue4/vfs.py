@@ -184,6 +184,9 @@ class GameFiles:
                 return self.read_optional(stem + ext)
 
             pkg = asset.read_package(name, uasset, uexp, payload, game=_layout_game(self.game))
+            if pkg.package_flags & asset.PKG_UNVERSIONED_PROPERTIES:
+                from .unversioned import reader_for
+                pkg.unversioned_props = reader_for(pkg, self.root, self.game)
         pkg.virtual = virtual
         pkg.files = self
         with self._lock:
@@ -197,7 +200,8 @@ class GameFiles:
         v = self.virtual_of_package(name)
         if v is None:
             if self.zen is not None:
-                return self.zen.open_named(name)
+                v = self.zen.by_name.get(name.lower().split(".", 1)[0])
+                return self.open_package(v) if v else None
             return None
         return self.open_package(v)
 

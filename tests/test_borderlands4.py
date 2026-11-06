@@ -23,30 +23,23 @@ UV = np.array([[0, 0], [1, 0], [0, 1], [1, 1], [0, 0.5], [1, 0.5]], float)
 IDX = [0, 1, 2, 2, 1, 3, 0, 4, 1, 1, 4, 5]
 
 
-def _gun_files(engine: int, prefix: str = "OakGame/Content/") -> dict[str, bytes]:
-    """A body and two parts of an assault rifle, a material instance and its two textures."""
+def gun_packages(engine: int) -> dict[str, S.Ue4Package]:
+    """A body and three parts of an assault rifle, a material instance, its two textures and a crate, by path
+    below the content folder."""
     bl3 = engine < 426
     out = {}
-
-    def add(path, b: S.Ue4Package):
-        uasset, uexp, ubulk = b.build()
-        out[prefix + path + ".uasset"] = uasset
-        out[prefix + path + ".uexp"] = uexp
-        if ubulk:
-            out[prefix + path + ".ubulk"] = ubulk
-
     for tex, color, normal in (("T_Gun_Dif", RED, False), ("T_Gun_Nrm", FLAT_NORMAL, True)):
         b = S.Ue4Package(f"/Game/Gear/Weapons/AssaultRifles/Atlas/Textures/{tex}", engine)
         e = b.add_export("Texture2D", tex)
         b.set_data(e, S.texture_data(b, 8, 8, S.bc1_solid(8, 8, color), normal=normal, bl3=bl3))
-        add(f"Gear/Weapons/AssaultRifles/Atlas/Textures/{tex}", b)
+        out[f"Gear/Weapons/AssaultRifles/Atlas/Textures/{tex}"] = b
     b = S.Ue4Package("/Game/Gear/Weapons/AssaultRifles/Atlas/Materials/MI_Gun", engine)
     base = "/Game/Gear/Weapons/AssaultRifles/Atlas/Textures/"
     dif = b.import_object(base + "T_Gun_Dif", "Texture2D", "T_Gun_Dif")
     nrm = b.import_object(base + "T_Gun_Nrm", "Texture2D", "T_Gun_Nrm")
     e = b.add_export("MaterialInstanceConstant", "MI_Gun")
     b.set_data(e, S.mic_data(b, 0, [("Diffuse", dif), ("Normal", nrm)]))
-    add("Gear/Weapons/AssaultRifles/Atlas/Materials/MI_Gun", b)
+    out["Gear/Weapons/AssaultRifles/Atlas/Materials/MI_Gun"] = b
     for i, part in enumerate(("Body", "Barrel_01", "Barrel_02", "Mag_01")):
         stem = f"SK_AR_ATL_{part}"
         b = S.Ue4Package(f"/Game/Gear/Weapons/AssaultRifles/Atlas/Model/{stem}", engine)
@@ -55,13 +48,24 @@ def _gun_files(engine: int, prefix: str = "OakGame/Content/") -> dict[str, bytes
         e = b.add_export("SkeletalMesh", stem)
         b.set_data(e, S.skeletal_data(b, [mat], POS + [i * 200, 0, 0], NRM, UV, IDX, [(0, 0, 4)],
                                       in_bulk=not bl3 and i % 2 == 1, cooked_out_first=not bl3 and i == 0))
-        add(f"Gear/Weapons/AssaultRifles/Atlas/Model/{stem}", b)
+        out[f"Gear/Weapons/AssaultRifles/Atlas/Model/{stem}"] = b
     b = S.Ue4Package("/Game/InteractiveObjects/Crates/SM_Crate", engine)
     mat = b.import_object("/Game/Gear/Weapons/AssaultRifles/Atlas/Materials/MI_Gun", "MaterialInstanceConstant",
                           "MI_Gun")
     e = b.add_export("StaticMesh", "SM_Crate")
     b.set_data(e, S.static_data(b, [mat], POS, NRM, UV, IDX, [(0, 0, 2), (0, 6, 2)], bl3=bl3))
-    add("InteractiveObjects/Crates/SM_Crate", b)
+    out["InteractiveObjects/Crates/SM_Crate"] = b
+    return out
+
+
+def _gun_files(engine: int, prefix: str = "OakGame/Content/") -> dict[str, bytes]:
+    out = {}
+    for path, b in gun_packages(engine).items():
+        uasset, uexp, ubulk = b.build()
+        out[prefix + path + ".uasset"] = uasset
+        out[prefix + path + ".uexp"] = uexp
+        if ubulk:
+            out[prefix + path + ".ubulk"] = ubulk
     return out
 
 

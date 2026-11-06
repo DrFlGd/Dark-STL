@@ -13,9 +13,11 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
+from ....errors import FormatError
 from ....model import LOD_SUFFIX, CatalogEntry
 from . import vfs
 
+MAX_PEEKS = 40000  # packages whose class the scan reads, when their names don't give it
 _SKELETAL = re.compile(r"^(sk|skm|skel)_", re.I)
 _STATIC = re.compile(r"^(sm|stm)_", re.I)
 _SKIP = re.compile(r"(_physics|_phys|_phy|_collision|_col|_pa|_anim|_abp|_bp)$", re.I)
@@ -26,11 +28,13 @@ _WEAPON_KINDS = {
     "shields": "Shields", "grenademods": "Grenades", "grenades": "Grenades", "melee": "Melee",
     "artifacts": "Artifacts", "classmods": "Class mods", "spells": "Spells", "wards": "Wards", "rings": "Rings",
     "amulets": "Amulets", "repkits": "Repair kits", "ordnance": "Ordnance", "enhancements": "Enhancements",
+    "smg": "SMGs", "sniper": "Sniper rifles", "heavy": "Heavy weapons", "repairkits": "Repair kits",
+    "grenadegadgets": "Grenades", "gadgets": "Gadgets", "firmware": "Firmware",
 }
 _MAKERS = {
     "atl": "Atlas", "cov": "COV", "dal": "Dahl", "hyp": "Hyperion", "jak": "Jakobs", "mal": "Maliwan",
     "ted": "Tediore", "tor": "Torgue", "vla": "Vladof", "ord": "Order", "rip": "Ripper", "dad": "Daedalus",
-    "bor": "Borg",
+    "bor": "Ripper", "dpl": "Dahl",
 }
 
 
@@ -38,11 +42,24 @@ def kind_label(folder: str) -> str:
     return _WEAPON_KINDS.get(folder.lower().replace(" ", ""), folder.replace("_", " "))
 
 
-def classify(virtual: str) -> tuple[str, str, str] | None:
-    """(class, category, group) for a model file, or None when the name doesn't say it is a mesh."""
+# Borderlands 4 names weapon part meshes by maker and weapon type (DAD_AR_Barrel_01) rather than SK_/SM_.
+_PART_NAME = re.compile(r"^[a-z]{3}_(ar|ps|sg|sm|sr|hw)_", re.I)
+
+
+def is_part_name(virtual: str) -> bool:
+    stem = virtual.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    low = virtual.lower()
+    return bool(_PART_NAME.match(stem)) and ("/weapons/" in low or "/gear/" in low) and not _SKIP.search(stem)
+
+
+def classify(virtual: str, cls: str | None = None) -> tuple[str, str, str] | None:
+    """(class, category, group) for a model file, or None when the name doesn't say it is a mesh (``cls``: the
+    class, when it was read from the package)."""
     parts = virtual.split("/")
     stem = parts[-1].rsplit(".", 1)[0]
-    if _SKELETAL.match(stem):
+    if cls is not None:
+        pass
+    elif _SKELETAL.match(stem):
         cls = "SkeletalMesh"
     elif _STATIC.match(stem):
         cls = "StaticMesh"
@@ -94,10 +111,20 @@ def scan(folder: Path, game: str, progress: Callable[[int, str], None] | None = 
     names = gf.assets()
     if gf.zen is not None:
         names += gf.zen.assets()
+    peeked = 0
     for i, virtual in enumerate(names):
         if progress and i % 2000 == 0:
             progress(i, virtual)
         hit = classify(virtual)
+        if hit is None and gf.zen is not None and peeked < MAX_PEEKS and is_part_name(virtual) \
+                and gf.zen.exists(virtual):
+            peeked += 1  # read the class from the package's header
+            try:
+                cls = gf.zen.class_of(virtual)
+            except (FormatError, OSError):
+                cls = None
+            if cls in ("SkeletalMesh", "StaticMesh"):
+                hit = classify(virtual, cls)
         if hit is None:
             continue
         cls, category, group = hit
@@ -134,4 +161,4 @@ def folder_notes(folder: Path, game: str, found: list[CatalogEntry]) -> list[str
     return notes
 
 
-__all__ = ["classify", "folder_notes", "kind_label", "scan"]
+__all__ = ["classify", "folder_notes", "is_part_name", "kind_label", "scan"]
