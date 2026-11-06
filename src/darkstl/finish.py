@@ -56,6 +56,7 @@ class FinishResult:
     hollows: int = 0
     gap_volume_mm3: float = 0.0
     loose_removed: int = 0
+    source: TriMesh | None = None  # the textured model it was made from, to paint it from (set by the app)
 
     def stats(self) -> dict:
         lo, hi = self.mesh.bounds()

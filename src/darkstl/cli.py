@@ -221,7 +221,7 @@ def _export_options(args, model, mesh):
     from .export import ExportOptions
 
     opts = ExportOptions(scale=args.scale, ascii_stl=getattr(args, "ascii", False))
-    opts.material_names = [m.name for m in model.materials]
+    opts.material_names = [m.name for m in model.materials] if model is not None else []
     ext = Path(args.output).suffix.lower()
     if ext == ".3mf":
         from .paint import PaintSettings
@@ -230,7 +230,7 @@ def _export_options(args, model, mesh):
         opts.paint = PaintSettings(colours=args.colours, palette=palette, print_height_mm=args.print_height,
                                    feature_mm=args.feature, cleanup=args.cleanup)
         opts.progress = _progress
-    if ext in (".obj", ".glb", ".3mf"):
+    if ext in (".obj", ".glb", ".3mf") and model is not None:
         for m in np.unique(mesh.face_material):
             m = int(m)
             key = model.materials[m].albedo if m < len(model.materials) else None
@@ -240,6 +240,17 @@ def _export_options(args, model, mesh):
                 except Exception as exc:  # noqa: BLE001
                     print(f"warning: could not decode {key}: {exc}", file=sys.stderr)
     return opts
+
+
+def _paint_from(args, model, textured):
+    """For a painted 3MF of a model made from ``textured`` (--watertight, --cut), which has no textures of its
+    own: the colours of the textured model's surface to paint it from (paint.surface_colours)."""
+    if Path(args.output).suffix.lower() != ".3mf":
+        return None
+    from .paint import surface_colours
+
+    opts = _export_options(args, model, textured)
+    return surface_colours(textured, opts.textures, opts.paint, _progress)
 
 
 def _report_paint(opts) -> None:
@@ -255,10 +266,11 @@ def _report_paint(opts) -> None:
         print(f"note: {note}")
 
 
-def _write_pieces(args, mesh) -> int:
-    """With --cut: the model cut into pieces, each written beside the output as <name>_pieceN.<ext>."""
+def _write_pieces(args, mesh, colours=None) -> int:
+    """With --cut: the model cut into pieces, each written beside the output as <name>_pieceN.<ext>; for a
+    painted 3MF each piece is painted from ``colours`` (see _paint_from), with one palette for all."""
     from . import cut
-    from .export import ExportOptions, export_mesh
+    from .export import ExportOptions, export_mesh, write_palette_png
 
     try:
         settings = cut.CutSettings([cut.parse_cut(c, mesh) for c in args.cut], sheet_mm=args.sheet)
@@ -272,11 +284,21 @@ def _write_pieces(args, mesh) -> int:
     for n in result.notes:
         print(f"note: {n}", file=sys.stderr)
     out = Path(args.output)
+    paint = None
+    if colours is not None:
+        paint = _export_options(args, None, mesh).paint
+        out.parent.mkdir(parents=True, exist_ok=True)
+        write_palette_png(colours.palette, colours.coverage, out.with_name(f"{out.stem}_palette.png"))
+        slots = ", ".join(f"{i + 1}: #{int(r):02X}{int(g):02X}{int(b):02X}" for i, (r, g, b) in enumerate(colours.palette))
+        print(f"Painting the pieces with {len(colours.palette)} filaments: {slots}")
     for piece in result.pieces:
         slug = piece.name.lower().replace(" ", "")
-        path = export_mesh(cut.print_pose(piece), out.with_name(f"{out.stem}_{slug}{out.suffix}"),
-                           ExportOptions(scale=args.scale, ascii_stl=getattr(args, "ascii", False)))
+        opts = ExportOptions(scale=args.scale, ascii_stl=getattr(args, "ascii", False), paint=paint, paint_from=colours,
+                             palette_png=False)
+        path = export_mesh(cut.print_pose(piece), out.with_name(f"{out.stem}_{slug}{out.suffix}"), opts)
         print(f"Wrote {path} ({piece.mesh.n_faces:,} triangles, {piece.volume_mm3 / 1000:.2f} cm3)")
+        for note in opts.painting.notes if opts.painting is not None else []:
+            print(f"note: {note}")
     return 0
 
 
@@ -312,12 +334,15 @@ def cmd_export(args) -> int:
     if mesh.n_faces == 0:
         print(f"error: {model.name} has no triangles to export", file=sys.stderr)
         return 1
+    textured = mesh
     mesh = _finish(args, mesh)
     if mesh is None:
         return 1
+    colours = _paint_from(args, model, textured) if mesh is not textured or args.cut else None
     if args.cut:
-        return _write_pieces(args, mesh)
+        return _write_pieces(args, mesh, colours)
     opts = _export_options(args, model, mesh)
+    opts.paint_from = colours
     path = export_mesh(mesh, args.output, opts)
     print(f"Wrote {path} ({mesh.n_vertices:,} vertices, {mesh.n_faces:,} triangles)")
     _report_paint(opts)
@@ -362,9 +387,11 @@ def cmd_enhance(args) -> int:
     out_mesh = _finish(args, result.displaced)
     if out_mesh is None:
         return 1
+    colours = _paint_from(args, model, result.displaced) if out_mesh is not result.displaced or args.cut else None
     if args.cut:
-        return _write_pieces(args, out_mesh)
+        return _write_pieces(args, out_mesh, colours)
     opts = _export_options(args, model, out_mesh)
+    opts.paint_from = colours
     path = export_mesh(out_mesh, args.output, opts)
     _report_paint(opts)
     st = result.stats()

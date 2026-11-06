@@ -121,6 +121,7 @@ class CutResult:
     pieces: list[Piece]
     notes: list[str] = field(default_factory=list)  # what making it solid and placing the joints did
     joints: list[dict] = field(default_factory=list)  # per cut: what was placed
+    source: TriMesh | None = None  # the textured model the cut model came from, to paint the pieces (set by the app)
 
     def combined(self) -> TriMesh:
         """All pieces in one mesh, each piece's triangles carrying its index as their material."""
@@ -248,8 +249,8 @@ def _fill_loops(v: np.ndarray, f: np.ndarray, loops: list[list[int]]):
         # the boundary half-edge a->b belongs to an existing face, so the new one runs b->a
         fan = np.stack([b, a, np.full(len(idx), n)], axis=1)
         faces.append(fan)
-        t = np.concatenate([v, c[None]])[fan]
-        area += float(0.5 * np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1).sum())
+        # (the centre is vertex n of the result; for the area the corners are taken from v and the centre itself)
+        area += float(0.5 * np.linalg.norm(np.cross(v[a] - v[b], c - v[b]), axis=1).sum())
         n += 1
     return np.concatenate(verts), np.concatenate(faces), area
 

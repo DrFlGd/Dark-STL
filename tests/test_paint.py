@@ -234,6 +234,31 @@ def test_palette_is_learned_from_flat_texels(monkeypatch):
     assert len(paint.suggest_palette(square(), {0: noise}, 4)[0]) == 4
 
 
+def test_paints_a_model_without_textures_from_the_one_it_was_made_from():
+    # the source: a textured square, red left of u = 0.3 and blue right of it; the target: the same square
+    # triangulated the other way with no UVs, its back (facing the other way, as a thickened sheet's is) and
+    # an edge standing square to it, which no textured surface lies along
+    img = np.zeros((200, 200, 4), np.uint8)
+    img[..., 3] = 255
+    img[:, :60, :3] = (220, 0, 0)
+    img[:, 60:, :3] = (0, 0, 220)
+    settings = PaintSettings(palette=["#DE0202", "#0202DE"], print_height_mm=100, feature_mm=1)
+    colours = paint.surface_colours(square(), {0: img}, settings)
+    assert len(colours.points) > 1000 and colours.labels.max() == 1
+    v = np.array([[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1], [0, 0.002, 0], [0, 0.002, 1],
+                  [1, 0.3, 0], [1, 0.3, 1]], float)
+    f = np.array([[0, 1, 3], [1, 2, 3], [0, 3, 1], [1, 3, 2], [1, 6, 7], [1, 7, 2]])
+    p = paint.transfer_paint(TriMesh(v, f), colours, settings)
+    shares = [leaf_colours(decode_string(s), 2) for s in p.strings]
+    front = (shares[0] + shares[1]) / 2
+    back = (shares[2] + shares[3]) / 2
+    assert front[1] == pytest.approx(0.3, abs=0.02) and back[1] == pytest.approx(0.3, abs=0.02)
+    assert p.strings[4] == p.strings[5] == "4"  # nothing textured along it: the first filament, unsplit
+    assert p.notes and "first filament" in p.notes[0]
+    # the feature size comes from the source's height, whatever the target's (a piece is part of the model)
+    assert colours.feature == pytest.approx(0.01)
+
+
 # ---------------------------------------------------------------------------
 # the 3MF
 
@@ -285,6 +310,24 @@ def two_colour_game(tmp_path):
     return make_two_colour_game(tmp_path)
 
 
+def painted_shares(verts, faces, strings, axis=2):
+    """Area share of each slot over a painted mesh's faces lying flat (normal along ``axis``)."""
+    tri = verts[faces]
+    n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    area = np.linalg.norm(n, axis=1) / 2
+    flat = np.abs(n[:, axis]) > 0.99 * np.linalg.norm(n, axis=1)
+    out = np.zeros(3)
+    for f in np.flatnonzero(flat):
+        out += leaf_colours(decode_string(strings[f]) if strings[f] else 0, 2) * area[f]
+    return out / max(out.sum(), 1e-12)
+
+
+def both_halves_painted(verts, faces, strings):
+    """The two-colour plane's top and bottom are half red, half blue."""
+    sh = painted_shares(verts, faces, strings)
+    return sh[1] == pytest.approx(0.5, abs=0.06) and sh[2] == pytest.approx(0.5, abs=0.06)
+
+
 def test_the_app_suggests_a_palette_previews_and_exports(two_colour_game, tmp_path, monkeypatch):
     monkeypatch.setenv("DARKSTL_HOME", str(tmp_path / "home"))
     service = make_service(tmp_path / "home")
@@ -320,9 +363,28 @@ def test_the_app_suggests_a_palette_previews_and_exports(two_colour_game, tmp_pa
                                               "paint": {"palette": ["#FF0000", "#0000FF", "#00FF00"]}})["job"])
     _verts, faces, _strings, palette = read_3mf(r["path"])
     assert len(faces) > 1000 and palette == ["#FF0000", "#0000FF", "#00FF00"] and r["paint"]["coverage"][2] == 0
+    # the Finished model and cut pieces have no textures: they are painted from the model they were made from
     wait(service, service.call("finish", {"sid": m["sid"], "from": "original"})["job"])
-    with pytest.raises(Exception, match="Finished model has no textures"):
-        service.call("export", {"sid": m["sid"], "which": "finished", "format": ".3mf", "folder": str(out)})
+    settings = {"colours": 2, "print_height_mm": 100, "feature_mm": 1}
+    r = wait(service, service.call("export", {"sid": m["sid"], "which": "finished", "format": ".3mf", "folder": str(out),
+                                              "paint": settings})["job"])
+    verts, faces, strings, palette = read_3mf(r["path"])
+    assert palette == ["#DE0202", "#0202DE"] and r["paint"]["split_faces"] > 0
+    assert both_halves_painted(verts, faces, strings)
+    cut = {"cuts": [{"normal": [1, 0, 0], "point": [300, 0, 0], "joint": {"kind": "flat"}}]}  # mm
+    wait(service, service.call("cut", {"sid": m["sid"], "from": "finished", "cut": cut})["job"])
+    r = wait(service, service.call("export", {"sid": m["sid"], "which": "pieces", "format": ".3mf", "folder": str(out),
+                                              "paint": settings, "lay_flat": False})["job"])
+    assert len(r["files"]) == 2 and r["paint"]["colours"] == ["#DE0202", "#0202DE"]
+    assert Path(r["paint"]["palette_file"]).exists() and not list(Path(r["path"]).glob("*_piece*_palette.png"))
+    shares = []
+    for f in r["files"]:
+        verts, faces, strings, palette = read_3mf(f)
+        assert palette == ["#DE0202", "#0202DE"]
+        shares.append(painted_shares(verts, faces, strings))
+    # the piece left of the cut (x < 300 mm) is all red on its top and bottom; the other is mostly blue
+    shares.sort(key=lambda sh: -sh[1])
+    assert shares[0][1] > 0.9 and shares[1][2] > 0.6
     with pytest.raises(Exception, match="Paint settings|between 2 and"):
         service.call("export", {"sid": m["sid"], "which": "original", "format": ".3mf", "folder": str(out),
                                 "paint": {"colours": 1}})
@@ -339,4 +401,19 @@ def test_cli_exports_a_painted_3mf(two_colour_game, tmp_path, capsys):
     assert read_3mf(out)[3] == ["#DE0202", "#0202DE"] and (out.with_name("blade_palette.png")).exists()
     assert main(["export", str(two_colour_game / "parts" / "wp_a_0300.partsbnd.dcx"), "-o", str(tmp_path / "cli" / "p.3mf"),
                  "--palette", "#FF0000,#00FF00"]) == 0
+    # made watertight, or cut, it is painted from the textured model
+    capsys.readouterr()
+    out = tmp_path / "cli" / "solid.3mf"
+    assert main(["export", str(two_colour_game / "parts" / "wp_a_0300.partsbnd.dcx"), "-o", str(out), "--colours", "2",
+                 "--print-height", "100", "--feature", "1", "--watertight"]) == 0
+    assert "Painted with 2 filaments" in capsys.readouterr().out
+    assert both_halves_painted(*read_3mf(out)[:3])
+    out = tmp_path / "cli" / "cut.3mf"
+    assert main(["export", str(two_colour_game / "parts" / "wp_a_0300.partsbnd.dcx"), "-o", str(out), "--colours", "2",
+                 "--print-height", "100", "--feature", "1", "--cut", "x=30%"]) == 0
+    text = capsys.readouterr().out
+    assert "Painting the pieces with 2 filaments: 1: #DE0202, 2: #0202DE" in text
+    pieces = sorted(out.parent.glob("cut_piece*.3mf"))
+    assert len(pieces) == 2 and out.with_name("cut_palette.png").exists()
+    assert all(read_3mf(p)[3] == ["#DE0202", "#0202DE"] for p in pieces)
     assert read_3mf(tmp_path / "cli" / "p.3mf")[3] == ["#FF0000", "#00FF00"]
