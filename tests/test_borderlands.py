@@ -3,6 +3,7 @@ gun configurations built from Borderlands 2's gestalt meshes and part definition
 
 import shutil
 import struct
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -650,3 +651,30 @@ def test_gun_skins_without_a_colour_texture_are_painted_on_each_part(bl2, tmp_pa
         assert np.array_equal(again.textures[again.materials[0].albedo].decode(), img)
     finally:
         set_cache_folder(None)
+
+
+def test_find_lists_where_an_object_is_stored_and_referenced(bl2, capsys):
+    from darkstl.cli import main
+
+    cooked = bl2 / "WillowGame" / "CookedPCConsole"
+    (cooked / "GD_Weap_Skins.upk").write_bytes(skins_package())
+    (cooked / "GunSkins.upk").write_bytes(gun_skins_package())
+    (cooked / "Broken.upk").write_bytes(b"\xc1\x83\x2a\x9e" + bytes(60))
+    out_file = bl2 / "found.txt"
+    assert main(["find", str(bl2), "mati_jakobs", "-o", str(out_file)]) == 0
+    text = capsys.readouterr().out
+    assert "1 exports" in text and "1 imports" in text
+    assert "GunSkins.upk: export MaterialInstanceConstant Mati_Jakobs_1  [looked up as GunSkins.Mati_Jakobs_1]" in text
+    assert "GD_Weap_Skins.upk: import MaterialInstanceConstant GunSkins.Mati_Jakobs_1" in text
+    assert "1 packages couldn't be read:" in text and "Broken.upk" in text
+    assert out_file.read_text("utf-8").strip() == text.strip()
+
+
+def test_a_parent_of_another_material_class_is_found(tmp_path):
+    from darkstl.importers.borderlands.catalog import ObjectIndex
+
+    idx = ObjectIndex(tmp_path, None)
+    idx.by_name[("mati_dahlepicar", "MaterialInstanceTimeVarying")] = [("A.upk", "Materials.Mati_DahlEpicAR")]
+    hit = idx.find("Common_GunMaterials.Materials.AssaultRifle.Mati_DahlEpicAR", "MaterialInstanceConstant")
+    assert hit == (Path("A.upk"), "Materials.Mati_DahlEpicAR")
+    assert idx.find("X.Mati_DahlEpicAR", "Texture2D") is None  # only materials stand in for each other
