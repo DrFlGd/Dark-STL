@@ -104,8 +104,10 @@ def _relative(path: Path, roots: list[Path]) -> Path:
 
 def plan(library: Path, game: str, entries: list[CatalogEntry], roots: list[Path], options: CollectOptions,
          related: Callable[[CatalogEntry], list[RelatedFile]],
-         extras: Callable[[Path], list[RelatedFile]] | None = None) -> Plan:
-    """What collecting ``entries`` would copy, and what is already there."""
+         extras: Callable[[Path], list[RelatedFile]] | None = None,
+         progress: Callable[[int, str], None] | None = None) -> Plan:
+    """What collecting ``entries`` would copy, and what is already there. ``progress(i, model)`` is called
+    before each model is read (it may raise to stop)."""
     folder = Path(library) / _folder_name(game)
     out = Plan(game, folder, [e.stem for e in entries], roots=[Path(r) for r in roots if not _is_under(Path(r), folder)])
     seen: set[Path] = set()
@@ -136,7 +138,11 @@ def plan(library: Path, game: str, entries: list[CatalogEntry], roots: list[Path
             return  # already a library copy
         out.files.append(PlannedFile(src, target, f.kind, size, model, _same_file(src, target)))
 
-    for e in entries:
+    last = 0.0
+    for i, e in enumerate(entries):
+        if progress is not None and (i == 0 or time.monotonic() - last > 0.2):
+            last = time.monotonic()
+            progress(i, e.label)
         for f in related(e):
             add(f, e.stem)
     if options.extras and extras is not None:

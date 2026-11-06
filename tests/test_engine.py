@@ -103,3 +103,61 @@ def test_answers_come_as_they_finish(engine):
         got[header["id"]] = header
     assert set(got) == set(ids)
     assert "result" in got[ids[1]]
+
+
+def test_previews_dont_hold_up_opening_a_model(tmp_path):
+    """A page of slow previews takes their own workers: other commands are still answered at once."""
+    import io
+
+    sys.path.insert(0, str(SRC))
+    from darkstl.app import engine
+
+    release = threading.Event()
+
+    class Slow:
+        def call(self, cmd, args):
+            if cmd == "thumb":
+                release.wait(10)
+                return b"\x89PNG"
+            return {"ok": cmd}
+
+    reqs = [{"id": i, "cmd": "thumb", "bin": True} for i in range(20)] + [{"id": 99, "cmd": "model_open"}]
+    inp = io.BytesIO(b"".join(json.dumps(r).encode() + b"\n" for r in reqs))
+    out = io.BytesIO()
+    real_answer = engine.answer
+    order = []
+
+    def answer(service, request):
+        result = real_answer(service, request)
+        order.append(request["id"])
+        if request["id"] == 99:
+            release.set()
+        return result
+
+    engine.answer = answer
+    try:
+        engine.serve(Slow(), inp, out, workers=2, background=2)
+    finally:
+        engine.answer = real_answer
+    assert order[0] == 99 and sorted(order) == sorted(r["id"] for r in reqs)
+
+
+def test_previews_wait_while_a_model_opens(tmp_path):
+    sys.path.insert(0, str(SRC))
+    from darkstl import thumbnails
+
+    cache = thumbnails.ThumbnailCache(tmp_path)
+    cache.wait_idle(0)  # nothing under way: no wait
+    waited = []
+    with cache.foreground():
+        t = threading.Thread(target=lambda: (cache.wait_idle(10), waited.append(time.monotonic())))
+        t.start()
+        time.sleep(0.3)
+        assert not waited
+        left = time.monotonic()
+    t.join(5)
+    assert waited and waited[0] >= left
+    with cache.foreground():
+        start = time.monotonic()
+        cache.wait_idle(0.2)  # never longer than its timeout
+        assert time.monotonic() - start < 2

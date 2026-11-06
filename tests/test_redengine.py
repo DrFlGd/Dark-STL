@@ -314,3 +314,35 @@ def test_the_app_lists_opens_and_previews_archive_models(game_dir, tmp_path, mon
     assert opened["name"] == "w_rifle_a" and opened["game"] == "Cyberpunk 2077"
     assert len(opened["materials"]) == 1 and opened["materials"][0]["albedo"]
     assert s.call("thumb", {"id": items[0]["id"]})[:4] == b"\x89PNG"
+
+
+def test_every_archive_of_the_game_stays_open(tmp_path, monkeypatch):
+    """Cyberpunk has dozens of archives and a model's files are looked for in all of them: none may be read
+    again on each lookup (with 16 kept, a model took minutes to open), and the names learned stay."""
+    content = tmp_path / "game" / "archive" / "pc" / "content"
+    content.mkdir(parents=True)
+    for i in range(40):
+        (content / f"basegame_{i:02d}.archive").write_bytes(S.build_archive({rf"base\f{i}.xbm": b"x" * (i + 1)}))
+    reads = []
+    real = arc.Archive._read_index
+    monkeypatch.setattr(arc.Archive, "_read_index", lambda self: (reads.append(self.path.name), real(self))[1])
+    store = depot.Store([], depot.game_archives(tmp_path / "game"))
+    first = arc.open_archive(content / "basegame_00.archive")
+    first.learn([r"base\f0.xbm"])
+    for _ in range(3):
+        for i in range(40):
+            assert store.locate(rf"base\f{i}.xbm") is not None
+        assert store.locate(r"base\nowhere.xbm") is None
+    assert len(reads) == 40
+    assert arc.open_archive(content / "basegame_00.archive").names[arc.path_hash(r"base\f0.xbm")] == r"base\f0.xbm"
+
+
+def test_archive_index_keeps_the_first_of_a_repeated_hash(tmp_path):
+    p = tmp_path / "x.archive"
+    p.write_bytes(S.build_archive({rf"base\{n}.bin": n.encode() for n in "abcdef"}))
+    a = arc.open_archive(p)
+    hashes = list(a.entries)
+    assert sorted(hashes) == hashes and len(a.entries) == 6 and 123 not in a.entries and "x" not in a.entries
+    e = a.entries[arc.path_hash(r"base\c.bin")]
+    assert a.read(e.hash) == b"c" and a.size_of(e.hash) == 1 and e.segment_count == 1
+    assert a.entries.get(5) is None and [v.hash for v in a.entries.values()] == hashes

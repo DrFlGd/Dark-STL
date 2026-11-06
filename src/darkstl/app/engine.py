@@ -50,8 +50,13 @@ def answer(service: Service, request: dict) -> tuple[dict, bytes | None]:
     return {"id": rid, "size": len(result), "type": ctype}, bytes(result)
 
 
-def serve(service: Service, inp: BinaryIO, out: BinaryIO, workers: int = 8) -> None:
-    """Answer requests from ``inp`` on ``out`` until ``inp`` ends."""
+BACKGROUND = {"thumb"}  # answered by their own workers, so they never hold up the others
+
+
+def serve(service: Service, inp: BinaryIO, out: BinaryIO, workers: int = 8, background: int = 4) -> None:
+    """Answer requests from ``inp`` on ``out`` until ``inp`` ends. Library previews get ``background``
+    workers of their own: a library page asks for many at once (and drawing one can take a while), and
+    opening a model must not wait behind them for a free worker."""
     lock = threading.Lock()
 
     def handle(line: bytes) -> None:
@@ -66,10 +71,19 @@ def serve(service: Service, inp: BinaryIO, out: BinaryIO, workers: int = 8) -> N
             out.write(data + (body or b""))
             out.flush()
 
-    with ThreadPoolExecutor(workers, thread_name_prefix="engine") as pool:
+    with ThreadPoolExecutor(workers, thread_name_prefix="engine") as pool, \
+            ThreadPoolExecutor(background, thread_name_prefix="engine-thumb") as thumbs:
         for line in inp:
             if line.strip():
-                pool.submit(handle, line)
+                (thumbs if _command(line) in BACKGROUND else pool).submit(handle, line)
+
+
+def _command(line: bytes) -> str:
+    """The command a request line asks for."""
+    try:
+        return str(json.loads(line).get("cmd") or "")
+    except (ValueError, AttributeError):
+        return ""
 
 
 def main(folders: list[str] | None = None) -> int:

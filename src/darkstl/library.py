@@ -9,7 +9,10 @@ and a folder of extracted files, say); they are listed together.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
+import pickle
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -78,6 +81,53 @@ def folder_configurations(root: Path, game: str, found: list[CatalogEntry]) -> l
     return out + [c for c in listed if c.game == game]
 
 
+# ---------------------------------------------------------------------------
+# What each folder's last scan found, kept on disk, so the app opens with its library listed straight away
+# (the folders are scanned again behind it)
+
+
+SNAPSHOT_VERSION = 1
+
+
+@dataclass
+class Snapshot:
+    root: Path
+    game: str
+    found: list[CatalogEntry]
+    notes: list[str]
+    configs: list
+    version: str = ""
+
+    @staticmethod
+    def file(folder: Path, root: Path) -> Path:
+        key = hashlib.sha1(os.path.normcase(os.path.abspath(root)).encode("utf-8")).hexdigest()[:16]
+        return Path(folder) / f"{key}.pickle"
+
+    def save(self, folder: Path) -> None:
+        target = self.file(folder, self.root)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(f".{threading.get_ident()}.tmp")
+            with open(tmp, "wb") as f:
+                pickle.dump((SNAPSHOT_VERSION, self), f, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp, target)
+        except (OSError, pickle.PicklingError, TypeError, AttributeError):
+            pass  # only a quicker start lost
+
+    @classmethod
+    def load(cls, folder: Path, root: Path, game: str | None, version: str) -> "Snapshot | None":
+        """The snapshot of ``root`` (written by this version of Dark STL, for the same game), or None."""
+        try:
+            with open(cls.file(folder, root), "rb") as f:
+                kind, snap = pickle.load(f)  # our own cache file, written by save()
+        except Exception:  # noqa: BLE001 - missing, cut short or from an older version: scanned instead
+            return None
+        if (kind != SNAPSHOT_VERSION or not isinstance(snap, cls) or snap.version != version
+                or Path(snap.root) != Path(root) or (game and snap.game != game)):
+            return None
+        return snap
+
+
 def folder_relation(folder: str | os.PathLike, roots) -> tuple[Path | None, list[Path]]:
     """The added folder that already holds ``folder`` (if any), and the added folders inside it."""
     folder = Path(folder)
@@ -94,13 +144,14 @@ class Library:
     _by_id: dict[str, CatalogEntry] | None = field(default=None, repr=False)
     _full: set[tuple[str, str]] | None = field(default=None, repr=False)  # (game, stem) of every full model
     _first: dict[tuple[str, str], str] | None = field(default=None, repr=False)  # (game, stem) -> the entry shown
+    _root: dict[str, Path | None] | None = field(default=None, repr=False)  # entry id -> the folder holding it
     found_configs: dict[Path, list] = field(default_factory=dict)  # folder -> configurations its scan found
     config_notes: dict[str, list[str]] = field(default_factory=dict)  # game -> what couldn't be found for them
     _configs: list[CatalogEntry] | None = field(default=None, repr=False)
     _all: list[CatalogEntry] | None = field(default=None, repr=False)
 
     def _changed(self) -> None:
-        self._by_id = self._full = self._first = self._configs = self._all = None
+        self._by_id = self._full = self._first = self._configs = self._all = self._root = None
 
     def configs_changed(self) -> None:
         """Read the configuration lists again (the user saved one)."""
@@ -157,13 +208,18 @@ class Library:
         root = Path(root)
         game = game or detect_game(root) or root.name
         found, notes = scan_folder(root, game, progress)
+        self.add_scanned(root, game, found, notes, folder_configurations(root, game, found))
+        return found
+
+    def add_scanned(self, root: Path, game: str, found: list[CatalogEntry], notes: list[str], configs: list) -> None:
+        """Take in a folder scanned already (by :meth:`add_root`, or read back from a :class:`Snapshot`)."""
+        root = Path(root)
         self.roots[root] = game
-        self.notes[root] = notes
-        self.found_configs[root] = folder_configurations(root, game, found)
-        self.entries = [e for e in self.entries if not _is_under(e.path, root)] + found
+        self.notes[root] = list(notes)
+        self.found_configs[root] = list(configs)
+        self.entries = [e for e in self.entries if not _is_under(e.path, root)] + list(found)
         self.entries.sort(key=lambda e: e.sort_key)
         self._changed()
-        return found
 
     def remove_root(self, root: str | os.PathLike) -> None:
         root = Path(root)
@@ -221,6 +277,12 @@ class Library:
         return self._first.get((entry.game, entry.stem.lower()), entry.id) != entry.id
 
     def root_of(self, entry: CatalogEntry) -> Path | None:
+        if self._root is None:
+            self._root = {}
+            for e in self.entries:  # a game's library can hold 100,000 models: worked out once
+                self._root[e.id] = next((r for r in self.roots if _is_under(e.path, r)), None)
+        if entry.id in self._root:
+            return self._root[entry.id]
         return next((r for r in self.roots if _is_under(entry.path, r)), None)
 
     def games(self) -> list[str]:
@@ -255,6 +317,12 @@ class Library:
     def overview(self, include_lod: bool = False) -> list[dict]:
         """Each game with its folders, and its categories and groups with how many models each holds."""
         tree = self.grouped(include_lod)
+        counts: dict[Path | None, int] = {}
+        for e in self.entries:
+            if not self.hides(e, include_lod, copies=False):
+                for root in self.roots:
+                    if _is_under(e.path, root):
+                        counts[root] = counts.get(root, 0) + 1
         games = []
         for game in self.games() + [g for g in tree if g not in self.roots.values()]:
             cats = tree.get(game, {})
@@ -263,9 +331,8 @@ class Library:
                 groups = cats[cat]
                 categories.append({"name": cat, "count": sum(len(v) for v in groups.values()),
                                    "groups": [{"name": g, "count": len(v)} for g, v in groups.items() if g]})
-            folders = [{"path": str(r), "count": sum(1 for e in self.entries if _is_under(e.path, r)
-                                                     and not self.hides(e, include_lod, copies=False)),
-                        "notes": self.notes.get(r, []), "missing": not r.is_dir()}
+            folders = [{"path": str(r), "count": counts.get(r, 0), "notes": self.notes.get(r, []),
+                        "missing": not r.is_dir()}
                        for r, g in self.roots.items() if g == game]
             games.append({"name": game, "count": sum(c["count"] for c in categories),
                           "folders": folders, "categories": categories})
@@ -277,8 +344,12 @@ def _category_index(name: str) -> int:
 
 
 def _is_under(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
+    """Whether ``path`` is ``root`` or inside it (compared as text: Path.relative_to took seconds over a
+    100,000-model library)."""
+    p = os.path.normcase(os.fspath(path))
+    r = os.path.normcase(os.fspath(root))
+    if p == r:
         return True
-    except ValueError:
-        return False
+    if not r.endswith(("/", os.sep)):
+        r += os.sep
+    return p.startswith(r)

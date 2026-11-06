@@ -165,10 +165,15 @@ class CatalogEntry:
 
     @property
     def id(self) -> str:
-        """A short stable id for the file, used by the app's pages and its preview cache."""
-        if self.config is not None:
-            return path_id(f"{self.path}#config:{self.config.id}")
-        return path_id(self.path)
+        """A short stable id for the file, used by the app's pages and its preview cache (worked out once:
+        the library asks for it over and over across 100,000 models)."""
+        key = (self.path, self.config.id if self.config is not None else None)
+        known = self.__dict__.get("_id")
+        if known is None or known[0] != key:
+            text = f"{self.path}#config:{self.config.id}" if self.config is not None else self.path
+            known = (key, path_id(text))
+            self.__dict__["_id"] = known
+        return known[1]
 
     @property
     def sort_key(self) -> tuple:

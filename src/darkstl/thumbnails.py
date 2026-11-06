@@ -7,6 +7,10 @@ texture where the model has one. Pictures are kept in a cache folder, keyed by
 the file's path, size and date, so each model is drawn once: again only when its
 file changes, or when its folder is rescanned (:meth:`ThumbnailCache.forget`).
 A model that can't be drawn is remembered too, so it isn't tried on every visit.
+
+Drawing previews is background work: while the user opens a model (:meth:`ThumbnailCache.foreground`),
+no new preview starts and the ones being drawn pause between steps, so the model isn't kept waiting
+behind a page of previews.
 """
 
 from __future__ import annotations
@@ -15,6 +19,8 @@ import hashlib
 import io
 import os
 import threading
+from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -55,8 +61,9 @@ def face_colours(mesh: TriMesh, textures: dict[int, np.ndarray]) -> np.ndarray:
 
 
 def render(mesh: TriMesh, textures: dict[int, np.ndarray] | None = None, size: int = 256,
-           supersample: int = 2) -> np.ndarray:
-    """An RGBA picture (``size`` square, transparent background) of the mesh."""
+           supersample: int = 2, pause: Callable[[], None] | None = None) -> np.ndarray:
+    """An RGBA picture (``size`` square, transparent background) of the mesh. ``pause`` is called every
+    few thousand triangles, to let more urgent work go first."""
     from PIL import Image, ImageDraw
 
     if mesh.n_faces > MAX_TRIANGLES:  # a map piece the size of a level: every n-th triangle is plenty
@@ -95,7 +102,9 @@ def render(mesh: TriMesh, textures: dict[int, np.ndarray] | None = None, size: i
     order = np.argsort(depth[mesh.faces].mean(axis=1))  # far first
     draw = ImageDraw.Draw(img)
     tri_x, tri_y = px[mesh.faces], py[mesh.faces]
-    for f in order:
+    for i, f in enumerate(order):
+        if pause is not None and i % 4096 == 0:
+            pause()
         c = tuple(rgb[f]) + (255,)
         pts = [(tri_x[f, 0], tri_y[f, 0]), (tri_x[f, 1], tri_y[f, 1]), (tri_x[f, 2], tri_y[f, 2])]
         draw.polygon(pts, fill=c, outline=c)
@@ -159,6 +168,27 @@ class ThumbnailCache:
         self._gate = threading.Semaphore(workers)
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
+        self._busy = 0  # foreground work under way (a model being opened)
+        self._idle = threading.Condition()
+
+    @contextmanager
+    def foreground(self):
+        """Work the user is waiting for: previews hold back until it's done."""
+        with self._idle:
+            self._busy += 1
+        try:
+            yield
+        finally:
+            with self._idle:
+                self._busy -= 1
+                if not self._busy:
+                    self._idle.notify_all()
+
+    def wait_idle(self, timeout: float = 120.0) -> None:
+        """Wait while foreground work is under way (at most ``timeout`` seconds, so a preview never waits
+        for ever behind something stuck)."""
+        with self._idle:
+            self._idle.wait_for(lambda: not self._busy, timeout)
 
     def key(self, path: Path, variant: str | None = None) -> str:
         try:
@@ -183,6 +213,7 @@ class ThumbnailCache:
             return cached if cached is not None else (None if self._known_empty(target) else b"")
         if self._known_empty(target):
             return None
+        self.wait_idle()
         with self._lock_for(target.name), self._gate:
             cached = self._cached(target)
             if cached is not None or self._known_empty(target):
@@ -241,8 +272,12 @@ class ThumbnailCache:
     def _draw(self, path: Path, variant: str | None, texture_dirs: tuple[str, ...]) -> bytes | None:
         from .importers import open_model
 
+        self.wait_idle()
         model = open_model(path, variant, texture_dirs)
+        self.wait_idle()
         mesh = model.build_mesh()
         if mesh.n_faces == 0:
             return None
-        return png_bytes(render(mesh, albedo_textures(model, mesh), self.size))
+        self.wait_idle()
+        textures = albedo_textures(model, mesh)
+        return png_bytes(render(mesh, textures, self.size, pause=self.wait_idle))
