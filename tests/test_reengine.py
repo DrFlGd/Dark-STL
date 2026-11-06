@@ -17,7 +17,7 @@ from darkstl.importers.reengine.formats import mesh as meshfmt
 from darkstl.importers.reengine.formats import pak as pakfmt
 from darkstl.importers.reengine.formats import tex as texfmt
 from darkstl.importers.reengine.games import detect_game
-from darkstl.model import MeshOptions
+from darkstl.model import CatalogEntry, MeshOptions
 
 import synth_re as S
 from test_app import home, make_service, wait  # noqa: F401 - fixture
@@ -431,3 +431,34 @@ def test_the_engine_adds_opens_and_collects_an_re_game(home, re4_dir, re2_pak_di
     # the collected copy opens on its own, with its textures
     copy = open_model(folder / "natives/x64/sectionroot/character/player/pl0000/pl0000.mesh.1808312334")
     assert copy.materials[0].albedo == "pl0000_body_albm" and copy.build_mesh().n_faces == 8
+
+
+def test_a_characters_part_meshes_make_one_configurable_model(tmp_path):
+    from darkstl.importers.reengine.characters import characters_from_folders
+
+    def entry(rel, category="Characters"):
+        p = tmp_path / "natives" / "stm" / rel
+        return CatalogEntry("RE8", category, "", p.name.split(".")[0], p.name.split(".")[0], p,
+                            is_lod=p.name.split(".")[0].endswith("_l"))
+
+    entries = [entry("character/ch/ch03/0200/body/body00/ch03_0200_body00.mesh.2101050001"),
+               entry("character/ch/ch03/0200/body/body01/ch03_0200_body01.mesh.2101050001"),
+               entry("character/ch/ch03/0200/face/face00/ch03_0200_face00.mesh.2101050001"),
+               entry("character/ch/ch03/0200/face/face00/ch03_0200_face00_l.mesh.2101050001"),
+               entry("character/ch/ch03/0200/hair/hair00/ch03_0200_hair00.mesh.2101050001"),
+               entry("character/ch/ch03/0210/body/body00/ch03_0210_body00.mesh.2101050001"),  # alone: no config
+               entry("character/ch/prefab/gallery/ch03_0210/ch03_0210_body.mesh.2101050001"),  # a flat folder
+               entry("character/player/pl0000/body/pl0000_body.mesh.1808312334"),  # RE2: the folder is the id
+               entry("character/player/pl0000/face/pl0000_face.mesh.1808312334"),
+               entry("weapon/wp0000/wp0000.mesh.1808312334", "Weapons")]
+    configs = {c.id: c for c in characters_from_folders(entries, "RE8")}
+    assert set(configs) == {"auto:ch03_0200", "auto:pl0000"}
+    c = configs["auto:ch03_0200"]
+    assert c.guessed and c.base.file.endswith("ch03_0200_body00.mesh.2101050001") and c.category == "Characters"
+    slots = {s.id: ([o.id for o in s.options], s.default) for s in c.slots}
+    assert slots == {"body": (["ch03_0200_body01"], None), "face": (["ch03_0200_face00"], "ch03_0200_face00"),
+                     "hair": (["ch03_0200_hair00"], "ch03_0200_hair00")}
+    assert [s.label for s in c.slots] == ["Body (other)", "Face", "Hair"]
+    assert c.slots[1].options[0].label == "face00"
+    p = configs["auto:pl0000"]
+    assert p.base.file.endswith("pl0000_body.mesh.1808312334") and [s.id for s in p.slots] == ["face"]

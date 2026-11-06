@@ -255,3 +255,38 @@ def test_a_material_slot_repaints_the_parts():
     assert painted.textures["skin:paint.dds"] == "paint" and painted.build_mesh().n_faces == 2
     with pytest.raises(FormatError):
         configs.parse({"configurations": [{"id": "x", "base": "b", "slots": [{"id": "s", "kind": "colour"}]}]})
+
+
+def test_a_pose_moves_every_part_that_shares_the_bases_animations():
+    class Anims:
+        def __init__(self, names):
+            self.names = names
+
+        def __contains__(self, name):
+            return name in self.names
+
+    def model(name, anims):
+        posed = []
+
+        def build(o: MeshOptions):
+            posed.append(o.pose)
+            return TriMesh(np.zeros((3, 3)), np.array([[0, 1, 2]]), np.zeros((1, 3, 2), np.float32),
+                           np.zeros(1, np.int32), np.zeros(1, np.int32))
+
+        m = SourceModel(name, Path(name), "test", build, materials=[Material("m")], animations=anims)
+        return m, posed
+
+    body, body_poses = model("body", Anims(["walk"]))
+    face, face_poses = model("face", Anims(["walk", "talk"]))
+    prop, prop_poses = model("prop", None)
+    models = {"body": body, "face": face, "prop": prop}
+    config = configs.Configuration("c", "Character", "G", configs.ModelRef("body"), [
+        configs.Slot("face", "Face", [configs.PartOption("f", "Face", configs.ModelRef("face"))], default="f"),
+        configs.Slot("prop", "Prop", [configs.PartOption("p", "Prop", configs.ModelRef("prop"))], default="p")])
+    m = configs.assemble(config, {}, lambda p, v: models[p])
+    m.build_mesh(MeshOptions(pose=("walk", 3)))
+    assert body_poses[-1] == ("walk", 3) and face_poses[-1] == ("walk", 3) and prop_poses[-1] is None
+    assert any("other parts fitted to it stay" in n for n in m.notes)
+    # a part is posed only by an animation it has; the base's pose is still applied to the base
+    m.build_mesh(MeshOptions(pose=("talk", 0)))
+    assert face_poses[-1] == ("talk", 0)

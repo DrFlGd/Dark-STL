@@ -264,3 +264,20 @@ def test_the_pose_tab_lists_re_animations(home, re2_dir):  # noqa: F811
     r = s.call("model_animations", {"sid": opened["sid"]})
     assert r["bones"] == 2 and [a["name"] for a in r["animations"]] == ["pl0000_move / stand", "pl0000_move / wave"]
     assert ".motlist" in r["note"]
+
+
+def test_a_mesh_bound_whole_to_a_few_bones_is_called_a_figure():
+    from darkstl.importers.reengine.animation import REAnimations
+    from darkstl.importers.reengine.formats.mesh import Bone
+
+    names = ["root", "Hip", "Spine", "Neck", "Head", "L_Thigh", "L_Shin", "R_Thigh", "R_Shin", "Pocket"]
+    parents = [-1, 0, 1, 2, 3, 1, 5, 1, 7, 1]
+    bones = [Bone(n, p, np.eye(4, dtype=np.float32)) for n, p in zip(names, parents)]
+    figure = REAnimations(bones, [], None, used_bones={1, 9})
+    assert figure.moving_bones == [0, 1, 9]  # the bones used and their ancestors
+    assert "bound whole to 2 of its 10 bones (Hip, Pocket)" in figure.rigid_description()
+    assert figure.note == REAnimations.note  # the importer decides whether the note replaces the usual one
+    skinned = REAnimations(bones, [], None, used_bones=set(range(1, 10)))
+    assert skinned.rigid_description() is None and skinned.moving_bones == list(range(10))
+    unknown = REAnimations(bones, [], None)
+    assert unknown.rigid_description() is None and unknown.moving_bones == list(range(10))
