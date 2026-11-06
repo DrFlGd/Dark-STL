@@ -84,7 +84,12 @@ neither.
   what it found), using the game's own `bin\x64\oo2ext_7_win64.dll` to decompress. A folder
   of `.mesh` and `.xbm` files exported with WolvenKit (kept under their `base\...` paths)
   works too, and the two can be mixed: a model's textures are looked up in the loose folder
-  first, then in the archives.
+  first, then in the archives. Weapons are listed as configurable models, put together from the
+  game's own appearance files (`.app`): the body, a slot for each part the appearances swap
+  (magazine, stock, decals...), the body's finish, and the attachment points (scope, muzzle) with
+  the attachments that fit them; each in-game appearance (*frank*, *military1*...) is a preset.
+  Multilayered materials (most weapon surfaces, skin) are blended from their layers and masks
+  into one colour map and one normal map.
 - **Resident Evil (RE Engine):** add the game's install folder as it is: Dark STL reads the
   models straight from its `.pak` archives. Paks only store hashes of the file names; the
   names come from the community file lists Dark STL ships (Ekey's, from
