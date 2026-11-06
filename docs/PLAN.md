@@ -242,6 +242,28 @@ used, so the side stays straight instead of swelling into a bulge. This is on by
   along their seams as well as possible, and what still differs is faded smoothly into each
   island over a few vertex spacings.
 
+### Making it watertight (Finish tab, before cutting or export)
+
+Post-processing for printing lives on the **Finish** tab (`finish.py`). *Make watertight* wraps the
+whole model (enhanced or original) into one solid with nothing left inside:
+
+- **Parts made solid and joined**, as for cutting (below): where parts cross, the union removes the
+  triangles inside the other part, and the outside surface stays exactly as it was. Parts are
+  connected through shared edges only, so two closed parts that touch at a vertex (a plate's corner
+  on a body) are each kept as they are; a part still tangled is tried again split into the game's
+  own sub-meshes before falling back to voxels.
+- **Hollows filled** (default on): the union's surface is split into its closed shells; shells
+  facing inwards (negative volume) bound space sealed inside, so only the outward shells are kept
+  and united again.
+- **Gaps closed** (optional, up to a width): the solid is marked in a voxel grid (a quarter of the
+  width, at most about 6 M voxels), closed morphologically with a ball of half the width, eroded
+  two voxels so the bridges sit under the real surface, and turned into a surface (manifold's level
+  set) that is united with the exact solid. Only where it bridges a gap does it show.
+- **Loose bits removed** (optional): separate solids under a share of the biggest one's volume.
+
+The result is kept per model, source and settings (last 2), shown as *Finished*, exported as
+`<name>_watertight`, and can be cut (*Cut › Finished*); it has no UVs or textures.
+
 ### Configurable models: a base and parts chosen per slot
 
 Weapons in Cyberpunk 2077, the RE Engine games and Borderlands are kept as a body and separate
