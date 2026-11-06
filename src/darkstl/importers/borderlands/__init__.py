@@ -172,8 +172,10 @@ class BorderlandsImporter(Importer):
 
     def _load_skin(self, path, pkg, spec: str, dirs, game) -> SourceModel:
         """A gun skin: the material of a Material part (``<package stem>:<part path>``), no geometry."""
+        spec, _, file = spec.partition("|")
         stem, _, part_path = spec.partition(":")
-        where = files.index_for(pkg.path).find(stem)
+        where = Path(file) if file and Path(file).is_file() else None
+        where = where or files.index_for(pkg.path).find(stem)
         if where is None:
             raise FormatError(f"{stem}.upk, which holds the skin {part_path}, wasn't found")
         ppkg = upk.open_package(where)
