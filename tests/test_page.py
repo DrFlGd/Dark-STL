@@ -380,6 +380,50 @@ def test_cut_a_model_into_pieces_with_joints_and_export_them(page, app, tmp_path
     assert page.locator("#cut-list li").count() == 2
 
 
+def test_make_a_model_watertight_then_export_and_cut_it(page, app, tmp_path):
+    pytest.importorskip("manifold3d")
+    from test_cut import figure_obj
+
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    opened = app.service.call("model_open", {"path": str(figure_obj(tmp_path))})
+    page.goto(f"{app.url}#/model/{quote(opened['id'], safe='')}")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    assert page.get_attribute('#show-which [data-value="finished"]', "disabled") is not None
+    page.click("#rail-finish")
+    page.wait_for_selector("#finish-tab")
+    assert page.get_attribute('#finish-from button:has-text("Enhanced")', "disabled") is not None
+    assert page.is_checked("#finish-hollows") and not page.is_checked("#finish-gaps")
+    page.check("#finish-gaps")
+    page.wait_for_selector("#finish-gap-mm")
+    page.uncheck("#finish-gaps")
+    page.click("#finish-run")
+    page.wait_for_selector("#finish-result", timeout=60000)
+    page.wait_for_selector("text=Made watertight")
+    page.wait_for_selector('#show-which [data-value="finished"][aria-pressed="true"]')
+    page.wait_for_selector("#stage-canvas:not([data-loading])")
+    assert "3 parts joined into one" in page.text_content("#finish-result")
+    assert page.text_content("#finish-stats").count("1") >= 1
+    if shots:
+        page.screenshot(path=os.path.join(shots, "finish-tab.png"))
+    # other settings: shown as made with other ones until made again
+    page.check("#finish-loose")
+    page.wait_for_selector("#finish-stale")
+    page.uncheck("#finish-loose")
+    page.wait_for_selector("#finish-stale", state="detached")
+    # Export and Cut can use it
+    page.click("#rail-export")
+    page.wait_for_selector('#export-which button[aria-pressed="true"]:has-text("Finished")')
+    assert page.get_attribute("#export-name", "placeholder") == "figure_watertight"
+    page.fill("#export-folder", str(tmp_path / "out"))
+    page.press("#export-folder", "Tab")
+    page.click("#export-run")
+    page.wait_for_selector("#export-done", timeout=60000)
+    assert (tmp_path / "out" / "figure_watertight.stl").exists()
+    page.click("#rail-cut")
+    page.wait_for_selector("#cut-tab")
+    assert page.get_attribute('#cut-from button:has-text("Finished")', "disabled") is None
+
+
 PLANE_CORNER = """() => {
   const v = window.__viewer;
   const g = v.cutGroup.children[0];
@@ -422,3 +466,70 @@ def test_unpack_a_packed_game(page, packed_ds3):  # noqa: F811
     page.wait_for_selector("#filelists-status >> text=Downloaded lists for Dark Souls III")  # the copied list counts as one
     if shots:
         page.locator("#settings-archives").screenshot(path=str(Path(shots) / "settings-archives.png"))
+
+
+def test_configure_a_weapon_from_its_parts(page, app, tmp_path):
+    """A configurable model is listed with its slots, opens on its Configure tab, puts itself together
+    again when a part is chosen, and its configuration can be edited and kept."""
+    import json
+    import time
+
+    from test_configs import cube_obj
+
+    root = tmp_path / "game"
+    w = root / "weapons" / "rifle"
+    cube_obj(w / "rifle_body.obj", 0.2)
+    cube_obj(w / "rifle_mag_std.obj", 0.05, (0, 0, -0.15))
+    cube_obj(w / "rifle_mag_drum.obj", 0.08, (0, 0, -0.16))
+    cube_obj(w / "rifle_scope.obj", 0.04, (0, 0.12, 0))
+    (root / "guns.darkstl-configs.json").write_text(json.dumps({"format": "darkstl-configurations", "game": "Test game",
+        "configurations": [{"id": "rifle", "label": "Test rifle", "base": "weapons/rifle/rifle_body.obj", "slots": [
+            {"id": "mag", "label": "Magazine", "required": True, "options": [
+                {"id": "std", "label": "Standard", "model": "rifle_mag_std"}, {"id": "drum", "label": "Drum", "model": "rifle_mag_drum"}]},
+            {"id": "sight", "label": "Sight", "options": [{"id": "scope", "label": "Scope", "model": "rifle_scope"}]}],
+            "presets": {"Heavy": {"mag": "drum", "sight": "scope"}}}]}))
+    s = app.service
+    job = s.call("folder_add", {"path": str(root), "game": "Test game"})["job"]
+    end = time.time() + 30
+    while s.call("job", {"id": job})["state"] == "running" and time.time() < end:
+        time.sleep(0.05)
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    page.goto(f"{app.url}#/browse/{quote('Test game')}/Weapons")
+    page.wait_for_selector(".card:has-text('Configurable: 2 slots, 3 parts')")
+    page.dblclick(".card:has-text('Test rifle')")
+    page.wait_for_selector("#configure-tab")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    assert page.input_value("#slot-mag") == "std" and page.input_value("#slot-sight") == ""
+    tris = lambda: page.text_content("#stage-size")  # noqa: E731
+    assert "24 triangles" in tris()
+    page.select_option("#preset-select", "Heavy")
+    page.wait_for_function("document.querySelector('#slot-sight').value === 'scope'")
+    page.wait_for_function("document.querySelector('#stage-size').textContent.includes('36 triangles')", timeout=30000)
+    assert page.input_value("#slot-mag") == "drum"
+    if shots:
+        page.wait_for_timeout(500)
+        page.screenshot(path=str(Path(shots) / "configure-tab.png"))
+    # the parts show on the Model tab, each of which can be left out
+    page.click("#rail-model")
+    assert page.locator(".part-row").count() == 3 and "Sight: Scope" in page.text_content("#parts")
+    # edit: rename it, lift the scope 10 mm, save; it's kept and put together again
+    page.click("#rail-configure")
+    page.click("#config-edit")
+    page.fill("#config-label", "My rifle")
+    page.fill('[data-slot="sight"] [aria-label="Move Z (mm)"]', "10")
+    page.press('[data-slot="sight"] [aria-label="Move Z (mm)"]', "Tab")
+    # and add a part from the library to a new slot
+    page.click("#config-add-slot")
+    page.click('[data-slot="slot3"] .add-part')
+    page.fill(".part-search", "rifle_scope")
+    page.click(".part-result[data-file='rifle_scope.obj']")
+    page.click('[data-slot="slot3"] button:has-text("Done")')
+    if shots:
+        page.screenshot(path=str(Path(shots) / "configure-edit.png"))
+    page.click("#config-save")
+    page.wait_for_selector("#configure-tab h3:has-text('My rifle')")
+    page.wait_for_selector("#slot-slot3")
+    saved = json.loads((Path(os.environ["DARKSTL_HOME"]) / "configurations" / "Test game.json").read_text())
+    (c,) = saved["configurations"]
+    assert c["label"] == "My rifle" and c["slots"][1]["options"][0]["attach"]["offset"] == [0, 0, 0.01]
+    assert c["slots"][2]["options"][0]["model"] == {"file": "weapons/rifle/rifle_scope.obj"}

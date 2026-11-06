@@ -27,13 +27,14 @@ import numpy as np
 
 from .. import __version__
 from .. import collect
+from .. import configs
 from ..errors import FormatError
 from ..export import FORMATS, ExportOptions, export_mesh
 from ..geometry.mesh import TriMesh
 from ..library import Library, detect_game, folder_relation, known_games
 from ..model import CatalogEntry, MeshOptions, SourceModel, path_id
 from ..thumbnails import ThumbnailCache
-from .config import Config, filelists_dir, models_dir
+from .config import Config, config_dir, filelists_dir, models_dir
 from .meshpack import pack_mesh
 
 UNITS = {"mm": 1000.0, "m": 1.0, "cm": 100.0, "in": 39.3701}
@@ -172,6 +173,8 @@ class Session:
     mesh: TriMesh | None = None
     cut: Any = None  # CutResult: the pieces last cut from this model
     cut_id: str = ""
+    finished: Any = None  # finish.FinishResult: the model last made watertight (Finish tab)
+    finished_id: str = ""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def build(self, options: MeshOptions) -> TriMesh:
@@ -235,8 +238,12 @@ def parse_pose(value) -> tuple[str, int] | None:
 
 
 def entry_json(e: CatalogEntry) -> dict:
-    return {"id": e.id, "label": e.label, "stem": e.stem, "game": e.game, "category": e.category, "group": e.group,
-            "packed": e.packed, "lod": e.is_lod, "importer": e.importer, "file": str(e.path), "name": e.path.name}
+    out = {"id": e.id, "label": e.label, "stem": e.stem, "game": e.game, "category": e.category, "group": e.group,
+           "packed": e.packed, "lod": e.is_lod, "importer": e.importer, "file": str(e.path), "name": e.path.name}
+    if e.config is not None:
+        out["configurable"] = {"slots": len(e.config.slots), "options": sum(len(s.options) for s in e.config.slots),
+                               "guessed": e.config.guessed}
+    return out
 
 
 def model_json(m: SourceModel, mesh: TriMesh) -> dict:
@@ -251,6 +258,7 @@ def model_json(m: SourceModel, mesh: TriMesh) -> dict:
                        "guessed": x.guessed, "details": x.details} for x in m.materials],
         "textures": [{"key": k, "name": t.name, "source": t.source} for k, t in sorted(m.textures.items())],
         "info": m.info, "notes": m.notes, "stats": mesh_stats(mesh), "animated": m.animations is not None,
+        "configuration": m.configuration,
     }
 
 
@@ -273,6 +281,7 @@ class Service:
     KEEP_UPSCALED_BYTES = 768 << 20
     KEEP_CUTS = 3  # cut models kept, so going back to a set of cuts is instant
     KEEP_SOLIDS = 1  # the model made solid (big), so moving a cut doesn't make it solid again
+    KEEP_FINISHED = 2  # models made watertight, so switching between two settings is instant
 
     def __init__(self, config: Config, cache: Path, host: Host | None = None):
         self.config = config
@@ -293,8 +302,11 @@ class Service:
         self.upscaled: OrderedDict[tuple, Any] = OrderedDict()  # normal maps made ready (UpscaledMap) by _upscale_key()
         self.cuts: OrderedDict[tuple, Any] = OrderedDict()  # CutResult by the model cut and the cut settings
         self.solids: OrderedDict[tuple, Any] = OrderedDict()  # cut.Solid by the model made solid and the sheet thickness
+        self.finished: OrderedDict[tuple, Any] = OrderedDict()  # finish.FinishResult by the model and the settings
         self.cache = Path(cache)
         self.unpack_plans: dict[tuple, Any] = {}  # unpack.Plan by (game folder, destination), the last few
+        self.part_models: OrderedDict[tuple, SourceModel] = OrderedDict()  # models opened to assemble configurations
+        configs.set_user_folder((config.path.parent if config.path else config_dir()) / "configurations")
         if config.oodle:
             self._use_oodle(config.oodle)
 
@@ -348,7 +360,66 @@ class Service:
         return {"texture_dirs": list(self.config.texture_dirs), "oodle": self.config.oodle,
                 "oodle_found": str(found) if found else None, "export_dir": str(self.config.export_folder),
                 "library_dir": str(lib), "library_files": files, "library_bytes": size,
-                "previews": str(self.thumbs.folder), "settings_file": str(self.config.path or "")}
+                "previews": str(self.thumbs.folder), "settings_file": str(self.config.path or ""),
+                **self._unreal_settings()}
+
+    def _unreal_settings(self) -> dict:
+        """The AES keys and type mappings (.usmap) the Unreal games' importer reads from the settings folder."""
+        from ..importers.borderlands.ue4 import vfs
+        from .config import config_dir
+
+        d = config_dir()
+        f = d / vfs.KEY_FILE
+        try:
+            keys = f.read_text("utf-8", "replace") if f.is_file() else ""
+        except OSError:
+            keys = ""
+        maps = sorted(p.name for p in d.glob("*.usmap")) if d.is_dir() else []
+        return {"unreal_keys": keys, "unreal_keys_file": str(f), "usmaps": maps, "settings_dir": str(d)}
+
+    def _forget_unreal(self) -> None:
+        from ..importers.borderlands.ue4 import unversioned, vfs
+
+        with vfs._OPEN_LOCK:
+            vfs._OPEN.clear()
+        unversioned.forget_mappings()
+        self._forget_models()
+
+    def _set_unreal(self, args: dict) -> None:
+        import shutil
+
+        from ..importers.borderlands.ue4 import pak, usmap, vfs
+        from .config import config_dir
+
+        d = config_dir()
+        if "unreal_keys" in args:
+            text = str(args["unreal_keys"] or "")
+            for line in text.splitlines():
+                t = line.split("#", 1)[0].strip()
+                if t:
+                    try:
+                        pak.parse_key(t)
+                    except FormatError as e:
+                        raise AppError(f"{t[:20]}…: {e}") from e
+            d.mkdir(parents=True, exist_ok=True)
+            (d / vfs.KEY_FILE).write_text(text.strip() + "\n" if text.strip() else "", "utf-8")
+            self._forget_unreal()
+        if args.get("usmap_add"):
+            src = Path(str(args["usmap_add"]).strip().strip('"'))
+            if not src.is_file():
+                raise AppError(f"There is no file at {src}")
+            try:
+                usmap.parse(src.read_bytes(), src.name)
+            except (FormatError, ValueError) as e:
+                raise AppError(f"{src.name} isn't a type mappings file Dark STL can read: {e}") from e
+            d.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, d / (src.stem + ".usmap"))
+            self._forget_unreal()
+        if args.get("usmap_remove"):
+            target = d / Path(str(args["usmap_remove"])).name
+            if target.suffix.lower() == ".usmap" and target.is_file():
+                target.unlink()
+            self._forget_unreal()
 
     def cmd_settings_set(self, args: dict) -> dict:
         if "texture_dirs" in args:
@@ -366,6 +437,7 @@ class Service:
             self.config.export_dir = str(args["export_dir"] or "").strip()
         if "library_dir" in args:
             self.config.library_dir = str(args["library_dir"] or "").strip()
+        self._set_unreal(args)
         self.config.save()
         return self.cmd_settings_get({})
 
@@ -762,6 +834,7 @@ class Service:
                 entries = self.library.query(str(args["game"]), args.get("category") or None, args.get("group") or None,
                                              str(args.get("q") or ""), bool(args.get("lod")))
             roots = [r for r, g in self.library.roots.items()]
+        entries = self._expand_configs(entries)
         entries = [e for e in entries if not self._is_collection(self.library.root_of(e) or e.path.parent)]
         if not entries:
             raise AppError("Nothing to collect: choose a model, a kind or a game.")
@@ -786,6 +859,23 @@ class Service:
 
         game_roots = [r for r in roots if self.library.roots.get(r) == games[0]]
         return collect.plan(self.config.library_folder, games[0], entries, game_roots, options, related, extras)
+
+    def _expand_configs(self, entries: list[CatalogEntry]) -> list[CatalogEntry]:
+        """A configurable model stands for its base and every part that fits it."""
+        import dataclasses
+
+        with self.lock:
+            by_path = {e.path: e for e in self.library.entries}
+        out: dict[Path, CatalogEntry] = {}
+        for e in entries:
+            if e.config is None:
+                out.setdefault(e.path, e)
+                continue
+            files = [e.config.base.file] + [o.model.file for s in e.config.slots for o in s.options]
+            for f in files:
+                p = Path(f)
+                out.setdefault(p, by_path.get(p) or dataclasses.replace(e, stem=p.stem, label=p.stem, path=p, config=None))
+        return list(out.values())
 
     def cmd_collect_plan(self, args: dict) -> dict:
         return self._collect_plan(args).summary()
@@ -855,11 +945,22 @@ class Service:
             if path is None:
                 raise AppError("That model isn't in the library any more (was its folder removed?)")
         variant = args.get("variant") or None
-        sid = f"{model_id}|{variant or ''}"
+        config = entry.config if entry is not None else None
+        if config is not None:
+            chosen = config.choose(args.get("choices") if isinstance(args.get("choices"), dict) else None)
+            sid = f"{model_id}|config|{configs.choices_key(chosen)}"
+        else:
+            sid = f"{model_id}|{variant or ''}"
         with self.lock:
             session = self.sessions.get(sid)
         if session is None:
-            model = open_model(path, variant, tuple(self.config.texture_dirs))
+            if config is not None:
+                try:
+                    model = configs.assemble(config, chosen, self._part_model)
+                except FormatError as exc:
+                    raise AppError(f"{config.label} couldn't be put together: {exc}") from exc
+            else:
+                model = open_model(path, variant, tuple(self.config.texture_dirs))
             session = Session(sid, model, entry)
             self._show_kept(session)
             with self.lock:
@@ -873,8 +974,116 @@ class Service:
         out = model_json(session.model, mesh)
         out.update({"sid": sid, "id": model_id, "entry": entry_json(entry) if entry else None,
                     "enhanced": self._result_json(session) if session.result is not None else None,
-                    "cut": self._cut_json(session) if session.cut is not None else None})
+                    "cut": self._cut_json(session) if session.cut is not None else None,
+                    "finished": self._finished_json(session) if session.finished is not None else None})
         return out
+
+    def _part_model(self, path: str, variant: str | None) -> SourceModel:
+        """A model a configuration is made of, kept open for the next choice of parts."""
+        from ..importers import open_model
+
+        key = (path, variant, _file_id(Path(path)))
+        with self.lock:
+            model = self.part_models.get(key)
+            if model is not None:
+                self.part_models.move_to_end(key)
+                return model
+        model = open_model(path, variant, tuple(self.config.texture_dirs))
+        with self.lock:
+            self.part_models[key] = model
+            while len(self.part_models) > 24:
+                self.part_models.popitem(last=False)
+        return model
+
+    # ------------------------------------------------------------ configurations
+
+    def cmd_configs(self, args: dict) -> dict:
+        """The configurable models of a game (or all), and the parts of their lists that weren't found."""
+        game = args.get("game") or None
+        with self.lock:
+            items = [e for e in self.library.configurations if not game or e.game == game]
+            notes = {g: n for g, n in self.library.config_notes.items() if not game or g == game}
+        return {"items": [entry_json(e) for e in items], "missing": notes,
+                "folder": str(configs.USER_DIRS[0]) if configs.USER_DIRS else None}
+
+    def _relative(self, path: str) -> str:
+        """A model file as a configuration list names it: below its game folder when it's in one."""
+        p = Path(path)
+        with self.lock:
+            root = next((r for r in self.library.roots if _is_under(p, r)), None)
+        return p.relative_to(root).as_posix() if root is not None else str(p)
+
+    def cmd_config_save(self, args: dict) -> dict:
+        """Keep a configuration in the user's own list (in place of one of the same id, whichever list
+        that came from). ``configuration`` is as the page shows it; ``base_id`` names the base model's
+        library entry for a new one."""
+        raw = args.get("configuration")
+        if not isinstance(raw, dict):
+            raise AppError("No configuration was sent.")
+        raw = json.loads(json.dumps(raw))
+        base_entry = self._entry(str(args.get("base_id") or "")) if args.get("base_id") else None
+        if base_entry is not None:
+            raw["base"] = {"file": str(base_entry.path)}
+            raw.setdefault("game", base_entry.game)
+            raw.setdefault("category", base_entry.category)
+            raw.setdefault("group", base_entry.group)
+        if isinstance(raw.get("base"), str):
+            raw["base"] = {"file": raw["base"]}
+        game = str(raw.get("game") or "")
+        if not game:
+            raise AppError("A configuration belongs to a game.")
+        for s in raw.get("slots") or []:
+            for o in s.get("options") or []:
+                if not o.get("model") and o.get("path"):
+                    o["model"] = {"file": o["path"], "variant": o.get("variant"), "parts": o.get("parts")}
+                o.pop("path", None)
+                o.pop("file", None)
+                o.pop("variant", None)
+                o.pop("parts", None)
+                if o.get("model"):
+                    o["model"]["file"] = self._relative(o["model"]["file"])
+                    o["model"] = {k: v for k, v in o["model"].items() if v is not None}
+                if isinstance(o.get("attach"), dict) and configs.parse_attach(o["attach"]).is_identity():
+                    o.pop("attach", None)
+        raw["base"]["file"] = self._relative(raw["base"]["file"])
+        presets = raw.get("presets")
+        if isinstance(presets, list):  # as the page shows them
+            raw["presets"] = {p["name"]: p.get("choices") or {} for p in presets if p.get("name")}
+        if not raw.get("id"):  # a new one: an id no configuration of the game has yet
+            with self.lock:
+                taken = {e.config.id for e in self.library.configurations if e.game == game}
+            stem = "my:" + Path(raw["base"]["file"]).name.split(".")[0].lower()
+            raw["id"], n = stem, 2
+            while raw["id"] in taken:
+                raw["id"], n = f"{stem}-{n}", n + 1
+        for k in ("chosen", "defaults", "source", "guessed", "base_name"):
+            raw.pop(k, None)
+        try:
+            config = configs.parse({"configurations": [raw]}, game, configs.USER_SOURCE)[0]
+            path = configs.save_user(config)
+        except FormatError as exc:
+            raise AppError(str(exc)) from exc
+        with self.lock:
+            self.library.configs_changed()
+            entry = next((e for e in self.library.configurations if e.game == game and e.config.id == config.id), None)
+            for sid in [k for k in self.sessions if entry is not None and k.startswith(entry.id + "|")]:
+                del self.sessions[sid]
+        if entry is None:
+            raise AppError("It was saved, but its base model isn't in the library, so it isn't listed.")
+        return {"id": entry.id, "file": str(path), "entry": entry_json(entry)}
+
+    def cmd_config_delete(self, args: dict) -> dict:
+        """Remove a configuration from the user's own list (one from another list shows again)."""
+        entry = self._entry(str(args.get("id") or ""))
+        if entry is None or entry.config is None:
+            raise AppError("That isn't a configurable model.")
+        removed = configs.delete_user(entry.game, entry.config.id)
+        with self.lock:
+            self.library.configs_changed()
+            for sid in [k for k in self.sessions if k.startswith(entry.id + "|")]:
+                del self.sessions[sid]
+            still = self.library.find(entry.id)
+        return {"removed": removed, "still_listed": still is not None}
 
     def _session(self, args: dict) -> Session:
         sid = str(args.get("sid") or "")
@@ -908,6 +1117,10 @@ class Service:
             if session.result is None:
                 raise AppError("This model hasn't been generated yet.")
             return pack_mesh(session.result.displaced, uv, extra={"which": "enhanced"})
+        if args.get("which") == "finished":
+            if session.finished is None:
+                raise AppError("This model hasn't been made watertight yet.")
+            return pack_mesh(session.finished.mesh, False, extra={"which": "finished"})
         if args.get("which") == "pieces":
             if session.cut is None:
                 raise AppError("This model hasn't been cut yet.")
@@ -1199,6 +1412,12 @@ class Service:
             if key[:2] == (session.sid, file):
                 session.cut, session.cut_id = result, _key_id(key)
                 break
+        with self.lock:
+            finished = list(self.finished.items())
+        for key, result in reversed(finished):
+            if key[:2] == (session.sid, file):
+                session.finished, session.finished_id = result, _key_id(key)
+                break
 
     def _result_json(self, session: Session) -> dict:
         r = session.result
@@ -1221,6 +1440,10 @@ class Service:
             if session.result is None:
                 raise AppError("Generate the enhanced model first, or export the original.")
             mesh = session.result.displaced
+        elif which == "finished":
+            if session.finished is None:
+                raise AppError("Make the model watertight first (Finish tab).")
+            mesh = session.finished.mesh
         else:
             mesh = session.build(mesh_options(args))
         if mesh.n_faces == 0:
@@ -1246,18 +1469,24 @@ class Service:
     def _forget_models(self) -> None:
         with self.lock:
             self.sessions.clear()
+            self.part_models.clear()
             self.textures_png.clear()
             self.generated.clear()
             self.meshes.clear()
             self.upscaled.clear()
             self.cuts.clear()
             self.solids.clear()
+            self.finished.clear()
 
     # ------------------------------------------------------------ cutting into pieces
 
     def _cut_source(self, session: Session, args: dict) -> tuple[TriMesh, tuple]:
         """The model the Cut tab cuts, and what it depends on: the enhanced model shown, or the original
-        with the parts, options and pose chosen."""
+        with the parts, options and pose chosen, or the model made watertight (Finish tab)."""
+        if args.get("from") == "finished":
+            if session.finished is None:
+                raise AppError("Make the model watertight first (Finish tab), or cut another model.")
+            return session.finished.mesh, ("finished", session.finished_id)
         if args.get("from", "enhanced") == "enhanced":
             if session.result is None:
                 raise AppError("Make the enhanced model first (Mesh or Displace tab), or cut the original.")
@@ -1312,6 +1541,50 @@ class Service:
 
         name = session.model.variant or session.model.name
         return {"job": self.jobs.start(f"Cutting {name}", run, stoppable=True).id}
+
+    # ------------------------------------------------------------ finishing for printing
+
+    def cmd_finish(self, args: dict) -> dict:
+        """Make the model watertight (a job): every part made solid and joined, the surfaces inside one another
+        removed, hollows filled, and as asked gaps closed and loose bits removed. Each result is kept."""
+        from .. import finish
+
+        if not finish.available():
+            raise AppError("Making models watertight needs the manifold3d package, which this copy of the app doesn't have.")
+        session = self._session(args)
+        settings = finish.settings_from_json(args.get("watertight") or {})
+        src = "original" if args.get("from") == "original" else "enhanced"
+        if src == "enhanced" and session.result is None:
+            raise AppError("Make the enhanced model first (Mesh or Displace tab), or use the original.")
+        mesh, source = self._cut_source(session, {**args, "from": src})
+        if mesh.n_faces == 0:
+            raise AppError("There's nothing to make watertight: no parts are switched on.")
+        key = (session.sid, _file_id(session.model.path), source, settings.key())
+        with self.lock:
+            kept = self.finished.get(key)
+
+        def run(job: Job):
+            result = kept
+            if result is None:
+                try:
+                    result = finish.make_watertight(mesh, settings, lambda f, m: job.report(f, m))
+                except ValueError as e:
+                    raise AppError(str(e)) from None
+                job.check()
+                with self.lock:
+                    self.finished[key] = result
+                    self.finished.move_to_end(key)
+                    while len(self.finished) > self.KEEP_FINISHED:
+                        self.finished.popitem(last=False)
+            session.finished, session.finished_id = result, _key_id(key)
+            return {**self._finished_json(session), "kept": kept is not None}
+
+        name = session.model.variant or session.model.name
+        return {"job": self.jobs.start(f"Making {name} watertight", run, stoppable=True).id}
+
+    def _finished_json(self, session: Session) -> dict:
+        r = session.finished
+        return {"id": session.finished_id, "stats": r.stats(), "notes": list(r.notes)}
 
     def _cut_json(self, session: Session) -> dict:
         r = session.cut

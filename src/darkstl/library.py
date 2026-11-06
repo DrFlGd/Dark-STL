@@ -60,6 +60,24 @@ def scan_folder(root: str | os.PathLike, game: str | None = None,
     return sorted(found, key=lambda e: e.sort_key), notes
 
 
+def folder_configurations(root: Path, game: str, found: list[CatalogEntry]) -> list:
+    """The configurable models a scanned folder holds: what each importer works out from its files,
+    and the configuration lists kept in the folder."""
+    from . import configs
+    from .importers import IMPORTERS
+
+    out = []
+    for imp in IMPORTERS:
+        try:
+            out += imp.configurations(Path(root), game, [e for e in found if e.importer == imp.key])
+        except Exception:  # noqa: BLE001 - a guess that fails leaves the models as they are
+            pass
+    listed, _problems = configs.in_folder(Path(root))
+    for c in listed:
+        c.game = c.game or game
+    return out + [c for c in listed if c.game == game]
+
+
 def folder_relation(folder: str | os.PathLike, roots) -> tuple[Path | None, list[Path]]:
     """The added folder that already holds ``folder`` (if any), and the added folders inside it."""
     folder = Path(folder)
@@ -77,6 +95,63 @@ class Library:
     _full: set[tuple[str, str]] | None = field(default=None, repr=False)  # (game, stem) of every full model
     _first: dict[tuple[str, str], str] | None = field(default=None, repr=False)  # (game, stem) -> the entry shown
     _root: dict[str, Path | None] | None = field(default=None, repr=False)  # entry id -> the folder holding it
+    found_configs: dict[Path, list] = field(default_factory=dict)  # folder -> configurations its scan found
+    config_notes: dict[str, list[str]] = field(default_factory=dict)  # game -> what couldn't be found for them
+    _configs: list[CatalogEntry] | None = field(default=None, repr=False)
+    _all: list[CatalogEntry] | None = field(default=None, repr=False)
+
+    def _changed(self) -> None:
+        self._by_id = self._full = self._first = self._configs = self._all = self._root = None
+
+    def configs_changed(self) -> None:
+        """Read the configuration lists again (the user saved one)."""
+        self._changed()
+
+    @property
+    def configurations(self) -> list[CatalogEntry]:
+        """An entry for each configurable model (see configs.py) whose base model is in the library."""
+        if self._configs is None:
+            self._configs = self._make_configs()
+        return self._configs
+
+    def _make_configs(self) -> list[CatalogEntry]:
+        from . import configs
+
+        shipped, mine = configs.bundled(), configs.user()
+        out, self.config_notes = [], {}
+        for game in self.games():
+            roots = [r for r, g in self.roots.items() if g == game]
+            entries = [e for e in self.entries if e.game == game]
+            listed = [c for r in roots for c in self.found_configs.get(r, []) if c.guessed]
+            listed += [c for c in shipped if c.game == game]
+            listed += [c for r in roots for c in self.found_configs.get(r, []) if not c.guessed]
+            listed += [c for c in mine if c.game == game]
+            by_id = {}
+            for c in listed:  # a later list replaces an earlier one's configuration of the same id
+                by_id[c.id] = c
+            if not by_id:
+                continue
+            resolver = configs.Resolver(entries, roots)
+            base_entry = {e.path: e for e in entries}
+            for c in by_id.values():
+                got, missing = configs.resolve(c, resolver)
+                if missing:
+                    self.config_notes.setdefault(game, []).extend(missing)
+                if got is None:
+                    continue
+                be = base_entry.get(Path(got.base.file))
+                out.append(CatalogEntry(game, got.category or (be.category if be else "Weapons"),
+                                        got.group or (be.group if be else ""), f"config:{got.id}", got.label,
+                                        Path(got.base.file), importer=be.importer if be else "",
+                                        packed=be.packed if be else False, config=got))
+        return sorted(out, key=lambda e: e.sort_key)
+
+    def all_entries(self) -> list[CatalogEntry]:
+        """The models and the configurable models, in order."""
+        if self._all is None:
+            extra = self.configurations
+            self._all = sorted(self.entries + extra, key=lambda e: e.sort_key) if extra else self.entries
+        return self._all
 
     def add_root(self, root: str | os.PathLike, game: str | None = None,
                  progress: Callable[[int, str], None] | None = None) -> list[CatalogEntry]:
@@ -85,17 +160,19 @@ class Library:
         found, notes = scan_folder(root, game, progress)
         self.roots[root] = game
         self.notes[root] = notes
+        self.found_configs[root] = folder_configurations(root, game, found)
         self.entries = [e for e in self.entries if not _is_under(e.path, root)] + found
         self.entries.sort(key=lambda e: e.sort_key)
-        self._by_id = self._full = self._first = self._root = None
+        self._changed()
         return found
 
     def remove_root(self, root: str | os.PathLike) -> None:
         root = Path(root)
         self.roots.pop(root, None)
         self.notes.pop(root, None)
+        self.found_configs.pop(root, None)
         self.entries = [e for e in self.entries if not _is_under(e.path, root)]
-        self._by_id = self._full = self._first = self._root = None
+        self._changed()
 
     def set_game(self, root: str | os.PathLike, game: str) -> None:
         """File a folder's models under another game."""
@@ -105,20 +182,21 @@ class Library:
         self.roots[root] = game
         self.entries = sorted((dataclasses.replace(e, game=game) if _is_under(e.path, root) else e
                                for e in self.entries), key=lambda e: e.sort_key)
-        self._by_id = self._full = self._first = self._root = None
+        self._changed()
 
     def merge(self, other: "Library") -> None:
         """Take over ``other``'s roots, replacing any entries this library already had under them."""
         for root, game in other.roots.items():
             self.roots[root] = game
             self.notes[root] = other.notes.get(root, [])
+            self.found_configs[root] = other.found_configs.get(root, [])
             self.entries = [e for e in self.entries if not _is_under(e.path, root)]
         self.entries = sorted(self.entries + other.entries, key=lambda e: e.sort_key)
-        self._by_id = self._full = self._first = self._root = None
+        self._changed()
 
     def find(self, entry_id: str) -> CatalogEntry | None:
         if self._by_id is None:
-            self._by_id = {e.id: e for e in self.entries}
+            self._by_id = {e.id: e for e in self.all_entries()}
         return self._by_id.get(entry_id)
 
     def hides(self, entry: CatalogEntry, include_lod: bool = False, copies: bool = True) -> bool:
@@ -161,13 +239,13 @@ class Library:
         """The models of a game (and category, group) whose names contain every word of ``text``."""
         words = text.lower().split()
         out = []
-        for e in self.entries:
+        for e in self.all_entries():
             if (game and e.game != game) or self.hides(e, include_lod) or (category and e.category != category):
                 continue
             if group is not None and e.group != group:
                 continue
             if words:
-                hay = f"{e.label} {e.stem} {e.group} {e.category}".lower()
+                hay = f"{e.label} {e.stem} {e.group} {e.category}{' configurable' if e.config else ''}".lower()
                 if not all(w in hay for w in words):
                     continue
             out.append(e)
@@ -175,7 +253,7 @@ class Library:
 
     def grouped(self, include_lod: bool = False) -> dict[str, dict[str, dict[str, list[CatalogEntry]]]]:
         tree: dict[str, dict[str, dict[str, list[CatalogEntry]]]] = {}
-        for e in self.entries:
+        for e in self.all_entries():
             if self.hides(e, include_lod):
                 continue
             tree.setdefault(e.game, {}).setdefault(e.category, {}).setdefault(e.group, []).append(e)

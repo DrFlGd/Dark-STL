@@ -70,6 +70,12 @@ class REEngineImporter(Importer):
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
         return list(getattr(self, "_notes", {}).get(str(folder), []))
 
+    def configurations(self, folder: Path, game: str, entries: list[CatalogEntry]) -> list:
+        """Weapons kept as a body and separate parts in one folder, guessed from their names."""
+        from ...configs import from_folders
+
+        return from_folders(entries, game)
+
     def can_open(self, path: Path) -> bool:
         return files.is_mesh_file(Path(path))
 
