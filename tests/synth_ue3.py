@@ -241,12 +241,34 @@ def material_data(b: PackageBuilder, textures: list[int]) -> bytes:
     return out
 
 
-def mic_data(b: PackageBuilder, parent: int, params: list[tuple[str, int]]) -> bytes:
+def mic_data(b: PackageBuilder, parent: int, params: list[tuple[str, int]], vectors=(), scalars=(),
+             static_masks: dict | None = None) -> bytes:
+    """A MaterialInstanceConstant: texture, vector (name, (r, g, b, a)) and scalar (name, value) parameters, and
+    with ``static_masks`` (name -> channels "RGBA") its own static permutation after the properties."""
+    guid = b.p_struct("ExpressionGUID", "Guid", b"\0" * 16)
     elems = b""
     for name, tex in params:
-        elems += b.p_name("ParameterName", name) + b.p_obj("ParameterValue", tex) \
-            + b.p_struct("ExpressionGUID", "Guid", b"\0" * 16) + b.end()
-    return b.props(b.p_obj("Parent", parent), b.p_array("TextureParameterValues", len(params), elems))
+        elems += b.p_name("ParameterName", name) + b.p_obj("ParameterValue", tex) + guid + b.end()
+    items = [b.p_obj("Parent", parent), b.p_array("TextureParameterValues", len(params), elems)]
+    if vectors:
+        raw = b"".join(b.p_name("ParameterName", n) + b.p_struct("ParameterValue", "LinearColor",
+                                                                 struct.pack("<4f", *v)) + guid + b.end()
+                       for n, v in vectors)
+        items.append(b.p_array("VectorParameterValues", len(vectors), raw))
+    if scalars:
+        raw = b"".join(b.p_name("ParameterName", n) + b.p_float("ParameterValue", v) + guid + b.end()
+                       for n, v in scalars)
+        items.append(b.p_array("ScalarParameterValues", len(scalars), raw))
+    out = b.props(*items)
+    if static_masks is not None:  # the compiled resource (nothing in it), then the static parameter set
+        out += struct.pack("<ii", 0, 0) + struct.pack("<i", 0) + b"\0" * 16 + struct.pack("<i", 0)
+        out += struct.pack("<i", 0) + b"\0" * 24 + struct.pack("<i", 0) + struct.pack("<i", 0)
+        out += b"\0" * 16 + struct.pack("<i", 0)  # base material id, no switches
+        out += struct.pack("<i", len(static_masks))
+        for name, channels in static_masks.items():
+            out += b.fname(name) + struct.pack("<4i", *(c in channels for c in "RGBA")) + b"\0" * 20
+        out += struct.pack("<ii", 0, 0)  # normal parameters, terrain layer weights
+    return out
 
 
 def pack_normal(n) -> int:
@@ -256,7 +278,7 @@ def pack_normal(n) -> int:
 
 
 def skeletal_data(b: PackageBuilder, materials: list[int], positions, normals, uvs, indices, sections,
-                  bones=(("Root", -1),), half_uvs: bool = True, extra_props=()) -> bytes:
+                  bones=(("Root", -1),), half_uvs: bool = True, extra_props=(), uv1=None) -> bytes:
     """SkeletalMesh export data (Borderlands 2 layout, version 832). ``sections``: (material, first index,
     triangles). Every vertex is weighted fully to bone 0 of one chunk."""
     positions = np.asarray(positions, np.float32)
@@ -284,8 +306,9 @@ def skeletal_data(b: PackageBuilder, materials: list[int], positions, normals, u
     out += struct.pack("<ii", 0, n)  # f80, vertex count
     out += struct.pack("<i", 1) + b"\0"  # f24
     out += struct.pack("<Iiii", 0x20, 0, 0, 0)  # unused bulk
-    out += struct.pack("<i", 1)  # UV sets
-    out += struct.pack("<i", 1)  # GPU skin: UV sets
+    sets = 1 if uv1 is None else 2
+    out += struct.pack("<i", sets)  # UV sets
+    out += struct.pack("<i", sets)  # GPU skin: UV sets
     out += struct.pack("<i", 0 if half_uvs else 1)
     out += struct.pack("<i", 0) + b"\0" * 24
     verts = b""
@@ -293,10 +316,11 @@ def skeletal_data(b: PackageBuilder, materials: list[int], positions, normals, u
         verts += struct.pack("<II", pack_normal((1, 0, 0)), pack_normal(normals[i]))
         verts += bytes([0, 0, 0, 0]) + bytes([255, 0, 0, 0])
         verts += struct.pack("<3f", *positions[i])
-        if half_uvs:
-            verts += np.asarray(uvs[i], np.float16).tobytes()
-        else:
-            verts += struct.pack("<2f", *uvs[i])
+        for uv in (uvs,) if uv1 is None else (uvs, uv1):
+            if half_uvs:
+                verts += np.asarray(uv[i], np.float16).tobytes()
+            else:
+                verts += struct.pack("<2f", *uv[i])
     out += bulk_array(len(verts) // n, verts)
     out += struct.pack("<i", 0)  # extra influences
     out += struct.pack("<i", 0)  # rest of the mesh, ignored

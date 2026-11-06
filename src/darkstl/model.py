@@ -122,6 +122,10 @@ class SourceModel:
     # in the export frame (metres, Z up), in the bind pose. See configs.Attach.
     sockets: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
     configuration: dict | None = field(default=None, repr=False)  # set on a model assembled by configs.assemble
+    # a paint that has no colour texture of its own but is mixed per model (a Borderlands 2 gun skin):
+    # ``paint_for(target)`` returns the colour texture it gives ``target`` (made when it's first decoded),
+    # or None. configs.assemble uses it for material and finish slots.
+    paint_for: Callable[["SourceModel"], Texture | None] | None = field(default=None, repr=False)
 
     def build_mesh(self, options: MeshOptions | None = None) -> TriMesh:
         options = options or MeshOptions()
