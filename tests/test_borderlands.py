@@ -319,6 +319,8 @@ def test_skins_from_a_dlc(bl2, tmp_path):
     assert files.game_root(dlc / "Aster_Startup_SF.upk") == bl2
     assert files.game_root(bl2 / "WillowGame" / "DLC" / "Iris" / "CookedPCConsole" / "X.upk") == bl2
     assert files.game_root(bl2 / "DLC" / "Iris" / "CookedPCConsole" / "X.upk") == bl2
+    assert files.game_root(bl2 / "DLC" / "Gladiolus" / "Compat" / "Content" / "X.upk") == bl2
+    assert files.game_root(tmp_path / "DLC" / "Loose" / "Content" / "X.upk") == tmp_path / "DLC" / "Loose" / "Content"
     files._INDEXES.clear()
     imp = BorderlandsImporter()
     entries = imp.scan(bl2, files.GAME_BL2)
