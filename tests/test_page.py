@@ -422,3 +422,49 @@ def test_unpack_a_packed_game(page, packed_ds3):  # noqa: F811
     page.wait_for_selector("#filelists-status >> text=Downloaded lists for Dark Souls III")  # the copied list counts as one
     if shots:
         page.locator("#settings-archives").screenshot(path=str(Path(shots) / "settings-archives.png"))
+
+
+def test_many_long_groups_stay_two_rows_of_chips(page, tmp_path):
+    """Cyberpunk's depot folders give a kind hundreds of groups, some with long names: the chips
+    keep to two rows (names cut short, full name on hover) and the rest open in a short scrolling box."""
+    import synth_red as S
+    from test_redengine import write_loose
+
+    pos, nrm, uv, idx = S.grid_plane(2, 1.0)
+    mesh = S.build_mesh([S.SynthChunk(pos, nrm, uv, idx)], [("m", r"base\surfaces\m.mi")])
+    long = "a_very_long_folder_name_from_the_depot_that_goes_on_and_on_and_on"
+    files = {fr"base\environment\{long}_{i:03d}\prop_{i:03d}.mesh" if i % 3 == 0 else fr"base\environment\kind_{i:03d}\prop_{i:03d}.mesh": mesh
+             for i in range(120)}
+    root = tmp_path / "exported"
+    write_loose(root, files)
+    page.wait_for_selector("#first-run")
+    page.click("#first-add-folder")
+    page.fill("#folder-path", str(root))
+    page.wait_for_selector("text=Recognised as Cyberpunk 2077.")
+    page.click("#add-folder-dialog-ok")
+    page.wait_for_selector('#kind-tiles [data-sub="Objects"]')
+    page.click('[data-sub="Objects"]')
+    page.wait_for_selector("#group-chips-more")
+    box = page.locator("#group-chips").bounding_box()
+    assert box["height"] < 80
+    assert page.locator(".results [data-model]").first.bounding_box()["y"] < 300
+    chip = page.locator("#group-chips .chip-btn").nth(1)
+    assert chip.bounding_box()["width"] <= 201
+    assert chip.get_attribute("title").startswith("A Very Long Folder Name")
+    # a group far down the list comes up front when it is the one shown
+    page.click("#group-chips-more")
+    assert page.get_attribute("#group-chips-more", "aria-expanded") == "true"
+    assert page.locator("#group-chips").bounding_box()["height"] <= 270
+    last = page.locator('#group-chips [data-group="Kind 119"]')
+    last.scroll_into_view_if_needed()
+    last.click()
+    page.wait_for_selector('#group-chips [data-group="Kind 119"].on')
+    assert page.get_attribute("#group-chips-more", "aria-expanded") == "false"
+    assert page.locator("#group-chips .chip-btn").nth(1).get_attribute("data-group") == "Kind 119"
+    assert page.locator('#group-chips [data-group="Kind 119"]').is_visible()
+    # the model page's bar keeps a long group and file name inside the window
+    page.click('#group-chips [data-group^="A Very Long"]')
+    page.locator(".results [data-model]").first.dblclick()
+    page.wait_for_selector("#mp-name")
+    assert page.evaluate("document.querySelector('#mp-head').scrollWidth <= document.querySelector('#mp-head').clientWidth + 1")
+    assert page.locator("#mp-name").bounding_box()["width"] > 60

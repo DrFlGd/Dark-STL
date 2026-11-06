@@ -34,9 +34,22 @@
 .first-tips h2 { margin: 0; font-size: 16px; }
 .first-tips p { margin: 0; }
 
+/* the bar's place (crumbs and title) gives way once the search box is at its
+   narrowest; with flex-shrink below 1 and nothing else able to shrink, a long
+   title (Cyberpunk's depot names) pushed the bar past the window */
+.bar-place { flex: 0 1 auto; }
+.bar-search { flex-shrink: 1000; }
+.bar-place #mp-count { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-up a { min-width: 0; max-width: 18em; overflow: hidden; text-overflow: ellipsis; }
+
 /* a game's library */
 .card-file { display: block; min-width: 0; font-family: var(--font-mono); font-size: 11px; color: var(--graphite); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.group-chips { flex-wrap: wrap; overflow: visible; }
+.group-chips-wrap { display: flex; align-items: flex-start; gap: 6px; padding-right: 24px; }
+.group-chips { flex: 1; min-width: 0; flex-wrap: wrap; overflow: hidden; max-height: 66px; align-content: flex-start; }
+.group-chips-wrap.open .group-chips { max-height: min(30vh, 260px); overflow-y: auto; }
+.group-chips-wrap > .group-chips-more { flex: none; margin-top: 10px; white-space: nowrap; }
+.group-chips > .chip-btn { max-width: 200px; min-width: 0; }
+.chip-btn .chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 a.chip-btn { color: var(--ink); text-decoration: none; display: inline-flex; gap: 5px; align-items: baseline; }
 a.chip-btn:hover { border-color: var(--graphite); }
 a.chip-btn.on { background: var(--sel); }
