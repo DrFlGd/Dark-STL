@@ -47,6 +47,9 @@ def chunks_to_trimesh(m: RedMesh, options: RedMeshOptions | None = None) -> TriM
             uv = c.uvs[0]
         else:
             uv = np.zeros((c.vertex_count, 2), np.float32)
+        # the game's V runs up the image; Dark STL's runs down (texture row 0 at V = 0), as the masks and
+        # textures are decoded, so V is flipped here for every texture of the mesh
+        uv = np.column_stack([uv[:, 0], 1.0 - uv[:, 1]]).astype(np.float32)
         positions.append(p)
         normals.append(n)
         faces.append(tris + offset)

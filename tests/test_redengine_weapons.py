@@ -337,3 +337,40 @@ def test_finely_tiled_layers_are_averaged_not_sparkled():
     # untiled, the same texture samples texel for texel
     out = multilayer._sample(tex, rows, 64, 64, 1.0, (0.0, 0.0))
     assert out[0, 0, 0] == 255 and out[0, 1, 0] == 0
+
+
+def test_each_mask_of_a_setup_gets_its_own_blend(tmp_path):
+    """A weapon draws one setup through a first-person mask and a third-person one (masksset / maskssettpp):
+    the chunks using each must get their own blend, not the last material's."""
+    files = multilayer_files()
+    pos, nrm, uv, idx = S.grid_plane(4, 1.0)
+    tpp_mask = RIFLE_DIR + r"\w_rifle_a_tpp.mlmask"
+    cover = np.zeros((16, 16), np.uint8)
+    cover[:8, :] = 255  # the blue layer covers the top half for the third-person mask (right half for the other)
+    files[tpp_mask] = S.build_mlmask([np.full((16, 16), 255, np.uint8), cover])
+    fpp = S.material_instance(METAL_MT, {"MultilayerSetup": MLSETUP, "MultilayerMask": MLMASK})
+    tpp = S.material_instance(METAL_MT, {"MultilayerSetup": MLSETUP, "MultilayerMask": tpp_mask})
+    files[RIFLE] = S.build_mesh([S.SynthChunk(pos, nrm, uv, idx), S.SynthChunk(pos, nrm, uv, idx)],
+                                [("steel", fpp), ("steel_tpp", tpp)])
+    root = tmp_path / "exported"
+    write_loose(root, files)
+    model = open_model(root.joinpath(*RIFLE.split("\\")))
+    a, b = model.materials
+    assert a.albedo != b.albedo and a.albedo.endswith("#color") and b.albedo.endswith("#color")
+    first, second = model.textures[a.albedo].decode(), model.textures[b.albedo].decode()
+    assert first[1024, 256, 0] == 255 and first[1024, 1792, 2] > 0  # blue on the right
+    assert second[256, 1024, 2] > 0 and second[1792, 1024, 0] == 255  # blue at the top
+
+
+def test_mesh_uvs_run_down_the_texture(tmp_path):
+    """The game's V runs up the image; Dark STL's runs down, so the mesh's V is flipped (the masks and
+    textures land where the game puts them, checked on a real revolver)."""
+    from darkstl.importers.redengine.formats.mesh import read_mesh
+    from darkstl.importers.redengine.mesh import RedMeshOptions, chunks_to_trimesh
+
+    pos, nrm, uv, idx = S.grid_plane(2, 2.0)
+    data = S.build_mesh([S.SynthChunk(pos, nrm, uv, idx)], [("m", S.material_instance(METAL_MT, {}))])
+    tm = chunks_to_trimesh(read_mesh(cr2w.read_cr2w(data)), RedMeshOptions())
+    corners = tm.vertices[tm.faces]  # the plane's UV is its position over its size, so V = y / 2 in the file
+    assert np.allclose(tm.corner_uvs[..., 0], corners[..., 0] / 2.0, atol=1e-3)
+    assert np.allclose(tm.corner_uvs[..., 1], 1.0 - corners[..., 1] / 2.0, atol=1e-3)

@@ -125,10 +125,15 @@ def _blend(info: MaterialInfo, values: dict, store: Store, textures: dict, blend
             blend.notes.append(f"{ms.mask} was not found; the layers are blended by their opacity alone")
             ms.mask = None
     where = store.describe_location(key[0])
-    color_key, normal_key = key[0] + "#color", key[0] + "#normal"
-    textures[color_key] = multilayer.BlendRef(key[0] + " (blended colour)", where, blend.albedo,
+    # one setup is drawn through several masks (the first-person "masksset" and the third-person
+    # "maskssettpp" of a weapon), so the texture keys carry the mask too, or the last material's blend
+    # would stand in for every chunk's
+    stem = key[0] + (f"|{key[1]}" if key[1] else "")
+    color_key, normal_key = stem + "#color", stem + "#normal"
+    label = key[0] + (f" with {key[1].rsplit(chr(92), 1)[-1]}" if key[1] else "")
+    textures[color_key] = multilayer.BlendRef(label + " (blended colour)", where, blend.albedo,
                                               lambda b=blend: b.describe("colour"))
-    textures[normal_key] = multilayer.BlendRef(key[0] + " (blended normal)", where, blend.normal,
+    textures[normal_key] = multilayer.BlendRef(label + " (blended normal)", where, blend.normal,
                                                lambda b=blend: b.describe("normal"))
     info.albedo, info.normal = color_key, normal_key
     info.slots.append(("MultilayerSetup layers", f"{len(blend.setup.layers)} templates"))
