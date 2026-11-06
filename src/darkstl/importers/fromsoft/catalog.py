@@ -29,13 +29,17 @@ BODY_PARTS = {"fc": "Face", "fg": "Face", "hr": "Hair", "ey": "Eyes", "eb": "Eye
               "ma": "Mask", "fe": "Face"}
 
 _RX_PART = re.compile(r"^(?P<kind>[a-z]{2})_(?P<sex>[a-z])_(?P<id>\d{3,5})(?P<rest>.*)$", re.I)
+_RX_PART_DS2 = re.compile(r"^(?P<kind>[a-z]{2})_(?P<id>\d{4})_(?P<sex>[mfa])(?P<rest>.*)$", re.I)
+_RX_OBJ_DS2 = re.compile(r"^o(?P<a>\d{2})_(?P<b>\d{4})(?P<rest>.*)$", re.I)
 _RX_CHR = re.compile(r"^c(?P<id>\d{4})(?P<rest>.*)$", re.I)
 _RX_OBJ = re.compile(r"^o(?P<id>\d{4,6})(?P<rest>.*)$", re.I)
 _RX_AEG = re.compile(r"^aeg(?P<a>\d{3})_(?P<b>\d{3})(?P<rest>.*)$", re.I)
 _RX_MAP = re.compile(r"^m(?P<area>\d{2})_(?P<b>\d{2})_\d{2}_\d{2}.*$", re.I)
 _RX_MAP_DS1 = re.compile(r"^m\d{4}b\d", re.I)
 
-MODEL_FILE_RX = re.compile(r"\.(partsbnd|chrbnd|objbnd|geombnd|mapbnd|flver|flv)(\.dcx)?$", re.I)
+# Dark Souls II packs its models in plain .bnd archives (c1000.bnd, wp_1000_m.bnd, o00_0002.bnd)
+DS2_MODEL = r"^(c\d{4}|[a-z]{2}_\d{4}_[mfa](_[la])?|o\d{2}_\d{4})\.bnd$"
+MODEL_FILE_RX = re.compile(r"\.(partsbnd|chrbnd|objbnd|geombnd|mapbnd|flver|flv)(\.dcx)?$|" + DS2_MODEL, re.I)
 
 
 def classify(stem: str) -> tuple[str, str, str, bool]:
@@ -44,7 +48,7 @@ def classify(stem: str) -> tuple[str, str, str, bool]:
     is_lod = bool(LOD_SUFFIX.search(s))
     if is_lod:
         s = LOD_SUFFIX.sub("", s)
-    m = _RX_PART.match(s)
+    m = _RX_PART.match(s) or _RX_PART_DS2.match(s)
     if m:
         kind, sex, pid = m.group("kind"), m.group("sex"), m.group("id")
         sex_label = {"m": "Male", "f": "Female", "a": "All"}.get(sex, sex.upper())
@@ -66,6 +70,9 @@ def classify(stem: str) -> tuple[str, str, str, bool]:
     m = _RX_AEG.match(s)
     if m:
         return "Objects", f"aeg{m.group('a')}", f"Asset aeg{m.group('a')}_{m.group('b')}", is_lod
+    m = _RX_OBJ_DS2.match(s)
+    if m:
+        return "Objects", f"o{m.group('a')}", f"Object o{m.group('a')}_{m.group('b')}", is_lod
     m = _RX_OBJ.match(s)
     if m:
         oid = m.group("id")

@@ -116,6 +116,15 @@ def test_collecting_through_the_engine(home, weapon_dir, char_dir):  # noqa: F81
     assert s.call("collect_plan", {"game": "Dark Souls III", "category": "Weapons"})["models"] == 2
     with pytest.raises(AppError, match="Nothing to collect"):
         s.call("collect_plan", {"ids": ["no-such-model"]})
+    # the page asks for a plan as a job (a whole game takes a while), and Copy uses the plan worked out
+    whole = wait(s, s.call("collect_plan", {"game": "Dark Souls III", "job": 1})["job"])
+    assert whole["models"] == 6 and whole == s.call("collect_plan", {"game": "Dark Souls III"})
+    failed = s.call("collect_plan", {"ids": ["no-such-model"], "job": 1})["job"]
+    for _ in range(200):
+        if s.call("job", {"id": failed})["state"] != "running":
+            break
+        time.sleep(0.02)
+    assert "Nothing to collect" in s.call("job", {"id": failed})["error"]
 
     r = wait(s, s.call("collect_run", {"ids": [chr_id]})["job"])
     assert r["copied"] == 2 and r["count"] == 1

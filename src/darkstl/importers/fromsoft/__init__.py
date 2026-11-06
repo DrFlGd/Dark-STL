@@ -24,8 +24,8 @@ from . import games as profiles
 from .formats import binder, flver, tpf
 from .mesh import FlverMeshOptions, flver_to_trimesh
 
-_OPENABLE = re.compile(r"\.(partsbnd|chrbnd|objbnd|geombnd|mapbnd|flver|flv)(\.dcx)?$", re.I)
-# The big archives a game ships its files in until they are unpacked (UXM, UDSFM).
+_OPENABLE = catalog.MODEL_FILE_RX
+# The big archives a game ships its files in until they are unpacked (Unpack in the app, see unpack.py).
 _PACKED = re.compile(r"^(data\d*|dlc\d*|dvdbnd\d*|gamedata\w*|sd)\.bdt$", re.I)
 
 
@@ -121,6 +121,14 @@ class FromSoftwareImporter(Importer):
         texindex.build(folder, paths, self.cache / "textures" if self.cache else None, progress)
         return entries
 
+    def scan_state(self, folder: Path):
+        index = texindex.index_for(folder)
+        return index if index is not None and texindex._norm(index.root) == texindex._norm(Path(folder)) else None
+
+    def restore_state(self, folder: Path, state) -> None:
+        if isinstance(state, texindex.TextureIndex):
+            texindex.register(state)
+
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
         packed = []
         for d in (folder, folder / "sd"):
@@ -132,8 +140,8 @@ class FromSoftwareImporter(Importer):
             return []
         names = ", ".join(packed[:4]) + (" ..." if len(packed) > 4 else "")
         return [f"Most of this game is still packed in its archives ({names}), so only {len(found)} models "
-                "were found. Unpack the game first (UXM Selective Unpacker for Dark Souls II, Dark Souls III, "
-                "Sekiro and Elden Ring; UDSFM for Dark Souls: Prepare to Die Edition), then rescan this folder."]
+                "were found. Choose Unpack in this folder's menu: Dark STL unpacks the models into its own "
+                "library (the game's folder isn't changed) and lists them from there."]
 
     def can_open(self, path: Path) -> bool:
         return bool(_OPENABLE.search(path.name))

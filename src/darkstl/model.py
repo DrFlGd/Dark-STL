@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 import numpy as np
 
@@ -118,6 +118,10 @@ class SourceModel:
     info: list[str] = field(default_factory=list)  # description lines (format, version, counts)
     notes: list[str] = field(default_factory=list)  # things the user should know
     animations: Animations | None = field(default=None, repr=False)  # how the model can be posed, if it can
+    # named points parts can be fitted to (a weapon's magazine or sight socket): 4x4 matrices, column vectors,
+    # in the export frame (metres, Z up), in the bind pose. See configs.Attach.
+    sockets: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
+    configuration: dict | None = field(default=None, repr=False)  # set on a model assembled by configs.assemble
 
     def build_mesh(self, options: MeshOptions | None = None) -> TriMesh:
         options = options or MeshOptions()
@@ -139,8 +143,9 @@ class Animations(Protocol):
 
 CATEGORY_ORDER = ["Weapons", "Armor", "Characters", "Faces & Hair", "Objects", "Map Pieces", "Models", "Other"]
 
-# what a low-detail copy adds to its full model's file stem (wp_a_0300_l, c1100_lod1)
-LOD_SUFFIX = re.compile(r"_l$|_lod\d*$", re.I)
+# what a low-detail copy adds to its full model's file stem (wp_a_0300_l, c1100_lod1, Cyberpunk's
+# w_rifle_shadow / _proxy meshes)
+LOD_SUFFIX = re.compile(r"_l$|_lod\d*$|_shadow$|_proxy$", re.I)
 
 
 @dataclass
@@ -156,11 +161,19 @@ class CatalogEntry:
     importer: str = ""
     is_lod: bool = False
     packed: bool = True
+    config: Any = None  # a configs.Configuration (its files resolved) when this entry is a configurable model
 
     @property
     def id(self) -> str:
-        """A short stable id for the file, used by the app's pages and its preview cache."""
-        return path_id(self.path)
+        """A short stable id for the file, used by the app's pages and its preview cache (worked out once:
+        the library asks for it over and over across 100,000 models)."""
+        key = (self.path, self.config.id if self.config is not None else None)
+        known = self.__dict__.get("_id")
+        if known is None or known[0] != key:
+            text = f"{self.path}#config:{self.config.id}" if self.config is not None else self.path
+            known = (key, path_id(text))
+            self.__dict__["_id"] = known
+        return known[1]
 
     @property
     def sort_key(self) -> tuple:

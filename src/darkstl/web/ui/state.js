@@ -30,13 +30,18 @@ export const ui = createStore({
   enhance: null,           // the Mesh, Textures and Displace tabs' settings, kept between models
   exportOpts: null,        // the Export tab's settings
   view: null,              // the 3D view's shading and edges
+  cutOpts: null,           // the Cut tab's settings: the model cut, sheet and wall thickness, the joint new cuts get
+  cutPlans: null,          // per model id: its cuts [{ id, normal, point, joint }] (the last 20 models)
+  configChoices: null,     // per configurable model id: the part chosen in each slot { slot: option }
+  configEdit: null,        // the configurable model whose configuration is being edited (Configure tab)
+  configRev: 0,            // counts the configurations saved, so the model page opens its model again
   thumbGen: 0,             // counts the times every preview was let go (a rescan): see thumbs.js
 });
 
 let prefs = null;
 const KEY = "ds-ui";
 const KEPT = ["skin", "theme", "layout", "sort", "lod", "cardSize", "open", "navCollapsed", "inspector", "inspectorTab",
-  "inspectorWidth", "catPanel", "catPanelWidth", "enhance", "exportOpts", "view"];
+  "inspectorWidth", "catPanel", "catPanelWidth", "enhance", "exportOpts", "view", "cutOpts", "cutPlans", "configChoices"];
 
 /** Load saved preferences (call once the platform store exists). */
 export function initState(store) {

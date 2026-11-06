@@ -8,7 +8,7 @@ import { api, info, plural, bytesText, toast, showInFolder, pickFolder, followJo
 import { CommandBar } from "./layout.js";
 import { Icon } from "./icons.js";
 import { GameBadge } from "./gameicons.js";
-import { rescanFolder, removeFolder, changeGame } from "./games.js";
+import { rescanFolder, removeFolder, changeGame, unpackFolder, UNPACK_HINT } from "./games.js";
 import { forgetThumbs } from "./thumbs.js";
 
 const msg = (e) => String(e?.message || e);
@@ -26,6 +26,7 @@ function GameFolders() {
         ${f.notes.map((n, i) => html`<small class="warn-text" key=${i}>${n}</small>`)}</span>
       <span class="folder-actions">
         <button type="button" class="ghost" title="Show in folder" aria-label="Show in folder" disabled=${f.missing} onClick=${() => showInFolder(f.path)}>${Icon.folder(14)}</button>
+        ${f.packed ? html`<button type="button" class="primary compact folder-unpack" disabled=${f.missing} title=${UNPACK_HINT} onClick=${() => unpackFolder(f.path, f.packed.game)}>Unpack…</button>` : null}
         <button type="button" class="ghost folder-rescan" disabled=${f.missing} onClick=${() => rescanFolder(f.path)}>Rescan</button>
         <button type="button" class="ghost folder-game-btn" onClick=${() => changeGame(f.path, g.name)}>Change game…</button>
         <button type="button" class="ghost danger-text folder-remove" onClick=${() => removeFolder(f.path, g.name)}>Remove…</button></span></li>`))}</ul>`
@@ -74,7 +75,7 @@ function Engine() {
   if (!s) return error ? html`<p class="warn-note" role="alert">${error}</p>` : null;
   const dirs = s.texture_dirs;
   const pickFile = async (start) => {
-    try { return (await api("pick_file", { title: "Find oo2core (in the Sekiro or Elden Ring folder)", patterns: ["Oodle (oo2core*.dll;liboo2core*)", "All files (*.*)"], start })).path; }
+    try { return (await api("pick_file", { title: "Find the Oodle library (oo2core in the Sekiro or Elden Ring folder, bin\\x64\\oo2ext_7_win64.dll in Cyberpunk 2077's)", patterns: ["Oodle (oo2core*.dll;oo2ext*.dll;liboo2core*;kraken.dll)", "All files (*.*)"], start })).path; }
     catch (e) { toast(msg(e)); return null; }
   };
   return html`
@@ -92,6 +93,8 @@ function Engine() {
       ${moving ? html`<p class="muted" id="library-moving">${moving}</p>` : null}
       <div><button type="button" class="ghost" id="library-show" onClick=${() => showInFolder(s.library_dir)}>${Icon.folder(14)} Show in folder</button></div>
     </section>
+    <${GameArchives} />
+    <${UnrealGames} s=${s} busy=${busy} save=${save} />
     <section class="ls-section" id="settings-textures">
       <h2>Texture folders</h2>
       <p class="muted">Where to look for textures a model uses but doesn't hold itself: map pieces and some objects share textures kept elsewhere in the game.</p>
@@ -102,7 +105,7 @@ function Engine() {
     </section>
     <section class="ls-section" id="settings-oodle">
       <h2>Oodle</h2>
-      <p class="muted">Sekiro and Elden Ring compress their files with Oodle. Dark STL uses the game's own copy of it, oo2core_6_win64.dll in the game's folder, and finds it by itself when a model comes from there.</p>
+      <p class="muted">Sekiro, Elden Ring and Cyberpunk 2077 compress their files with Oodle. Dark STL uses the game's own copy of it (oo2core_6_win64.dll in the game's folder; bin\\x64\\oo2ext_7_win64.dll for Cyberpunk) and finds it by itself when a model comes from there.</p>
       <p id="oodle-status">${s.oodle_found ? html`${Icon.check(14)} Found: <span class="note-path">${s.oodle_found}</span>` : html`<span class="warn-text">Not found yet.</span> Dark Souls, Dark Souls II, Dark Souls III and Bloodborne don't need it.`}</p>
       <${PathRow} id="oodle-path" value=${s.oodle} placeholder="The DLL, or the game folder it's in" busy=${busy} browse=${pickFile}
         onSave=${(p) => save({ oodle: p }, p ? "Saved where Oodle is." : "Cleared.")} />
@@ -120,6 +123,69 @@ function Engine() {
         try { const r = await api("thumbs_clear"); forgetThumbs(); toast(`Cleared ${plural(r.removed, "preview")}. They're drawn again as they come into view.`); } catch (e) { toast(msg(e)); }
       }}>Draw them again</button></div>
     </section>`;
+}
+
+/** Borderlands 3, Wonderlands and Borderlands 4: the AES keys their packed files need, and the type mappings (.usmap)
+ * Unreal 5 games cooked without property names need. */
+function UnrealGames({ s, busy, save }) {
+  const [keys, setKeys] = useState(s.unreal_keys || "");
+  useEffect(() => setKeys(s.unreal_keys || ""), [s.unreal_keys]);
+  const pickUsmap = async (start) => {
+    try { return (await api("pick_file", { title: "Choose the game's type mappings (.usmap)", patterns: ["Type mappings (*.usmap)", "All files (*.*)"], start })).path; }
+    catch (e) { toast(msg(e)); return null; }
+  };
+  return html`<section class="ls-section" id="settings-unreal">
+    <h2>Unreal games</h2>
+    <p class="muted">Borderlands 3, Tiny Tina's Wonderlands and Borderlands 4 keep their models packed (.pak, or .utoc and .ucas).
+      Encrypted ones need the game's AES key: Borderlands 3's comes with Dark STL; for the others, paste the key (0x followed by 64 hexadecimal digits), one per line.
+      A file named unreal-keys.txt in the game's folder works too. Rescan the game's folder after adding one.</p>
+    <form class="inline-form" onSubmit=${(e) => { e.preventDefault(); save({ unreal_keys: keys }, keys.trim() ? "Saved the keys. Rescan the game's folder to use them." : "Cleared the keys."); }}>
+      <textarea id="unreal-keys" rows="2" spellcheck="false" placeholder="0x…" style="flex: 1; min-width: 0; font-family: var(--mono, monospace); font-size: 12px; resize: vertical" value=${keys} disabled=${busy} onInput=${(e) => setKeys(e.target.value)}></textarea>
+      <button type="submit" class="ghost" disabled=${busy || keys === (s.unreal_keys || "")}>Save</button>
+    </form>
+    <p class="muted">Borderlands 4, like most Unreal 5 games, stores its objects without their property names, so reading them needs the game's type mappings: a .usmap file made for the
+      installed version of the game (dumped from the running game with a tool such as Dumper-7 or UE4SS, or shared by the modding community; it changes with
+      game updates). Add it here, or put it in the game's folder.</p>
+    ${s.usmaps?.length ? html`<ul class="ls-list" id="usmap-list">${s.usmaps.map((n) => html`<li key=${n}><span class="note-path">${n}</span>
+      <button type="button" class="ghost" disabled=${busy} onClick=${() => save({ usmap_remove: n }, "Removed the type mappings.")}>Remove</button></li>`)}</ul>`
+      : html`<p class="muted" id="usmap-none">No type mappings added.</p>`}
+    <${PathRow} id="usmap-add" placeholder="Add a .usmap: paste its path" saveLabel="Add" busy=${busy} browse=${pickUsmap}
+      onSave=${(p) => p && save({ usmap_add: p }, "Added the type mappings. Models open with them from now on.")} />
+  </section>`;
+}
+
+/** Unpacking the games that keep their files in archives, and the file lists it names them with. */
+function GameArchives() {
+  const [lists, setLists] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState(null);
+  const ov = useStore(ui, (s) => s.overview);
+  useEffect(() => { api("filelists").then(setLists, (e) => setError(msg(e))); }, []);
+  const packed = (ov?.games || []).flatMap((g) => g.folders.filter((f) => f.packed).map((f) => ({ ...f, game: g.name })));
+  const download = async () => {
+    setBusy("Downloading…"); setError(null);
+    try {
+      const { job } = await api("filelists_download");
+      const r = await followJob(job, "Downloading file lists", (j) => setBusy(j.message || "Downloading…"));
+      setLists(await api("filelists"));
+      toast(`Downloaded ${plural(r.downloaded.length, "file list")}${r.failed.length ? ` (${r.failed.length} failed)` : ""}. Unpacking uses them from now on.`);
+    } catch (e) { setError(msg(e)); }
+    setBusy("");
+  };
+  const got = lists?.games.filter((g) => g.downloaded.length) || [];
+  return html`<section class="ls-section" id="settings-archives">
+    <h2>Game archives</h2>
+    <p class="muted">Dark Souls, Dark Souls II, Dark Souls III, Sekiro and Elden Ring keep their models in archives (Data0.bhd and .bdt and so on).
+      Dark STL unpacks them itself: add the game's install folder, then choose <i>Unpack…</i> on it. Only the models, their textures and their
+      animations are written out, into the App library below; the game's folder isn't changed.</p>
+    ${packed.length ? html`<ul class="ls-list" id="packed-folders">${packed.map((f) => html`<li key=${f.path}><span>${f.game}${" "}<span class="note-path">${f.path}</span></span>
+      <button type="button" class="primary compact folder-unpack" onClick=${() => unpackFolder(f.path, f.packed.game)}>Unpack…</button></li>`)}</ul>` : null}
+    <p class="muted">The archives only keep a number for each file, so names come from lists the modding community made (UXM's lists, as Smithbox ships them, come with Dark STL).
+      Newer lists, such as those naming Elden Ring's Shadow of the Erdtree files, can be downloaded from${" "}<a href=${lists?.source || "https://github.com/Nordgaren/UXM-Selective-Unpack"} target="_blank" rel="noreferrer">UXM Selective Unpacker</a>.</p>
+    <p id="filelists-status">${!lists ? html`<span class="muted">…</span>` : got.length ? html`${Icon.check(14)} Downloaded lists for ${got.map((g) => g.game).join(", ")} (${got[0].downloaded_at})` : html`<span class="muted">Using the bundled lists.</span>`}</p>
+    ${error ? html`<p class="warn-text" role="alert" id="filelists-error">${error}</p>` : null}
+    <div><button type="button" class="ghost" id="filelists-download" disabled=${!!busy} onClick=${download}>${busy || (got.length ? "Download again" : "Download newer file lists")}</button></div>
+  </section>`;
 }
 
 export function Settings() {

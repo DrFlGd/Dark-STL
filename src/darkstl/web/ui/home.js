@@ -10,7 +10,7 @@ import { CommandBar } from "./layout.js";
 import { Icon } from "./icons.js";
 import { Thumb } from "./thumbs.js";
 import { GameBadge, CategoryIcon } from "./gameicons.js";
-import { gameMenu } from "./games.js";
+import { gameMenu, unpackFolder } from "./games.js";
 import { openMenu } from "./actions.js";
 
 const addFolder = () => ui.set({ dialog: { type: "add-folder" } });
@@ -44,6 +44,7 @@ function FolderNotes({ games }) {
     ${notes.map(({ game, folder }) => html`<div class="warn-note folder-note" key=${folder.path} data-folder=${folder.path}>
       <p><b>${game.name}</b> · <span class="note-path">${folder.path}</span></p>
       ${folder.notes.map((n, i) => html`<p key=${i}>${n}</p>`)}
+      ${folder.packed ? html`<p><button type="button" class="primary compact folder-unpack" onClick=${() => unpackFolder(folder.path, folder.packed.game)}>${Icon.inbox(14)} Unpack ${folder.packed.game}…</button></p>` : null}
     </div>`)}
   </section>`;
 }
@@ -104,7 +105,7 @@ function FirstRun({ error }) {
   const games = (info().games || []).filter((g) => g !== "Other models");
   return html`<div class="pages"><div class="first-run" id="first-run">
     <h1>Add your games</h1>
-    <p>Dark STL lists the models in your FromSoftware games by game and kind (weapons, armour, characters and more),
+    <p>Dark STL lists the models in your games (FromSoftware's, Cyberpunk 2077, the Resident Evil games and Borderlands) by game and kind (weapons, armour, characters and more),
       shows them with their textures, and turns them into detailed meshes you can 3D print.</p>
     <p>Add a game's folder to start. Dark STL only reads it; nothing in it is changed. Once a game is listed, the models you want
       can be collected into the app, so the game's folder isn't needed afterwards.</p>
@@ -116,10 +117,17 @@ function FirstRun({ error }) {
     </div>
     <div class="home-card first-tips">
       <h2>What to choose</h2>
-      <p><b>The game's install folder, once unpacked.</b> Dark Souls Remastered keeps its models loose, so its install folder works as it is.
-        Dark Souls II, Dark Souls III, Sekiro and Elden Ring pack them in archives: unpack those first with UXM Selective Unpacker
-        (UDSFM for Dark Souls: Prepare to Die Edition). For Bloodborne, choose the folder of files extracted from the game.</p>
-      <p><b>Or any folder of extracted files</b>, such as .partsbnd, .chrbnd, .objbnd, .flver or .obj files you've pulled out with other tools.</p>
+      <p><b>The game's install folder.</b> Dark Souls Remastered keeps its models loose, so its install folder works as it is.
+        Dark Souls, Dark Souls II, Dark Souls III, Sekiro and Elden Ring pack them in archives: add the install folder as it is, and Dark STL
+        offers to unpack the models (characters, weapons and armour, objects, map pieces) into its own library; the game's folder isn't changed.
+        A folder unpacked with UXM Selective Unpacker works too. For Bloodborne, choose the folder of files extracted from the game.
+        For Cyberpunk 2077, choose its install folder as it is: the models are read from its archives (the first scan reads through them once), or choose a folder of files exported with WolvenKit.
+        For Resident Evil 2, 3, 4, 7, Village and Devil May Cry 5 (RE Engine), choose the install folder as it is: the models are read straight from
+        its <code>.pak</code> archives, named through the file lists that come with Dark STL (Ekey's). A folder a pak tool (REtool, ree-pak) extracted works too.
+        For Borderlands, Borderlands 2 and The Pre-Sequel, choose the install folder as it is: the models are read from the packages in <code>WillowGame\CookedPCConsole</code> (the first scan reads through them once).
+        For Borderlands 3, Tiny Tina's Wonderlands and Borderlands 4, choose the install folder as it is: the models are read from the files in <code>OakGame\Content\Paks</code>.
+        Borderlands 4 also needs its type mappings (a .usmap file), and the AES key if its containers are encrypted; add them in Settings under <i>Unreal games</i>.</p>
+      <p><b>Or any folder of extracted files</b>, such as .partsbnd, .chrbnd, .objbnd, .flver, .mesh or .obj files you've pulled out with other tools.</p>
       <p><b>Or models Dark STL collected before</b> (on this computer or another): choose its library folder, or one game's folder in it, with <i>Add collected files</i>. Each game can come from either its own folder or its collected files.</p>
       ${games.length ? html`<p class="muted">Recognised: ${games.join(", ")}. Other folders can be added under a name you choose.</p>` : null}
     </div>

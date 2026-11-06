@@ -14,7 +14,7 @@ import { Inspector } from "./inspector.js";
 import { openMenu, usePageKeys } from "./actions.js";
 import { Thumb } from "./thumbs.js";
 import { GameBadge, CategoryIcon } from "./gameicons.js";
-import { gameMenu, rescanFolder, collectItem, collectModelItem } from "./games.js";
+import { gameMenu, rescanFolder, collectItem, collectModelItem, unpackFolder, UNPACK_HINT } from "./games.js";
 
 const PAGE = 300;
 const VIEWS = [["grid", "Grid", "grid"], ["list", "List", "list"]];
@@ -40,12 +40,15 @@ function modelMenu(m) {
   ];
 }
 
+/** What a configurable model's card says instead of its file: how many slots and parts it has. */
+const configText = (m) => `Configurable: ${plural(m.configurable.slots, "slot")}, ${plural(m.configurable.options, "part")}`;
+
 function Card({ m, selected, where, onPick }) {
   return html`<div class="card" role="option" tabindex="0" data-model=${m.id} aria-selected=${selected ? "true" : "false"}
       onClick=${() => onPick(m)} onDblClick=${() => openModel(m)} onContextMenu=${(e) => { onPick(m); openMenu(e, modelMenu(m)); }}>
     <${Thumb} id=${m.id} category=${m.category} />
     <span class="card-name" title=${m.label}>${m.label}</span>
-    <span class="card-meta"><span class="card-file" title=${m.name}>${m.stem}</span>${where ? html`<span class="card-location" title=${where}>${where}</span>` : null}</span>
+    <span class="card-meta"><span class="card-file" title=${m.name}>${m.configurable ? configText(m) : m.stem}</span>${where ? html`<span class="card-location" title=${where}>${where}</span>` : null}</span>
   </div>`;
 }
 
@@ -53,7 +56,7 @@ function Row({ m, selected, where, onPick }) {
   return html`<div class="row" role="option" tabindex="0" data-model=${m.id} aria-selected=${selected ? "true" : "false"}
       onClick=${() => onPick(m)} onDblClick=${() => openModel(m)} onContextMenu=${(e) => { onPick(m); openMenu(e, modelMenu(m)); }}>
     <${Thumb} id=${m.id} category=${m.category} cls="thumb-sm" />
-    <span class="row-name">${m.label}</span>
+    <span class="row-name">${m.label}${m.configurable ? html` <small class="muted config-tag">${configText(m)}</small>` : null}</span>
     <span class="row-author" title=${m.name}>${m.name}</span>
     <span class="row-cat">${where}</span>
   </div>`;
@@ -77,14 +80,36 @@ function KindTile({ game, cat, lod }) {
   </a>`;
 }
 
-/** The groups of the kind shown, as chips: All, then each group. */
+/** The groups of the kind shown, as chips: All, then each group. A kind with
+ * many groups (Cyberpunk's depot folders run to hundreds) keeps them to two
+ * rows, with the group shown moved up front and a button to see the rest in a
+ * short scrolling box; every group is also listed in the panel on the right. */
 function GroupChips({ game, cat, group }) {
+  const box = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [clipped, setClipped] = useState(false);
+  useEffect(() => { setOpen(false); }, [game, cat.name]);
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const check = () => setClipped(el.scrollHeight > el.clientHeight + 1);
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [cat, open]);
   if (cat.groups.length < 2) return null;
   const chip = (name, count, route) => html`<a class=${`chip-btn${group === name ? " on" : ""}`} key=${name ?? ""} href=${routeHash(route)}
-    aria-current=${group === name ? "page" : null} data-group=${name ?? ""}>${name ?? "All"} <span class="muted">${count.toLocaleString()}</span></a>`;
-  return html`<div class="filters group-chips" id="group-chips" aria-label="Groups">
-    ${chip(null, cat.count, placeRoute(game, cat.name))}
-    ${cat.groups.map((g) => chip(g.name, g.count, placeRoute(game, cat.name, g.name)))}
+    aria-current=${group === name ? "page" : null} data-group=${name ?? ""} title=${`${name ?? "All"} (${count.toLocaleString()})`}><span class="chip-name">${name ?? "All"}</span> <span class="muted">${count.toLocaleString()}</span></a>`;
+  // collapsed, the group shown comes straight after All so it is never hidden
+  const shown = !open && group ? [...cat.groups.filter((g) => g.name === group), ...cat.groups.filter((g) => g.name !== group)] : cat.groups;
+  return html`<div class=${`group-chips-wrap${open ? " open" : ""}`}>
+    <div class="filters group-chips" id="group-chips" aria-label="Groups" ref=${box}>
+      ${chip(null, cat.count, placeRoute(game, cat.name))}
+      ${shown.map((g) => chip(g.name, g.count, placeRoute(game, cat.name, g.name)))}
+    </div>
+    ${clipped || open ? html`<button type="button" class="ghost compact group-chips-more" id="group-chips-more" aria-expanded=${open ? "true" : "false"}
+      onClick=${() => setOpen(!open)}>${open ? "Fewer groups" : `All ${cat.groups.length.toLocaleString()} groups`}</button>` : null}
   </div>`;
 }
 
@@ -98,6 +123,7 @@ function GameFolders({ game }) {
       <div class="insp-actions">
         <button type="button" class="ghost" disabled=${f.missing} onClick=${() => showInFolder(f.path)}>${Icon.folder(14)} Show</button>
         <button type="button" class="ghost" disabled=${f.missing} onClick=${() => rescanFolder(f.path)}>${Icon.refresh(14)} Rescan</button>
+        ${f.packed ? html`<button type="button" class="primary compact folder-unpack" disabled=${f.missing} title=${UNPACK_HINT} onClick=${() => unpackFolder(f.path, f.packed.game)}>${Icon.inbox(14)} Unpack…</button>` : null}
       </div></div>`)}
     <button type="button" class="ghost" id="game-add-folder" onClick=${() => ui.set({ dialog: { type: "add-folder", game: game.name } })}>${Icon.plus(14)} Add another folder…</button>
   </section>`;
@@ -134,6 +160,7 @@ function ModelSummary({ m }) {
     <dl class="insp-dl">
       <dt>File</dt><dd>${m.name}</dd>
       <dt>Kind</dt><dd>${m.category}${m.group ? ` › ${m.group}` : ""}</dd>
+      ${m.configurable ? html`<dt>Parts</dt><dd id="summary-config">${configText(m).replace("Configurable: ", "")} to choose from${m.configurable.guessed ? " (matched by file names)" : ""}</dd>` : null}
       <dt>Game</dt><dd>${m.game}</dd>
       <dt>Folder</dt><dd class="note-path">${m.file.slice(0, m.file.length - m.name.length - 1)}</dd>
       ${m.lod ? html`<dt>Detail</dt><dd>Low-detail copy (seen from afar in the game)</dd>` : null}
@@ -217,7 +244,8 @@ export function Browser({ route }) {
     <div class="browse-main">
       ${cat ? html`<${GroupChips} game=${game.name} cat=${cat} group=${place.group} />` : null}
       <div class="browse-scroll">
-        ${notes.map((f) => html`<div class="warn-note folder-note" key=${f.path}>${f.notes.map((n, i) => html`<p key=${i}>${n}</p>`)}</div>`)}
+        ${notes.map((f) => html`<div class="warn-note folder-note" key=${f.path}>${f.notes.map((n, i) => html`<p key=${i}>${n}</p>`)}
+          ${f.packed ? html`<p><button type="button" class="primary compact folder-unpack" onClick=${() => unpackFolder(f.path, f.packed.game)}>${Icon.inbox(14)} Unpack ${f.packed.game}…</button></p>` : null}</div>`)}
         <${SearchNote} q=${s.q} found=${fresh ? `${plural(fresh.total, "model")} found in ${name}` : ""}
           wider=${s.q && place.category ? html`<a href=${routeHash(placeRoute(game.name))} id="search-game">Search all of ${game.name}</a>` : null}
           onClear=${() => { setText(""); ui.set({ q: "" }); }} />

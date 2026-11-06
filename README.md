@@ -1,7 +1,7 @@
 # Dark STL
 
-Browse the models of Dark Souls, Bloodborne, Sekiro and Elden Ring (or any OBJ file), add the
-surface detail their textures describe, and export print-ready meshes.
+Browse the models of Dark Souls, Bloodborne, Sekiro, Elden Ring and Cyberpunk 2077 (or any OBJ
+file), add the surface detail their textures describe, and export print-ready meshes.
 
 ![A model enhanced in Dark STL](docs/images/model-page.png)
 
@@ -14,6 +14,11 @@ detail into real geometry in three steps:
    physical scale the texture implies.
 3. **Export** to STL, OBJ (with textures), PLY or GLB, in millimetres by default.
 
+Before exporting, the model can be **made watertight**: its parts wrapped into one solid with the
+surfaces inside one another removed and sealed hollows filled, so it prints as one piece. It can
+also be **cut into pieces** for printing: planes placed in the 3D view
+split it into watertight pieces, joined by pegs, dowels, magnets or a key, with a clearance for each.
+
 See [docs/PLAN.md](docs/PLAN.md) for how each step works, the file formats, and the roadmap.
 
 ## Status
@@ -24,8 +29,10 @@ weapon, and a Bloodborne character, object and armour piece (PS4 textures includ
 other games come next (Phase 1 of the plan).
 
 Importing is modular: each game family has its own importer, and everything after import
-(the explorer, the three steps, export) is shared. FromSoftware files and Wavefront OBJ are
-supported today.
+(the explorer, the three steps, export) is shared. FromSoftware files (Dark Souls, Bloodborne,
+Dark Souls III, Sekiro, Elden Ring), Cyberpunk 2077 files, Capcom RE Engine files (Resident Evil
+2, 3, 4, 7 and Village, Devil May Cry 5), Borderlands (Borderlands, Borderlands 2, The
+Pre-Sequel, Borderlands 3, Tiny Tina's Wonderlands, Borderlands 4) and Wavefront OBJ are supported today.
 
 ## Install
 
@@ -51,12 +58,20 @@ neither.
 
 ## Getting the game files
 
-Dark STL reads the files as the community unpackers leave them; it does not read the games'
-encrypted archives directly.
-
-- **PC games:** unpack them with the usual community unpacker for each game (UXM Selective
-  Unpacker, or UDSFM for Dark Souls PTDE). Models end up in `parts/`, `chr/`, `obj/` or
-  `asset/`, and `map/` as `.dcx` files, which Dark STL opens as they are.
+- **PC games (Dark Souls PTDE, Dark Souls II, Dark Souls III, Sekiro, Elden Ring):** add the
+  game's install folder as it is. Its models are still packed in the game's archives
+  (`Data0.bhd`/`.bdt` and so on), so Dark STL offers to **unpack** them (also *Unpack…* in the
+  folder's menu, and *Settings > Game archives*): it decrypts the archives' file lists with
+  the games' published keys and writes out the groups you choose (characters, weapons and
+  armour, objects and assets, map pieces) with their textures and animations, into its own
+  library folder, laid out as `chr/`, `parts/`, `obj/` or `asset/`, and `map/`. Nothing in
+  the game's folder is changed, and nothing else (sound, scripts, collision) is unpacked.
+  File names come from the community's lists (UXM's, as Smithbox ships them, are included;
+  newer ones, which name Elden Ring's Shadow of the Erdtree files, download from
+  UXM Selective Unpacker in *Settings*), and models that follow the pattern of known names
+  are found too. From the command line: `darkstl unpack <game folder> -o <folder>
+  [--only characters,parts,objects,maps]`. A folder already unpacked with UXM Selective
+  Unpacker or UDSFM works as it is.
 - **Bloodborne:** use the extracted `dvdroot_ps4` folder from your own console dump, or any
   folder of `.chrbnd.dcx`, `.objbnd.dcx` and `.partsbnd.dcx` files taken from it. The PS4
   textures are rebuilt into ordinary DDS on the fly.
@@ -64,6 +79,45 @@ encrypted archives directly.
 - **Sekiro and Elden Ring** compress with Oodle. Dark STL uses the `oo2core_6_win64.dll`
   that ships with the game. It is found automatically when the model files are inside the
   unpacked game folder; otherwise point to it in *Settings > Oodle* (or `--oodle`).
+- **Cyberpunk 2077:** add the game's install folder as it is. Its `.archive` files are read
+  directly (the first scan reads through them once to learn the models' names, and keeps
+  what it found), using the game's own `bin\x64\oo2ext_7_win64.dll` to decompress. A folder
+  of `.mesh` and `.xbm` files exported with WolvenKit (kept under their `base\...` paths)
+  works too, and the two can be mixed: a model's textures are looked up in the loose folder
+  first, then in the archives.
+- **Resident Evil (RE Engine):** add the game's install folder as it is: Dark STL reads the
+  models straight from its `.pak` archives. Paks only store hashes of the file names; the
+  names come from the community file lists Dark STL ships (Ekey's, from
+  [REE.PAK.Tool](https://github.com/Ekey/REE.PAK.Tool), cut to meshes, textures,
+  materials and animations) for Resident Evil 2, 3, 7 (both the ray-tracing and the original releases), 4,
+  Village and Devil May Cry 5. After a game update, a newer `.list` file put in the game's
+  folder is read too. A folder extracted with a pak tool (REtool, ree-pak), holding
+  `natives/`, works as well.
+  Models are `.mesh` files with their materials in a `.mdf2` and textures in `.tex` files;
+  the full-size textures and the most detailed geometry of newer games (Resident Evil 4) sit
+  under `natives/stm/streaming/` and are used when present. Characters can be posed on the
+  Pose tab with the game's `.motlist` animations filed under their id (`pl0000`, `cha0`...). Games whose archives are
+  encrypted (Monster Hunter Wilds and later) need extracting first; their GDeflate textures
+  are not read yet.
+
+- **Borderlands, Borderlands 2, The Pre-Sequel (Unreal Engine 3):** add the game's install
+  folder as it is. The models are read straight from the `.upk` packages in
+  `WillowGame\CookedPCConsole` (`CookedPC` for the first game), LZO-compressed as they are;
+  the large texture mips come from the `.tfc` texture caches beside them. The first scan
+  opens every package once and keeps what it found. Borderlands 2 and The Pre-Sequel keep
+  every gun part of a weapon type in one shared mesh in `Startup.upk`; it is listed under
+  Weapons with each part as a part of the model, and each weapon type is also a
+  configurable model (body, grip, barrel, sight, stock, elemental, accessory) built from the
+  game's own part definitions in the `GD_Weap_*` packages.
+
+- **Borderlands 3, Tiny Tina's Wonderlands (Unreal Engine 4), Borderlands 4 (Unreal Engine 5):**
+  add the game's install folder as it is. Models are read from the `.pak` files (BL3, Wonderlands)
+  or the IoStore `.utoc`/`.ucas` containers (BL4) in `OakGame\Content\Paks`. Encrypted files need
+  the game's AES key (Borderlands 3's is included; paste others in *Settings > Unreal games* or
+  put them in `unreal-keys.txt` in the game folder). Borderlands 4 also needs a `.usmap` type
+  mappings file for the installed version of the game, added the same way, because it cooks
+  its objects without property names. Guns are configurable from their part meshes, the slots
+  guessed from the part names.
 
 ## Using the app
 
@@ -73,8 +127,8 @@ Start *Dark STL* from the Start menu, or from a source install:
 darkstl            # or darkstl-gui; darkstl gui --browser opens it in your browser
 ```
 
-1. **Add your games.** *Add game folder…* takes a game's folder (once unpacked) or any folder
-   of extracted model files. Dark STL recognises the game from its files and lists it in the
+1. **Add your games.** *Add game folder…* takes a game's install folder (offering to unpack
+   the games that keep their models in archives) or any folder of extracted model files. Dark STL recognises the game from its files and lists it in the
    menu. Add as many games and folders as you like; *Settings* lists them, with Rescan,
    Change game and Remove. Nothing in your folders is ever changed. Models you *Collect into
    the app* are copied into Dark STL's library folder (movable in *Settings*); on a fresh
@@ -99,7 +153,21 @@ darkstl            # or darkstl-gui; darkstl gui --browser opens it in your brow
    made yet is made first. Show *Original* or *Enhanced* under the view: both stay loaded, so
    switching is instant, and the last three models generated are kept too. Click **Stop** in the
    status bar (or under a progress bar) to stop a job.
-7. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default.
+7. **Finish** holds post-processing for printing. *Make watertight* wraps the whole model into one
+   solid: every part is made solid (openings closed, open surfaces thickened) and they're joined,
+   so where parts cross (an arm in a sleeve, armour over a body) the surfaces inside are removed
+   and only the outside stays, exactly as it was. Hollows sealed inside are filled; optionally
+   narrow gaps between parts are bridged and loose bits removed. *Show › Finished* shows it, and
+   Cut and Export can use it.
+8. **Cut** splits the model into pieces for printing. *Add a cut* across X, Y or Z (or facing you),
+   then drag the plane in the 3D view to slide it, drag its round handle to tilt it, or *Pick a
+   point* on the model. Each cut has its own joint: flat (to glue), pegs, dowels, magnet pockets
+   or a key shaped like the cut face, and its own clearance. The model is made solid first
+   (openings closed, open surfaces such as capes thickened), so every piece is watertight.
+   *Show › Pieces* shows them in colour, spread apart with a slider.
+9. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default; *Finished* the watertight
+   model; *Pieces* writes each piece
+   to its own file, laid on a cut face ready to print.
 
 ![A game's library](docs/images/library.png)
 
@@ -117,7 +185,10 @@ darkstl enhance chr/c2010.chrbnd.dcx -o c2010.stl -n 4000000 --strength 1.5 --sa
 Useful `enhance` options: `--method isotropic` for an exact count of uniform triangles,
 `--source height` to use a grayscale height map, `--flat` to skip rounding, `--green
 opengl|directx` if the relief comes out inverted, `--max-mm` to clamp displacement, and
-`--parts 0,2` to keep only some parts, and `--variant WP_A_0402_1.flver` to pick a model in a
+`--parts 0,2` to keep only some parts, `--cut z=40:pegs` (repeatable; `z=50%`, joints `flat`,
+`pegs`, `dowels`, `magnets`, `key`, and `--clearance 0.2`) to write the model as pieces,
+`--watertight` to wrap it into one watertight solid first (with `--close-gaps 1` to bridge gaps up
+to 1 mm, `--drop-loose 1` to remove loose bits under 1% of it, `--keep-hollows`), and `--variant WP_A_0402_1.flver` to pick a model in a
 file that holds several (see `info`). Run `darkstl <command> -h` for all.
 
 ## Development
@@ -168,7 +239,12 @@ merge.
 
 The file format knowledge comes from the FromSoftware modding community, in particular
 [SoulsFormats](https://github.com/JKAnderson/SoulsFormats) by TKGP and
-[Soulstruct](https://github.com/Grimrukh/soulstruct) by Grimrukh. Dark STL is an independent
+[Soulstruct](https://github.com/Grimrukh/soulstruct) by Grimrukh. Unpacking follows the
+archive format as BinderTool (Atvaark), UXM (TKGP) and
+[UXM Selective Unpacker](https://github.com/Nordgaren/UXM-Selective-Unpack) (Nordgaren)
+read it; the archive keys and the bundled file lists are copied from
+[Smithbox](https://github.com/vawser/Smithbox) (MIT, see
+`src/darkstl/importers/fromsoft/filelists/LICENSE.txt`). Dark STL is an independent
 reimplementation and contains no code or data from the games; you need your own copies.
 
 The page bundles [Preact](https://preactjs.com) (MIT), [htm](https://github.com/developit/htm)

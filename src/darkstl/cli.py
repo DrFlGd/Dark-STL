@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
 from pathlib import Path
@@ -49,6 +50,51 @@ def cmd_scan(args) -> int:
                 more = f" ... +{len(entries) - args.limit}" if len(entries) > args.limit else ""
                 print(f"    {group or '-'}: {names}{more}")
     return 0
+
+
+def cmd_unpack(args) -> int:
+    from .app.config import cache_dir, filelists_dir
+    from .importers.fromsoft import unpack
+
+    if args.download_lists:
+        out = unpack.download_lists(filelists_dir(), None)
+        print(f"Downloaded {len(out['downloaded'])} file lists into {out['folder']}")
+        for f in out["failed"]:
+            print(f"  failed: {f}")
+        if not args.folder:
+            return 0 if out["downloaded"] else 1
+    if not args.folder:
+        print("Name the game's folder (or --download-lists).")
+        return 2
+
+    def progress(frac: float, msg: str) -> None:
+        print(f"\r{frac * 100:5.1f}%  {msg[:90]:<90}", end="", flush=True)
+
+    groups = [g.strip() for g in args.only.split(",")] if args.only else list(unpack.DEFAULT_GROUPS)
+    unknown = [g for g in groups if g not in {x.id for x in unpack.GROUPS}]
+    if unknown:
+        print(f"Unknown group(s) {', '.join(unknown)}; choose from {', '.join(g.id for g in unpack.GROUPS)}")
+        return 2
+    plan = unpack.plan(Path(args.folder), Path(args.out), args.game, cache_dir() / "archives", filelists_dir(), progress)
+    print()
+    s = plan.summary()
+    print(f"{s['game']}: {sum(a['files'] for a in s['archives']):,} files in {len(s['archives'])} archives "
+          f"({s['unknown']:,} without a known name, {s['guessed']:,} named by pattern)")
+    for a in s["archives"]:
+        if a["error"]:
+            print(f"  {a['name']}: {a['error']}")
+    for g in s["groups"]:
+        mark = "*" if g["id"] in groups else " "
+        print(f" {mark} {g['id']:<11} {g['files']:>7,} files {g['bytes'] / 2**30:8.2f} GB  ({g['to_unpack']:,} to unpack)")
+    if args.dry_run:
+        return 0
+    result = unpack.run(plan, groups, progress)
+    print()
+    failed = f"; {result['failed_count']} failed" if result["failed_count"] else ""
+    print(f"Wrote {result['written']:,} files ({result['bytes'] / 2**30:.2f} GB) into {result['dest']}{failed}")
+    for f in result["failed"]:
+        print(f"  {f}")
+    return 0 if not result["failed_count"] else 1
 
 
 def cmd_info(args) -> int:
@@ -110,8 +156,13 @@ def cmd_textures(args) -> int:
     out.mkdir(parents=True, exist_ok=True)
     try:
         textures = open_model(path, texture_dirs=_extra_dirs(args)).textures
-    except FormatError:
-        textures = FromSoftwareImporter.texture_pack(path)  # a texture pack rather than a model
+    except FormatError:  # a texture pack or texture file rather than a model
+        from .importers.reengine import REEngineImporter
+
+        if re.search(r"\.tex(\.\d+)?$", path.name, re.I):
+            textures = REEngineImporter.texture_file(path)
+        else:
+            textures = FromSoftwareImporter.texture_pack(path)
     if not textures:
         print("No textures found")
         return 1
@@ -166,6 +217,55 @@ def _export_options(args, model, mesh):
     return opts
 
 
+def _write_pieces(args, mesh) -> int:
+    """With --cut: the model cut into pieces, each written beside the output as <name>_pieceN.<ext>."""
+    from . import cut
+    from .export import ExportOptions, export_mesh
+
+    try:
+        settings = cut.CutSettings([cut.parse_cut(c, mesh) for c in args.cut], sheet_mm=args.sheet)
+        for c in settings.cuts:
+            c.joint.clearance_mm = args.clearance
+        result = cut.cut_mesh(mesh, settings, _progress)
+    except (ValueError, RuntimeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    sys.stderr.write("\n")
+    for n in result.notes:
+        print(f"note: {n}", file=sys.stderr)
+    out = Path(args.output)
+    for piece in result.pieces:
+        slug = piece.name.lower().replace(" ", "")
+        path = export_mesh(cut.print_pose(piece), out.with_name(f"{out.stem}_{slug}{out.suffix}"),
+                           ExportOptions(scale=args.scale, ascii_stl=getattr(args, "ascii", False)))
+        print(f"Wrote {path} ({piece.mesh.n_faces:,} triangles, {piece.volume_mm3 / 1000:.2f} cm3)")
+    return 0
+
+
+def _watertight(args, mesh):
+    """With --watertight: the model as one watertight solid, the surfaces inside it removed (finish.py)."""
+    from . import finish
+
+    settings = finish.WatertightSettings(sheet_mm=args.sheet, fill_hollows=not args.keep_hollows,
+                                         close_gaps_mm=args.close_gaps, loose_percent=args.drop_loose)
+    result = finish.make_watertight(mesh, settings, _progress)
+    sys.stderr.write("\n")
+    for n in result.notes:
+        print(f"note: {n}", file=sys.stderr)
+    return result.mesh
+
+
+def _finish(args, mesh):
+    """The post-processing asked for on the command line, or None with an error printed."""
+    if not getattr(args, "watertight", False):
+        return mesh
+    try:
+        return _watertight(args, mesh)
+    except (ValueError, RuntimeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return None
+
+
 def cmd_export(args) -> int:
     from .export import export_mesh
 
@@ -174,6 +274,11 @@ def cmd_export(args) -> int:
     if mesh.n_faces == 0:
         print(f"error: {model.name} has no triangles to export", file=sys.stderr)
         return 1
+    mesh = _finish(args, mesh)
+    if mesh is None:
+        return 1
+    if args.cut:
+        return _write_pieces(args, mesh)
     path = export_mesh(mesh, args.output, _export_options(args, model, mesh))
     print(f"Wrote {path} ({mesh.n_vertices:,} vertices, {mesh.n_faces:,} triangles)")
     return 0
@@ -214,8 +319,15 @@ def cmd_enhance(args) -> int:
     sys.stderr.write("\n")
     for w in result.warnings:
         print(f"warning: {w}", file=sys.stderr)
-    path = export_mesh(result.displaced, args.output, _export_options(args, model, result.displaced))
+    out_mesh = _finish(args, result.displaced)
+    if out_mesh is None:
+        return 1
+    if args.cut:
+        return _write_pieces(args, out_mesh)
+    path = export_mesh(out_mesh, args.output, _export_options(args, model, out_mesh))
     st = result.stats()
+    if out_mesh is not result.displaced:
+        st = {**st, "vertices": out_mesh.n_vertices, "faces": out_mesh.n_faces}
     print(f"Wrote {path}: {st['vertices']:,} vertices, {st['faces']:,} triangles "
           f"(from {st['source_vertices']:,}); max displacement {st['max_displacement_mm']:.3f} mm "
           f"[{time.time() - t0:.1f}s]")
@@ -257,6 +369,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--limit", type=int, default=12, help="names to show per group")
     s.set_defaults(func=cmd_scan)
 
+    s = sub.add_parser("unpack", help="unpack a game's models from its archives (Data0.bhd/.bdt ...)")
+    s.add_argument("folder", nargs="?", help="the game's install folder")
+    s.add_argument("-o", "--out", default="unpacked", help="folder to write into (default: ./unpacked)")
+    s.add_argument("--only", help="groups, comma-separated: characters,parts,objects,maps (default: all but maps)")
+    s.add_argument("--game", help="the game, when its archives don't say (Sekiro and Dark Souls III look alike)")
+    s.add_argument("--dry-run", action="store_true", help="only say what would be unpacked")
+    s.add_argument("--download-lists", action="store_true", help="first download newer file lists (UXM Selective Unpacker's)")
+    s.set_defaults(func=cmd_unpack)
+
     s = sub.add_parser("info", help="describe a model, texture pack or archive")
     s.add_argument("file")
     s.add_argument("--textures", action="append", help="extra folder to search for textures")
@@ -272,10 +393,27 @@ def build_parser() -> argparse.ArgumentParser:
                         help="importer option (see 'info'), e.g. --option mm=on for an OBJ in millimetres")
         sp.add_argument("--no-bones", action="store_true", help="same as --option bones=off")
         sp.add_argument("--pose", metavar="ANIMATION@FRAME",
-                        help="pose the model with an animation from its anibnd (see 'info'), e.g. a000_003000@12")
+                        help=("pose the model with one of its animations (see 'info'): from its anibnd, e.g. "
+                              "a000_003000@12, or for RE Engine models from the game's motlists, "
+                              "e.g. \"pl0000_move / wave@12\""))
         sp.add_argument("--scale", type=float, default=1000.0, help="unit scale (default 1000: metres -> mm)")
         sp.add_argument("--ascii", action="store_true", help="ASCII STL")
         sp.add_argument("--textures", action="append", help="extra folder to search for textures")
+        sp.add_argument("--cut", action="append", metavar="AXIS=MM[:JOINT]",
+                        help="cut into pieces across an axis at that many mm (or AXIS=50%%), with a joint: flat, pegs, "
+                             "dowels, magnets or key (default pegs); repeat for more cuts. Each piece is written as "
+                             "<output>_pieceN, laid on a cut face")
+        sp.add_argument("--clearance", type=float, default=0.2, help="gap in mm between parts of a joint (with --cut)")
+        sp.add_argument("--watertight", action="store_true",
+                        help="wrap the model into one watertight solid: parts joined, the surfaces inside one another "
+                             "removed, hollows sealed inside filled (before --cut, if given)")
+        sp.add_argument("--close-gaps", type=float, default=0.0, metavar="MM",
+                        help="with --watertight: also close gaps between parts up to this wide")
+        sp.add_argument("--drop-loose", type=float, default=0.0, metavar="PERCENT",
+                        help="with --watertight: remove loose bits smaller than this %% of the model's volume")
+        sp.add_argument("--keep-hollows", action="store_true", help="with --watertight: leave hollows sealed inside open")
+        sp.add_argument("--sheet", type=float, default=1.2, metavar="MM",
+                        help="with --watertight or --cut: thickness given to open surfaces (default 1.2)")
 
     s = sub.add_parser("textures", help="save a model's textures as PNG")
     s.add_argument("file")

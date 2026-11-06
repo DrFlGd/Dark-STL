@@ -3,8 +3,11 @@
 // and the normal maps cleaned up and upsampled for displacement, before and after),
 // Pose (an animation and a frame to hold the model in), Mesh (step 1: the vertices
 // evened out to a count), Displace (step 2: the vertices pushed by the textures'
-// detail) and Export tabs. A file holding several models (a weapon and its sheath)
-// gets a switch between them in the command bar.
+// detail), Finish (post-processing for printing: the whole model made watertight, the
+// surfaces inside it removed), Cut (planes placed in the 3D view split it into pieces with
+// joints between them, for printing) and Export tabs. A file holding several models (a weapon and its sheath)
+// gets a switch between them in the command bar. A configurable model (a weapon and the parts that
+// fit it) has a Configure tab first, to choose its parts (configure.js).
 import { html, useState, useEffect, useLayoutEffect, useRef, useMemo } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui, setPref, resolvedTheme } from "./state.js";
@@ -14,7 +17,8 @@ import { collectModelItem } from "./games.js";
 import { api, binUrl, info, plural, bytesText, followJob, stopJob, toast, showInFolder, pickFolder, pickFile } from "./api.js";
 import { CommandBar } from "./layout.js";
 import { Inspector, useWidth } from "./inspector.js";
-import { Viewer } from "../viewer.js";
+import { Viewer, PIECE_COLORS } from "../viewer.js";
+import { ConfigureTab } from "./configure.js";
 
 const ENHANCE = { target_vertices: 1_000_000, method: "subdivide", smooth: true, source: "normal", strength: 1, height_range_mm: 1,
   green: "auto", detail_fraction: 0.0625, max_displacement_mm: 0, integration: "mesh", edge_keeping: 0, deblock: "off", edge_smoothing: 1,
@@ -22,6 +26,17 @@ const ENHANCE = { target_vertices: 1_000_000, method: "subdivide", smooth: true,
 const IMAGE_PATTERN = "Images (*.png;*.tga;*.tif;*.tiff;*.dds;*.jpg;*.jpeg;*.webp;*.bmp)";
 const EXPORT = { format: ".stl", units: "mm", textures: true, folder: "" };
 const VIEW = { shading: "textured", edges: false };
+const JOINT = { kind: "pegs", clearance_mm: 0.2, count: 0, diameter_mm: 5, depth_mm: 6, magnet_diameter_mm: 6, magnet_height_mm: 3, flip: false, print_dowels: true };
+const CUT = { from: "enhanced", sheet_mm: 1.2, wall_mm: 1.6, joint: JOINT, lay_flat: true };
+const FINISH = { from: "enhanced", sheet_mm: 1.2, fill_hollows: true, close_gaps: false, close_gaps_mm: 1, remove_loose: false, loose_percent: 1 };
+const JOINTS = [
+  ["flat", "Flat", "The cut faces as they are, to glue together."],
+  ["pegs", "Pegs", "Round pegs on one side and holes on the other, wider by the clearance."],
+  ["dowels", "Dowels", "Holes on both sides and separate dowels (printed, or bought pins or filament of that diameter)."],
+  ["magnets", "Magnets", "Round pockets on both sides for disc magnets, with the clearance around them."],
+  ["key", "Key", "A tongue in the shape of the cut face, inset from its edge, into a groove on the other side: the pieces only fit one way."],
+];
+const KEEP_PLANS = 20; // models whose cuts are remembered
 const KEEP_MESHES = 4; // built meshes a model page keeps (on the graphics card) to show again at once
 const UNITS = [["mm", "Millimetres (game metres × 1000)"], ["cm", "Centimetres"], ["m", "Metres (the game's own units)"], ["in", "Inches"]];
 /** The least room the 3D view gets beside the inspector, and the inspector's rail. */
@@ -45,6 +60,16 @@ function meshArgs(m, off, flags, pose) {
     key: JSON.stringify([parts, flags, p]),
   };
 }
+/** A cut as kept: its normal made unit length and its point the model's centre moved onto the plane, so the
+ *  plane drawn stays centred on the model however it is moved. `header`: the shown mesh's { min, max }. */
+function centred(normal, point, header) {
+  const len = Math.hypot(...normal) || 1;
+  const n = normal.map((x) => x / len);
+  const c = header ? header.min.map((lo, i) => (lo + header.max[i]) / 2) : point;
+  const s = n.reduce((a, x, i) => a + x * (point[i] - c[i]), 0);
+  return { normal: n, point: c.map((x, i) => x + n[i] * s) };
+}
+
 /** The pose as part of a file name: a000_003000_f12. */
 const poseSuffix = (pose) => (pose ? `_${pose.anim}_f${pose.frame}` : "");
 
@@ -52,11 +77,20 @@ export function ModelPage({ route }) {
   const { id, variant } = modelOf(route);
   const [m, setM] = useState(null);
   const [error, setError] = useState("");
+  // a configurable model: the part chosen in each slot, kept per model (see ConfigureTab)
+  const choices = useStore(ui, (st) => (st.configChoices || {})[id] || null);
+  const choicesKey = JSON.stringify(choices);
+  const rev = useStore(ui, (st) => st.configRev);
+  const [switching, setSwitching] = useState(false);
   useEffect(() => {
     let live = true;
-    api("model_open", { id, variant }).then((v) => { if (live) { setM(v); setError(""); } }, (e) => { if (live) setError(msg(e)); });
+    setSwitching(true);
+    api("model_open", { id, variant, choices }).then((v) => { if (live) { setM(v); setError(""); setSwitching(false); } },
+      (e) => { if (live) { setError(msg(e)); setSwitching(false); } });
     return () => { live = false; };
-  }, [id, variant]);
+  }, [id, variant, choicesKey, rev]);
+  // a configurable model opens on its Configure tab
+  useEffect(() => { if (m?.configuration && m.id === id) ui.set({ inspectorAsk: { page: "model", tab: "configure" } }); }, [m?.id, !!m?.configuration]);
   const entry = m?.entry;
   const placeKey = entry ? JSON.stringify([entry.game, entry.category, entry.group]) : null;
   useEffect(() => {
@@ -78,6 +112,8 @@ export function ModelPage({ route }) {
     collectModelItem({ id: m.id, file: m.file, label: entry?.label || m.name, category: entry?.category, group: entry?.group }, entry?.game),
     { sep: true },
     { id: "open-file", label: "Open another model file…", icon: "file", run: () => ui.set({ dialog: { type: "open-file" } }) },
+    ...(entry && !m.configuration ? [{ sep: true }, { id: "make-configurable", label: "Make configurable…", icon: "box",
+      run: () => makeConfigurable(m, entry) }] : []),
   ];
   return html`<${CommandBar} ...${bar} up=${up.filter(([, href]) => href)} title=${html`<h1 id="mp-name" title=${entry?.label || m.name}>${entry?.label || m.name}</h1>`}
       count=${html`<span class="page-count" id="mp-count" title=${m.file}>${fileName}</span>`}
@@ -87,24 +123,52 @@ export function ModelPage({ route }) {
           ${m.variants.map((v) => html`<option key=${v} value=${v}>${variantName(v)}</option>`)}</select></label>` : null}
       more=${{ id: "mp-more", items: more }} />
     <div class="model-page" id="model-page" data-model=${m.id}>
-      <${Workspace} key=${m.sid} m=${m} variant=${variant} />
+      <${Workspace} key=${m.sid} m=${m} variant=${variant} switching=${switching} />
     </div>`;
 }
 
-function Workspace({ m, variant }) {
+/** A configuration of the model's own: the model as its base, no slots yet; it opens with the editor. */
+async function makeConfigurable(m, entry) {
+  try {
+    const r = await api("config_save", { base_id: entry.id, configuration: { label: entry.label || m.name, slots: [] } });
+    ui.set({ configEdit: r.id });
+    location.hash = routeHash(`model:${r.id}`);
+  } catch (e) { toast(msg(e), { error: true }); }
+}
+
+function Workspace({ m, variant, switching }) {
   const [off, setOff] = useState(() => new Set());
   const [flags, setFlags] = useState(() => Object.fromEntries(m.options.map((o) => [o.key, o.default])));
   const [stats, setStats] = useState(m.stats);
   const [result, setResult] = useState(m.enhanced ? { ...m.enhanced, rev: 1 } : null);
   const [resultKey, setResultKey] = useState(null);
-  const [which, setWhich] = useState(m.enhanced ? "enhanced" : "original");
+  const [which, setWhich] = useState(m.cut?.pieces?.length ? "pieces" : m.finished ? "finished" : m.enhanced ? "enhanced" : "original");
   const [pose, setPose] = useState(null); // { anim, frame } or null for the bind pose
   const [busy, setBusy] = useState(false); // the 3D view is fetching a mesh
   const [over, setOver] = useState({}); // material -> the detail texture chosen on the Displace tab ("" = none)
   const [strengths, setStrengthState] = useState({}); // material -> strength multiplier
   const strengthsNow = useRef({}); // the same, readable at once by a click that follows the change
   const setStrengths = (v) => { strengthsNow.current = v; setStrengthState(v); };
-  const [run, setRun] = useState(null); // this page's job: { kind: "mesh" | "displace" | "upscale", progress, message, job, stopping }
+  const [run, setRun] = useState(null); // this page's job: { kind: "mesh" | "displace" | "upscale" | "finish" | "cut", progress, message, job, stopping }
+  const [finished, setFinished] = useState(m.finished || null); // the model made watertight last (Finish tab)
+  // the Cut tab: its planes (kept per model), the one selected, whether the tab is open (the planes show in the
+  // 3D view), the pieces last cut and how far apart they're shown
+  const [cuts, setCutList] = useState(() => (ui.get().cutPlans || {})[m.id] || []);
+  const setCuts = (list) => {
+    setCutList(list);
+    const all = { ...(ui.get().cutPlans || {}) };
+    delete all[m.id];
+    if (list.length) all[m.id] = list;
+    const keys = Object.keys(all);
+    for (const k of keys.slice(0, Math.max(0, keys.length - KEEP_PLANS))) delete all[k];
+    setPref({ cutPlans: all });
+  };
+  const [cutSel, setCutSel] = useState(() => cuts[0]?.id ?? null);
+  const [cutOpen, setCutOpen] = useState(false);
+  const [pieces, setPieces] = useState(m.cut?.pieces?.length ? m.cut : null);
+  const [explode, setExplode] = useState(0.25);
+  const [bounds, setBounds] = useState(null); // { min, max } in millimetres of the model shown
+  const viewer = useRef(null);
   const saved = useStore(ui, (st) => st.enhance);
   const s = { ...ENHANCE, ...(saved || {}) };
   const set = (patch) => setPref({ enhance: { ...s, ...patch } });
@@ -155,26 +219,55 @@ function Workspace({ m, variant }) {
   /** The Textures tab's step: the normal maps cleaned up and upsampled as the texture settings ask. */
   const upscale = (keys) => follow("upscale", () => call("texture_upscale", { sid: m.sid, ...args.json, settings: sendSettings(), ...(keys ? { keys } : {}) }), `Upscaling ${name}'s textures`);
   const shared = { m, args, stats, s, set, run, setRun, call, sendSettings };
+  /** Cut the model along the Cut tab's planes; the pieces are shown at once. */
+  const cutModel = async (request) => {
+    const r = await follow("cut", () => call("cut", { sid: m.sid, ...args.json, ...request }), `Cutting ${name}`);
+    setPieces({ ...r, request: JSON.stringify(request) });
+    setWhich("pieces");
+    return r;
+  };
+  const cutting = { cuts, setCuts, cutSel, setCutSel, pieces, explode, setExplode, bounds, viewer };
+  /** Make the model watertight (Finish tab); the result is shown at once. */
+  const finishModel = async (request) => {
+    const r = await follow("finish", () => call("finish", { sid: m.sid, ...args.json, ...request }), `Making ${name} watertight`);
+    setFinished({ ...r, request: JSON.stringify(request) });
+    setWhich("finished");
+    return r;
+  };
   return html`<div class="model-workspace" ref=${box}>
     <section class="workspace-viewing-area">
-      <${Stage} m=${m} variant=${variant} which=${which} setWhich=${setWhich} args=${args} result=${result} stats=${stats} pose=${pose} onBusy=${setBusy} />
+      <${Stage} m=${m} variant=${variant} which=${which} setWhich=${setWhich} args=${args} result=${result} finished=${finished} stats=${stats} pose=${pose} onBusy=${setBusy}
+        cutting=${cutting} showCuts=${cutOpen} onBounds=${setBounds} />
     </section>
     <${Inspector} page="model" crowded=${crowded} label="Panels" tabs=${[
+      ...(m.configuration ? [{ id: "configure", label: "Configure", icon: "layers", body: html`<${ConfigureTab} m=${m} switching=${switching} />` }]
+        : m.configurable_as?.length ? [{ id: "configure", label: "Configure", icon: "layers", body: html`<${ConfigureLinks} m=${m} />` }] : []),
       { id: "model", label: "Model", icon: "box", body: html`<${ModelTab} m=${m} off=${off} setOff=${setOff} flags=${flags} setFlags=${setFlags} stats=${stats} />` },
       { id: "textures", label: "Textures", icon: "image", body: html`<${TexturesTab} ...${shared} over=${over} upscale=${upscale} />` },
       ...(m.animated ? [{ id: "pose", label: "Pose", icon: "play", body: html`<${PoseTab} m=${m} pose=${pose} setPose=${setPose} busy=${busy} call=${call} />` }] : []),
       { id: "mesh", label: "Mesh", icon: "grid", body: html`<${MeshTab} ...${shared} result=${result} generate=${generate} />` },
       { id: "displace", label: "Displace", icon: "stack", body: html`<${DisplaceTab} ...${shared} result=${result} stale=${!!result && !!resultKey && resultKey !== args.key}
         over=${over} setOver=${setOver} strengths=${strengths} setStrengths=${setStrengths} generate=${generate} />` },
-      { id: "export", label: "Export", icon: "download", body: html`<${ExportTab} m=${m} args=${args} result=${result} which=${which} pose=${pose} call=${call} />` },
+      { id: "finish", label: "Finish", icon: "drop", body: html`<${FinishTab} ...${shared} result=${result} finished=${finished} which=${which} setWhich=${setWhich} finishModel=${finishModel} />` },
+      { id: "cut", label: "Cut", icon: "scissors", body: html`<${CutTab} ...${shared} ...${cutting} result=${result} finished=${finished} which=${which} setWhich=${setWhich} setOpen=${setCutOpen} cutModel=${cutModel} />` },
+      { id: "export", label: "Export", icon: "download", body: html`<${ExportTab} m=${m} args=${args} result=${result} finished=${finished} which=${which} pose=${pose} call=${call} pieces=${pieces} />` },
     ]} />
   </div>`;
 }
 
+/** The Configure tab of a model that configurable models are built on: open one to choose its parts. */
+function ConfigureLinks({ m }) {
+  return html`<div class="tab-pad" id="config-links"><section class="insp-section"><h3>Build one model</h3>
+    <p class="muted">This model is part of ${m.configurable_as.length > 1 ? "these configurable models" : "a configurable model"}. Open it to choose its parts, and its skin where the game has them.</p>
+    ${m.configurable_as.map((c) => html`<p key=${c.id}><button type="button" class="primary compact config-link" data-config=${c.id}
+      onClick=${() => { location.hash = routeHash(`model:${c.id}`); }}>${Icon.layers(15)} ${c.label}</button></p>`)}
+  </section></div>`;
+}
+
 /** The 3D view: the model with its textures, clay or wireframe, its size, and the views. */
-function Stage({ m, variant, which, setWhich, args, result, stats, pose, onBusy }) {
+function Stage({ m, variant, which, setWhich, args, result, finished, stats, pose, onBusy, cutting, showCuts, onBounds }) {
   const canvas = useRef(null);
-  const viewer = useRef(null);
+  const viewer = cutting.viewer;
   // the meshes shown lately, built, the newest last: showing the original and the enhanced model in
   // turn (or parts switched off and on again) doesn't fetch or build them again
   const kept = useRef(new Map());
@@ -201,7 +294,7 @@ function Stage({ m, variant, which, setWhich, args, result, stats, pose, onBusy 
     m.materials.forEach((mat, i) => { if (mat.albedo && have.has(mat.albedo)) out[i] = binUrl("texture", { sid: m.sid, key: mat.albedo, max: 2048 }); });
     return out;
   }, [m.sid]);
-  const key = JSON.stringify([which, which === "enhanced" ? result?.id || result?.rev : args.key]);
+  const key = JSON.stringify([which, which === "enhanced" ? result?.id || result?.rev : which === "pieces" ? cutting.pieces?.id : which === "finished" ? finished?.id : args.key]);
   useEffect(() => {
     let live = true;
     (async () => {
@@ -216,7 +309,7 @@ function Stage({ m, variant, which, setWhich, args, result, stats, pose, onBusy 
           const text = await res.text();
           if (!/was closed/.test(text)) throw new Error(text);
           await api("model_open", { id: m.id, variant });
-          if (which === "enhanced") { setWhich("original"); return; }
+          if (which !== "original") { setWhich("original"); return; }
           res = await fetch(url());
         }
         if (!res.ok) throw new Error(await res.text());
@@ -232,14 +325,32 @@ function Stage({ m, variant, which, setWhich, args, result, stats, pose, onBusy 
         b.dispose();
       }
       if (!live) return;
-      const size = viewer.current.show(built, { textures: view.shading === "textured" ? textures : null, wireframe: view.shading === "wire", keepView: shown.current });
+      const size = viewer.current.show(built, { textures: view.shading === "textured" && which !== "pieces" && which !== "finished" ? textures : null, wireframe: view.shading === "wire", keepView: shown.current });
       viewer.current.setEdges(view.edges);
       shown.current = true;
+      if (which === "pieces") viewer.current.setExplode(cutting.explode);
+      onBounds?.({ min: built.header.min, max: built.header.max, which });
       setState({ loading: false, error: null, size, key });
       onBusy?.(false);
     })().catch((e) => { if (live) { setState({ loading: false, error: msg(e), size: null, key }); onBusy?.(false); } });
     return () => { live = false; };
   }, [key, view.shading]);
+  // the Cut tab's planes, shown while it is open (not over the pieces they made)
+  const { cuts, cutSel, setCuts, setCutSel, explode } = cutting;
+  const live = useRef(null);
+  live.current = { cuts, setCuts, setCutSel, header: viewer.current?.shown?.header };
+  useEffect(() => {
+    const v = viewer.current;
+    if (!v) return;
+    v.onCutSelect = (id) => live.current.setCutSel(id);
+    v.onCut = (id, now, done) => {
+      if (!done) return;
+      const { cuts, setCuts, header } = live.current;
+      setCuts(cuts.map((c) => (c.id === id ? { ...c, ...centred(now.normal, now.point, header) } : c)));
+    };
+    v.setCuts(showCuts && which !== "pieces" ? cuts.map((c) => ({ ...c })) : [], cutSel);
+  }, [cuts, cutSel, showCuts, which, state.key]);
+  useEffect(() => { if (which === "pieces") viewer.current?.setExplode(explode); }, [explode]);
   const setView = (patch) => setPref({ view: { ...view, ...patch } });
   const edges = (on) => { setView({ edges: on }); viewer.current?.setEdges(on); };
   const seg = (id, label, options, value, onChange) => html`<div class="seg" role="group" aria-label=${label} id=${id}>${options.map(([k, l, title, disabled]) =>
@@ -257,7 +368,9 @@ function Stage({ m, variant, which, setWhich, args, result, stats, pose, onBusy 
       <div class="stage-bar">
         <span class="stage-what" id="stage-size" title="Width × depth × height, as exported in millimetres">${size?.triangles ? html`${sizeText([size.x, size.y, size.z])}<span class="muted"> · ${plural(size.triangles, "triangle")}</span>` : sizeText(stats?.size_mm)}${pose ? html`<span class="muted stage-pose" id="stage-pose" title="The pose shown (Pose tab)"> · ${pose.anim} frame ${pose.frame}</span>` : null}</span>
         <span class="stage-tools">
-          ${seg("show-which", "Show", [["original", "Original"], ["enhanced", "Enhanced", result ? "The enhanced model" : "Make it first (Mesh or Displace tab)", !result]], which, setWhich)}
+          ${seg("show-which", "Show", [["original", "Original"], ["enhanced", "Enhanced", result ? "The enhanced model" : "Make it first (Mesh or Displace tab)", !result],
+            ["finished", "Finished", finished ? "The model made watertight, without its textures" : "Make it watertight first (Finish tab)", !finished],
+            ["pieces", "Pieces", cutting.pieces ? "The model cut into pieces" : "Cut it first (Cut tab)", !cutting.pieces]], which, setWhich)}
           ${seg("shading", "Shading", [["textured", "Textured", noTextures ? "No colour textures were found for this model" : "With the game's colour textures"], ["clay", "Clay"], ["wire", "Wireframe"]], view.shading, (v) => setView({ shading: v }))}
           <button type="button" class="ghost" id="edges-toggle" aria-pressed=${view.edges ? "true" : "false"} title="Show the triangles' sharp edges" onClick=${() => edges(!view.edges)}>Edges</button>
           ${seg("views", "View", [["iso", "3/4", "Three-quarter view"], ["top", "Top"], ["front", "Front"]], null, (v) => viewer.current?.view(v))}
@@ -360,9 +473,14 @@ function TexturesTab({ m, args, s, set, run, setRun, call, sendSettings, over, u
     } catch (e) { if (e.stopped) toast("Stopped upscaling"); else setError(msg(e)); }
   };
   if (!m.textures.length) {
+    const texNotes = m.notes.filter((n) => /textur|material|skin|\.tfc/i.test(n));
     return html`<div class="tab-pad" id="textures-tab"><p>No textures were found for this model.</p>
-      <p class="muted">Map pieces and some objects use textures kept elsewhere in the game. Add the folders that hold them under
-        <a href="#/settings">Settings › Texture folders</a>.</p></div>`;
+      <p class="muted">Map pieces and some objects use textures kept elsewhere in the game. Add the folders that hold them${" "}
+        under <a href="#/settings">Settings › Texture folders</a>.</p>
+      ${m.materials.some((mat) => mat.details.length) ? html`<section class="insp-section" id="material-trace"><h3>What each material points to</h3>
+        ${m.materials.map((mat, i) => html`<div class="mat-trace" key=${i}><b>${mat.name}</b>
+          ${mat.details.length ? html`<pre>${mat.details.join("\n")}</pre>` : html`<p class="muted">Nothing recorded.</p>`}</div>`)}</section>` : null}
+      ${texNotes.length ? html`<section class="insp-section" id="texture-notes"><h3>Notes</h3>${texNotes.map((n, i) => html`<p class="insp-note" key=${i}>${n}</p>`)}</section>` : null}</div>`;
   }
   return html`<div class="tab-pad" id="textures-tab">
     <div class="tex-grid" role="listbox" aria-label="Textures">${m.textures.map((t) => html`<button type="button" key=${t.key} class="tex-tile" role="option"
@@ -518,13 +636,14 @@ function TextureCompare({ m, args, map, sendSettings }) {
 /** Pose: hold the model at a frame of one of its animations. The pose shown is what Generate and Export use. */
 function PoseTab({ m, pose, setPose, busy, call }) {
   const [list, setList] = useState(null); // the animations, once asked for
+  const [note, setNote] = useState(null); // where the importer found them, when it says
   const [error, setError] = useState(null);
   const [filter, setFilter] = useState("");
   const [playing, setPlaying] = useState(false);
   const [draft, setDraft] = useState(null); // the frame box while it is being typed in
   useEffect(() => {
     let live = true;
-    call("model_animations", { sid: m.sid }).then((r) => { if (live) setList(r.animations); }, (e) => { if (live) setError(msg(e)); });
+    call("model_animations", { sid: m.sid }).then((r) => { if (live) { setList(r.animations); setNote(r.note || null); } }, (e) => { if (live) setError(msg(e)); });
     return () => { live = false; };
   }, [m.sid]);
   const anim = pose && list ? list.find((a) => a.name === pose.anim) : null;
@@ -551,7 +670,7 @@ function PoseTab({ m, pose, setPose, busy, call }) {
       <input type="search" id="pose-filter" placeholder=${`Find among ${plural(list.length, "animation")}…`} value=${filter} onInput=${(e) => setFilter(e.target.value)} aria-label="Find an animation" />
       <select id="pose-anim" size="8" value=${pose?.anim || ""} onChange=${(e) => choose(e.target.value)} aria-label="Animation">
         ${shown.map((a) => html`<option key=${a.name} value=${a.name} disabled=${!a.frames} title=${a.source || ""}>${a.name}${a.frames ? ` · ${plural(a.frames, "frame")}, ${a.duration.toFixed(2)} s` : " · can't be read"}</option>`)}</select>
-      <small class="muted">${readable.length < list.length ? `${list.length - readable.length} couldn't be read. ` : ""}Animations come from the model's anibnd file (${m.name}.anibnd), read from beside the model.</small>
+      <small class="muted">${readable.length < list.length ? `${list.length - readable.length} couldn't be read. ` : ""}${note || `Animations come from the model's anibnd file (${m.name}.anibnd), read from beside the model.`}</small>
     </section>` : null}
     ${anim ? html`<section class="insp-section" id="pose-frame-section"><h3>Frame</h3>
       <input type="range" id="pose-frame" min="0" max=${last} step="1" value=${pose.frame} onInput=${(e) => { setPlaying(false); goTo(parseInt(e.target.value, 10)); }} aria-label="Frame" />
@@ -714,13 +833,226 @@ function DisplaceTab({ m, args, stats, s, set, run, setRun, call, sendSettings, 
   </div>`;
 }
 
+/** Finish: post-processing for printing. Make watertight wraps the whole model into one solid: every part made
+ *  solid and joined, the surfaces inside one another removed, hollows filled, and gaps and loose bits as asked. */
+function FinishTab({ m, args, stats, run, setRun, result, finished, which, setWhich, finishModel }) {
+  const saved = useStore(ui, (st) => st.finishOpts);
+  const o = { ...FINISH, ...(saved || {}) };
+  const setOpts = (patch) => setPref({ finishOpts: { ...o, ...patch } });
+  const [error, setError] = useState(null);
+  const from = o.from === "enhanced" && !result ? "original" : o.from;
+  const request = { from, watertight: { sheet_mm: o.sheet_mm, fill_hollows: o.fill_hollows, close_gaps_mm: o.close_gaps ? o.close_gaps_mm : 0,
+    loose_percent: o.remove_loose ? o.loose_percent : 0 } };
+  const stale = finished?.request && finished.request !== JSON.stringify(request);
+  const go = async () => {
+    setError(null);
+    try {
+      const r = await finishModel(request);
+      toast(r.kept ? "Made watertight with these settings already: shown" : "Made watertight");
+    } catch (e) { if (e.stopped) toast("Stopped making it watertight"); else setError(msg(e)); }
+  };
+  const st = finished?.stats;
+  return html`<div class="tab-pad" id="finish-tab">
+    <section class="insp-section"><h3>Make watertight</h3>
+      <p class="muted">Wraps the whole model into one solid for printing. Game models are built from parts that cross (arms pushed into sleeves,
+        armour over a body) and open surfaces (capes, cloth): every part is made solid and they are joined, so the surfaces inside one another
+        are removed and only the outside stays, exactly as it was.</p>
+      <div class="field-block"><span>Model</span><div class="seg" role="group" aria-label="Which model to make watertight" id="finish-from">
+        <button type="button" aria-pressed=${from === "enhanced" ? "true" : "false"} disabled=${!result} title=${result ? "The enhanced model (Mesh or Displace tab)" : "Make it first (Mesh or Displace tab)"} onClick=${() => setOpts({ from: "enhanced" })}>Enhanced</button>
+        <button type="button" aria-pressed=${from === "original" ? "true" : "false"} onClick=${() => setOpts({ from: "original" })}>Original</button></div></div>
+      <label class="check-row"><input type="checkbox" id="finish-hollows" checked=${o.fill_hollows} onChange=${(e) => setOpts({ fill_hollows: e.target.checked })} />
+        <span>Fill hollows sealed inside<small class="muted">Space shut in by the parts (under a closed coat or helmet) is filled, so the model is solid all through.</small></span></label>
+      <label class="check-row"><input type="checkbox" id="finish-gaps" checked=${o.close_gaps} onChange=${(e) => setOpts({ close_gaps: e.target.checked })} />
+        <span>Close narrow gaps<small class="muted">Bridges slits between parts (a sleeve around an arm) and grooves up to this wide. Takes longer; the bridges sit just under the surface elsewhere.</small></span></label>
+      ${o.close_gaps ? html`<${NumberField} id="finish-gap-mm" label="Gaps up to" value=${o.close_gaps_mm} step=${0.25} min=${0.1} max=${20} unit="mm"
+        title="The widest gap closed. Fine grooves in the model narrower than this are filled too, so keep it small." onChange=${(v) => setOpts({ close_gaps_mm: v })} />` : null}
+      <label class="check-row"><input type="checkbox" id="finish-loose" checked=${o.remove_loose} onChange=${(e) => setOpts({ remove_loose: e.target.checked })} />
+        <span>Remove loose bits<small class="muted">Separate bits that don't touch the model (a floating buckle, specks) and are smaller than this share of it.</small></span></label>
+      ${o.remove_loose ? html`<${NumberField} id="finish-loose-pct" label="Smaller than" value=${o.loose_percent} step=${0.5} min=${0.1} max=${100} unit="% of the volume"
+        onChange=${(v) => setOpts({ loose_percent: v })} />` : null}
+      <details class="more-settings"><summary>More settings</summary>
+        <${NumberField} id="finish-sheet" label="Open surfaces" value=${o.sheet_mm} step=${0.2} min=${0.2} max=${20} unit="mm thick"
+          title="Open surfaces (capes, single-sided cloth) have no inside; they are thickened to this, inwards." onChange=${(v) => setOpts({ sheet_mm: v })} />
+      </details>
+      <div class="insp-actions enhance-go"><button type="button" class="primary" id="finish-run" disabled=${!!run || !stats.triangles} onClick=${go}>${Icon.drop(15)} ${run?.kind === "finish" ? "Making it watertight…" : "Make watertight"}</button></div>
+      <${JobProgress} run=${run?.kind === "finish" ? run : null} setRun=${setRun} id="finish-progress" />
+      ${error ? html`<p class="warn-note" role="alert" id="finish-error">${error}</p>` : null}
+    </section>
+    ${finished ? html`<section class="insp-section" id="finish-result"><h3>Watertight</h3>
+      ${stale ? html`<p class="insp-note" id="finish-stale">Made with other settings than these: make it again to see the change.</p>` : null}
+      <ul class="ls-list kv-list" id="finish-stats">
+        <li><span>Triangles</span><span>${num(st.triangles)}<small class="muted"> from ${num(st.source_triangles)}</small></span></li>
+        <li><span>Volume</span><span>${st.volume_cm3 >= 10 ? num(st.volume_cm3) : st.volume_cm3.toFixed(2)} cm³</span></li>
+        <li><span>Size</span><span>${sizeText(st.size_mm)}</span></li>
+        <li><span>Separate pieces</span><span>${st.shells}</span></li></ul>
+      ${finished.notes.map((n, i) => html`<p class="insp-note" key=${i}>${n}</p>`)}
+      ${which !== "finished" ? html`<div class="insp-actions"><button type="button" class="ghost compact" id="finish-show" onClick=${() => setWhich("finished")}>Show it</button></div>` : null}
+      <p class="muted">Export and Cut can use it: choose Finished there. It has no textures, as it's for printing.</p>
+    </section>` : null}
+  </div>`;
+}
+
+const deg = (r) => (r * 180) / Math.PI;
+const rad = (d) => (d * Math.PI) / 180;
+const AXES = [["x", "Across X", [1, 0, 0]], ["y", "Across Y", [0, 1, 0]], ["z", "Across Z", [0, 0, 1]]];
+const jointName = (kind) => (JOINTS.find(([k]) => k === kind) || JOINTS[0])[1];
+/** Which way a cut faces, in words: across an axis, or tilted. */
+function facing(n) {
+  for (const [k, label, a] of AXES) if (Math.abs(Math.abs(n[0] * a[0] + n[1] * a[1] + n[2] * a[2]) - 1) < 1e-4) return label.toLowerCase();
+  return "tilted";
+}
+
+/** Cut: planes placed in the 3D view (dragged to slide them, the round handle dragged to tilt them, or a point
+ *  on the model clicked) split the model into watertight pieces, each cut with its own joint and clearance. */
+function CutTab({ m, args, stats, run, setRun, result, finished, which, setWhich, setOpen, cutModel, cuts, setCuts, cutSel, setCutSel, pieces, explode, setExplode, bounds, viewer }) {
+  useEffect(() => { setOpen(true); return () => setOpen(false); }, []);
+  const saved = useStore(ui, (st) => st.cutOpts);
+  const o = { ...CUT, ...(saved || {}), joint: { ...JOINT, ...(saved?.joint || {}) } };
+  const setOpts = (patch) => setPref({ cutOpts: { ...o, ...patch } });
+  const [error, setError] = useState(null);
+  const [placing, setPlacing] = useState(false);
+  const from = (o.from === "enhanced" && !result) || (o.from === "finished" && !finished) ? "original" : o.from;
+  const lo = bounds?.min || [0, 0, 0], hi = bounds?.max || [0, 0, 0];
+  const centre = lo.map((v, i) => (v + hi[i]) / 2);
+  const sel = cuts.find((c) => c.id === cutSel) || null;
+  const offsetOf = (c) => c.normal.reduce((a, x, i) => a + x * (c.point[i] - centre[i]), 0);
+  const halfOf = (n) => 0.5 * n.reduce((a, x, i) => a + Math.abs(x) * (hi[i] - lo[i]), 0);
+  const put = (n, off) => ({ normal: n, point: centre.map((v, i) => v + n[i] * off) });
+  const update = (id, patch) => setCuts(cuts.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  const add = (n) => {
+    const id = Math.max(0, ...cuts.map((c) => c.id)) + 1;
+    setCuts([...cuts, { id, ...put(n, 0), joint: { ...o.joint } }]);
+    setCutSel(id);
+  };
+  const facingMe = () => {
+    return viewer.current?.facingNormal() || [0, -1, 0];
+  };
+  const remove = (id) => {
+    const rest = cuts.filter((c) => c.id !== id);
+    setCuts(rest);
+    if (cutSel === id) setCutSel(rest[rest.length - 1]?.id ?? null);
+  };
+  const setJoint = (patch) => {
+    if (!sel) return;
+    const joint = { ...JOINT, ...sel.joint, ...patch };
+    update(sel.id, { joint });
+    setOpts({ joint }); // new cuts take the joint set last
+  };
+  const placeByClick = () => {
+    const v = viewer.current;
+    if (!v || !sel) return;
+    if (placing) { v.placing = null; setPlacing(false); return; }
+    setPlacing(true);
+    if (which === "pieces") setWhich(result ? "enhanced" : "original");
+    v.placing = (point) => {
+      setPlacing(false);
+      const off = sel.normal.reduce((a, x, i) => a + x * (point[i] - centre[i]), 0);
+      update(sel.id, put(sel.normal, off));
+    };
+  };
+  useEffect(() => () => { if (viewer.current) viewer.current.placing = null; }, []);
+  const request = { from, cut: { cuts: cuts.map((c) => ({ normal: c.normal, point: c.point, joint: { ...JOINT, ...c.joint } })), sheet_mm: o.sheet_mm, wall_mm: o.wall_mm } };
+  const stale = pieces?.request && pieces.request !== JSON.stringify(request);
+  const go = async () => {
+    setError(null);
+    try {
+      const r = await cutModel(request);
+      toast(r.kept ? "Cut with these planes already: shown" : `Cut into ${plural(r.pieces.length, "piece")}`);
+    } catch (e) { if (e.stopped) toast("Stopped cutting"); else setError(msg(e)); }
+  };
+  const j = sel ? { ...JOINT, ...sel.joint } : null;
+  const theta = sel ? deg(Math.acos(Math.max(-1, Math.min(1, sel.normal[2])))) : 0;
+  const phi = sel ? deg(Math.atan2(sel.normal[1], sel.normal[0])) : 0;
+  const turnTo = (t, p) => {
+    const n = [Math.sin(rad(t)) * Math.cos(rad(p)), Math.sin(rad(t)) * Math.sin(rad(p)), Math.cos(rad(t))];
+    update(sel.id, put(n, offsetOf(sel)));
+  };
+  const half = sel ? halfOf(sel.normal) : 0;
+  const slide = (v) => update(sel.id, put(sel.normal, Math.max(-half, Math.min(half, v))));
+  const stepOf = Math.max(0.1, Math.round(half / 100 * 10) / 10);
+  return html`<div class="tab-pad" id="cut-tab">
+    <section class="insp-section"><h3>Cut into pieces</h3>
+      <p class="muted">Split the model with planes so it prints in pieces that fit your printer, joined by pegs, dowels, magnets or a key.
+        Drag a plane in the 3D view to slide it, drag its round handle to tilt it, or click a point on the model to put it there. Each piece comes
+        out watertight.</p>
+      <div class="field-block"><span>Cut</span><div class="seg" role="group" aria-label="Which model to cut" id="cut-from">
+        <button type="button" aria-pressed=${from === "enhanced" ? "true" : "false"} disabled=${!result} title=${result ? "The enhanced model (Mesh or Displace tab)" : "Make it first (Mesh or Displace tab)"} onClick=${() => setOpts({ from: "enhanced" })}>Enhanced</button>
+        <button type="button" aria-pressed=${from === "original" ? "true" : "false"} onClick=${() => setOpts({ from: "original" })}>Original</button>
+        <button type="button" aria-pressed=${from === "finished" ? "true" : "false"} disabled=${!finished} title=${finished ? "The model made watertight (Finish tab)" : "Make it watertight first (Finish tab)"} onClick=${() => setOpts({ from: "finished" })}>Finished</button></div></div>
+      <div class="field-block"><span>Add a cut</span><div class="field-row cut-add" id="cut-add">
+        ${AXES.map(([k, label, n]) => html`<button type="button" class="ghost compact" key=${k} data-axis=${k} title=${`A plane ${label.toLowerCase()}, through the middle of the model`} disabled=${!bounds} onClick=${() => add(n)}>${Icon.plus(13)} ${label}</button>`)}
+        <button type="button" class="ghost compact" data-axis="view" title="A plane facing you, as the 3D view is turned now" disabled=${!bounds} onClick=${() => add(facingMe())}>${Icon.plus(13)} Facing me</button></div></div>
+      ${cuts.length ? html`<ul class="ls-list cut-list" id="cut-list" role="listbox" aria-label="Cuts">${cuts.map((c, i) => html`<li key=${c.id} data-cut=${c.id} role="option" aria-selected=${c.id === cutSel ? "true" : "false"}
+          class=${c.id === cutSel ? "selected" : ""} onClick=${() => setCutSel(c.id)}>
+        <span>Cut ${i + 1}<small class="muted">${facing(c.normal)} · ${mm(offsetOf(c))} mm from the middle · ${jointName(c.joint?.kind)}${c.joint?.kind !== "flat" ? `, ${(c.joint?.clearance_mm ?? JOINT.clearance_mm).toFixed(2)} mm clearance` : ""}</small></span>
+        <button type="button" class="ghost compact" title="Remove this cut" aria-label=${`Remove cut ${i + 1}`} onClick=${(e) => { e.stopPropagation(); remove(c.id); }}>${Icon.trash(14)}</button></li>`)}</ul>`
+        : html`<p class="muted" id="cut-none">No cuts yet. Add one, then move it where the model should come apart.</p>`}
+    </section>
+    ${sel ? html`<section class="insp-section" id="cut-edit"><h3>Cut ${cuts.indexOf(sel) + 1}</h3>
+      <label class="field-block" title="Slide the plane along its direction (or drag it in the 3D view)"><span>Position</span>
+        <span class="field-row"><input type="range" id="cut-position" min=${-half} max=${half} step=${stepOf} value=${offsetOf(sel)} onInput=${(e) => slide(parseFloat(e.target.value))} />
+          <input type="number" id="cut-position-mm" class="compact-number" step=${stepOf} value=${Number(offsetOf(sel).toFixed(2))} onChange=${(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) slide(v); }} /><span class="muted unit">mm</span></span></label>
+      <div class="field-block"><span>Direction</span><div class="field-row">
+        ${AXES.map(([k, label, n]) => html`<button type="button" class="ghost compact" key=${k} data-dir=${k} aria-pressed=${facing(sel.normal) === label.toLowerCase() ? "true" : "false"} onClick=${() => update(sel.id, put(n, 0))}>${label.slice(-1)}</button>`)}
+        <button type="button" class="ghost compact" data-dir="view" title="Face the plane towards you, as the 3D view is turned now" onClick=${() => update(sel.id, put(facingMe(), 0))}>Facing me</button>
+        <button type="button" class="ghost compact" id="cut-place" aria-pressed=${placing ? "true" : "false"} title="Click a point on the model to move the plane through it" onClick=${placeByClick}>${placing ? "Click the model…" : "Pick a point"}</button></div></div>
+      <label class="field-block" title="How far the plane leans from lying flat (0°) to standing upright (90°); or drag its round handle in the 3D view"><span>Tilt</span>
+        <span class="field-row"><input type="range" id="cut-tilt" min="0" max="180" step="1" value=${theta} onInput=${(e) => turnTo(parseFloat(e.target.value), phi)} /><span class="muted unit">${Math.round(theta)}°</span></span></label>
+      <label class="field-block" title="Which way the plane faces around the vertical"><span>Turn</span>
+        <span class="field-row"><input type="range" id="cut-turn" min="-180" max="180" step="1" value=${phi} disabled=${theta < 0.5 || theta > 179.5} onInput=${(e) => turnTo(theta, parseFloat(e.target.value))} /><span class="muted unit">${Math.round(phi)}°</span></span></label>
+      <div class="field-block"><span>Joint</span><div class="seg joint-seg" role="group" aria-label="Joint" id="cut-joint">${JOINTS.map(([k, label, tip]) => html`<button type="button" key=${k} data-value=${k} title=${tip}
+        aria-pressed=${j.kind === k ? "true" : "false"} onClick=${() => setJoint({ kind: k })}>${label}</button>`)}</div>
+        <small class="muted" id="cut-joint-about">${(JOINTS.find(([k]) => k === j.kind) || JOINTS[0])[2]}</small></div>
+      ${j.kind !== "flat" ? html`<${NumberField} id="cut-clearance" label="Clearance" value=${j.clearance_mm} step=${0.05} min=${0} max=${2} unit="mm"
+          title="The gap left on each side between parts that fit together: 0.1 to 0.2 mm for a tight fit on a well-tuned printer, 0.3 mm or more for resin shrinkage or a loose fit." onChange=${(v) => setJoint({ clearance_mm: v })} />` : null}
+      ${j.kind === "pegs" || j.kind === "dowels" ? html`<${NumberField} id="cut-diameter" label=${j.kind === "pegs" ? "Peg diameter" : "Dowel diameter"} value=${j.diameter_mm} step=${0.5} min=${0.5} max=${50} unit="mm"
+          title=${j.kind === "dowels" ? "1.75 mm takes filament as dowels; 3 or 5 mm suits metal pins" : "The holes are this plus twice the clearance"} onChange=${(v) => setJoint({ diameter_mm: v })} />` : null}
+      ${j.kind === "magnets" ? html`<${NumberField} id="cut-magnet-d" label="Magnet diameter" value=${j.magnet_diameter_mm} step=${0.5} min=${0.5} max=${50} unit="mm" onChange=${(v) => setJoint({ magnet_diameter_mm: v })} />
+        <${NumberField} id="cut-magnet-h" label="Magnet thickness" value=${j.magnet_height_mm} step=${0.5} min=${0.2} max=${50} unit="mm" title="One magnet goes in each side" onChange=${(v) => setJoint({ magnet_height_mm: v })} />` : null}
+      ${j.kind === "pegs" || j.kind === "dowels" || j.kind === "key" ? html`<${NumberField} id="cut-depth" label=${j.kind === "key" ? "Key height" : "Depth into each piece"} value=${j.depth_mm} step=${0.5} min=${0.5} max=${100} unit="mm"
+          title="Made shorter where a piece is too thin for it" onChange=${(v) => setJoint({ depth_mm: v })} />` : null}
+      ${j.kind === "pegs" || j.kind === "dowels" || j.kind === "magnets" ? html`<label class="field-block" title="How many on each separate area of the cut face. Automatic puts two where they fit (so the pieces can't turn), else one."><span>How many</span>
+        <select id="cut-count" value=${String(j.count)} onChange=${(e) => setJoint({ count: Number(e.target.value) })}>
+          <option value="0">Automatic</option>${[1, 2, 3, 4].map((n) => html`<option key=${n} value=${String(n)}>${n}</option>`)}</select></label>` : null}
+      ${j.kind === "pegs" || j.kind === "key" ? html`<label class="check-row"><input type="checkbox" id="cut-flip" checked=${j.flip} onChange=${(e) => setJoint({ flip: e.target.checked })} />
+        <span>${j.kind === "pegs" ? "Pegs" : "The tongue"} on the other side<small class="muted">Normally on the side the round handle points to.</small></span></label>` : null}
+      ${j.kind === "dowels" ? html`<label class="check-row"><input type="checkbox" id="cut-print-dowels" checked=${j.print_dowels} onChange=${(e) => setJoint({ print_dowels: e.target.checked })} />
+        <span>Make the dowels as pieces too<small class="muted">Off: holes only, for bought pins or filament.</small></span></label>` : null}
+      ${cuts.length > 1 ? html`<div class="insp-actions"><button type="button" class="ghost compact" id="cut-joint-all" onClick=${() => setCuts(cuts.map((c) => ({ ...c, joint: { ...j } })))}>Use this joint for every cut</button></div>` : null}
+    </section>` : null}
+    <section class="insp-section">
+      <details class="more-settings"><summary>More settings</summary>
+        <${NumberField} id="cut-sheet" label="Open surfaces" value=${o.sheet_mm} step=${0.2} min=${0.2} max=${20} unit="mm thick"
+          title="Game models have open surfaces (capes, single-sided cloth) with no inside; they are thickened to this, inwards, before cutting." onChange=${(v) => setOpts({ sheet_mm: v })} />
+        <${NumberField} id="cut-wall" label="Wall around joints" value=${o.wall_mm} step=${0.2} min=${0.4} max=${20} unit="mm"
+          title="The least material kept between a peg, hole, pocket or key and the outside. Where there's no room for it the cut is left flat there." onChange=${(v) => setOpts({ wall_mm: v })} />
+      </details>
+      <div class="insp-actions enhance-go"><button type="button" class="primary" id="cut-run" disabled=${!!run || !cuts.length || !stats.triangles} onClick=${go}>${Icon.scissors(15)} ${run?.kind === "cut" ? "Cutting…" : cuts.length ? `Cut with ${plural(cuts.length, "plane")}` : "Cut"}</button></div>
+      <${JobProgress} run=${run?.kind === "cut" ? run : null} setRun=${setRun} id="cut-progress" />
+      ${error ? html`<p class="warn-note" role="alert" id="cut-error">${error}</p>` : null}
+    </section>
+    ${pieces ? html`<section class="insp-section" id="cut-result"><h3>${plural(pieces.pieces.length, "piece")}</h3>
+      ${stale ? html`<p class="insp-note" id="cut-stale">Cut with other planes or settings than these: cut again to see the change.</p>` : null}
+      <label class="field-block" title="Show the pieces apart in the 3D view (Show › Pieces); it doesn't change them"><span>Spread apart</span>
+        <input type="range" id="cut-explode" min="0" max="1" step="0.01" value=${explode} onInput=${(e) => { setExplode(parseFloat(e.target.value)); if (which !== "pieces") setWhich("pieces"); }} /></label>
+      <ul class="ls-list piece-list" id="piece-list">${pieces.pieces.map((p) => html`<li key=${p.index} data-piece=${p.index} data-kind=${p.kind}>
+        <span><i class="piece-swatch" style=${{ background: PIECE_COLORS[p.index % PIECE_COLORS.length] }}></i>${p.name}<small class="muted">${sizeText(p.size_mm)} · ${num(p.triangles)} triangles</small></span>
+        <span class="muted">${p.volume_cm3 >= 10 ? p.volume_cm3.toFixed(0) : p.volume_cm3.toFixed(1)} cm³</span></li>`)}</ul>
+      ${pieces.notes.map((n, i) => html`<p class="insp-note" key=${i}>${n}</p>`)}
+      <p class="muted">Export writes each piece to its own file, laid on a cut face for printing.</p>
+    </section>` : null}
+  </div>`;
+}
+
 /** Export: the enhanced (or original) model as STL, OBJ, PLY or GLB, in a folder. */
-function ExportTab({ m, args, result, which: shownWhich, pose, call }) {
+function ExportTab({ m, args, result, finished, which: shownWhich, pose, call, pieces }) {
   const saved = useStore(ui, (s) => s.exportOpts);
   const o = { ...EXPORT, ...(saved || {}) };
   const set = (patch) => setPref({ exportOpts: { ...o, ...patch } });
-  const [which, setWhich] = useState(result ? "enhanced" : "original");
-  useLayoutEffect(() => { setWhich(result ? shownWhich : "original"); }, [result?.rev]);
+  const fallbackWhich = (w) => ((w === "pieces" && !pieces) || (w === "finished" && !finished) ? (result ? "enhanced" : "original") : w === "enhanced" && !result ? "original" : w);
+  const [which, setWhich] = useState(() => fallbackWhich(shownWhich));
+  useLayoutEffect(() => { setWhich(fallbackWhich(shownWhich)); }, [result?.rev, pieces?.id, finished?.id]);
+  const cutOpts = { ...CUT, ...(useStore(ui, (s) => s.cutOpts) || {}) };
   const [name, setName] = useState("");
   const [folder, setFolder] = useState(o.folder);
   const [fallback, setFallback] = useState("");
@@ -729,15 +1061,17 @@ function ExportTab({ m, args, result, which: shownWhich, pose, call }) {
   const [error, setError] = useState(null);
   useEffect(() => { api("settings_get").then((r) => setFallback(r.export_dir), () => {}); }, []);
   const base = variantName(m.variant) || m.name;
-  const auto = `${base}${poseSuffix(pose)}${which === "enhanced" ? "_enhanced" : ""}`;
+  const auto = `${base}${poseSuffix(pose)}${which === "enhanced" ? "_enhanced" : which === "finished" ? "_watertight" : ""}`;
+  const many = which === "pieces";
   const formats = info().formats || [];
   const textured = o.format === ".obj" || o.format === ".glb";
   const browse = async () => { const p = await pickFolder("Export to", folder || fallback); if (p) { setFolder(p); set({ folder: p }); } };
   const go = async () => {
     setBusy(true); setError(null); setDone(null);
     try {
-      const { job } = await call("export", { sid: m.sid, which, ...args.json, format: o.format, units: o.units, textures: o.textures, folder: folder || null, name: name.trim() || auto });
-      const r = await followJob(job, `Exporting ${name.trim() || auto}${o.format}`);
+      const { job } = await call("export", { sid: m.sid, which, ...args.json, format: o.format, units: o.units, textures: o.textures, folder: folder || null, name: name.trim() || auto,
+        lay_flat: cutOpts.lay_flat });
+      const r = await followJob(job, many ? `Exporting ${plural(pieces.pieces.length, "piece")}` : `Exporting ${name.trim() || auto}${o.format}`);
       setDone(r);
     } catch (e) { if (e.stopped) toast("Stopped exporting"); else setError(msg(e)); }
     setBusy(false);
@@ -745,23 +1079,28 @@ function ExportTab({ m, args, result, which: shownWhich, pose, call }) {
   return html`<div class="tab-pad" id="export-tab">
     <div class="field-block"><span>Model</span><div class="seg" role="group" aria-label="Which model" id="export-which">
       <button type="button" aria-pressed=${which === "enhanced" ? "true" : "false"} disabled=${!result} title=${result ? "The enhanced model" : "Make it first (Mesh or Displace tab)"} onClick=${() => setWhich("enhanced")}>Enhanced</button>
-      <button type="button" aria-pressed=${which === "original" ? "true" : "false"} onClick=${() => setWhich("original")}>Original</button></div>
+      <button type="button" aria-pressed=${which === "original" ? "true" : "false"} onClick=${() => setWhich("original")}>Original</button>
+      <button type="button" aria-pressed=${which === "finished" ? "true" : "false"} disabled=${!finished} title=${finished ? "The model made watertight (Finish tab)" : "Make it watertight first (Finish tab)"} onClick=${() => setWhich("finished")}>Finished</button>
+      <button type="button" aria-pressed=${many ? "true" : "false"} disabled=${!pieces} title=${pieces ? "Each piece of the cut model in its own file" : "Cut it first (Cut tab)"} onClick=${() => setWhich("pieces")}>Pieces</button></div>
       ${!result ? html`<small class="muted">Make it first (Mesh or Displace tab) to export the detailed version.</small>` : null}</div>
     <label class="field-block"><span>Format</span><select id="export-format" value=${o.format} onChange=${(e) => set({ format: e.target.value })}>
       ${formats.map((f) => html`<option key=${f.ext} value=${f.ext}>${f.label} (${f.ext})</option>`)}</select></label>
     <label class="field-block"><span>Units</span><select id="export-units" value=${o.units} onChange=${(e) => set({ units: e.target.value })}>
       ${UNITS.map(([k, l]) => html`<option key=${k} value=${k}>${l}</option>`)}</select></label>
-    <label class="check-row"><input type="checkbox" id="export-textures" checked=${o.textures && textured} disabled=${!textured} onChange=${(e) => set({ textures: e.target.checked })} />
-      <span>Include the colour textures${textured ? "" : " (OBJ and GLB only)"}</span></label>
+    ${many ? html`<label class="check-row" title="Each piece turned so its biggest flat cut face (without pegs or a tongue on it) lies on the bed; dowels stand on end">
+      <input type="checkbox" id="export-lay-flat" checked=${cutOpts.lay_flat} onChange=${(e) => setPref({ cutOpts: { ...cutOpts, lay_flat: e.target.checked } })} />
+      <span>Lay each piece on a cut face<small class="muted">Off: the pieces keep their place in the model.</small></span></label>`
+      : html`<label class="check-row"><input type="checkbox" id="export-textures" checked=${o.textures && textured && which !== "finished"} disabled=${!textured || which === "finished"} onChange=${(e) => set({ textures: e.target.checked })} />
+      <span>Include the colour textures${textured ? "" : " (OBJ and GLB only)"}</span></label>`}
     <label class="field-block"><span>Name</span><input type="text" id="export-name" value=${name} placeholder=${auto} onInput=${(e) => setName(e.target.value)} /></label>
     <div class="field-block"><span>Folder</span><div class="field-row">
       <input type="text" id="export-folder" value=${folder} placeholder=${fallback} onInput=${(e) => setFolder(e.target.value)} onChange=${(e) => set({ folder: e.target.value.trim() })} />
       ${info().dialogs ? html`<button type="button" class="ghost" id="export-browse" onClick=${browse}>Browse…</button>` : null}</div></div>
     <div class="insp-actions"><button type="button" class="primary" id="export-run" disabled=${busy} onClick=${go}>${Icon.download(15)} ${busy ? "Exporting…" : "Export"}</button></div>
     ${error ? html`<p class="warn-note" role="alert" id="export-error">${error}</p>` : null}
-    ${done ? html`<div class="export-done" id="export-done" role="status"><p><b>Saved</b> ${done.path.split(/[\\/]/).pop()} <span class="muted">· ${bytesText(done.bytes)}</span></p>
+    ${done ? html`<div class="export-done" id="export-done" role="status"><p><b>Saved</b> ${done.files ? `${plural(done.files.length, "file")} in ${done.path.split(/[\\/]/).pop()}` : done.path.split(/[\\/]/).pop()} <span class="muted">· ${bytesText(done.bytes)}</span></p>
       <p class="note-path muted">${done.path}</p>
       <div class="insp-actions"><button type="button" class="ghost" onClick=${() => showInFolder(done.path)}>${Icon.folder(14)} Show in folder</button></div></div>` : null}
-    <p class="muted export-note">STL and PLY are written Z-up, as slicers expect; OBJ and GLB Y-up. Game models often aren't watertight, so check them in your slicer before printing.</p>
+    <p class="muted export-note">STL and PLY are written Z-up, as slicers expect; OBJ and GLB Y-up. Game models often aren't watertight: export the Finished model (Finish tab) or the pieces to print, or check them in your slicer.</p>
   </div>`;
 }

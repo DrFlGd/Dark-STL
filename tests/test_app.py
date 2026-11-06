@@ -7,7 +7,11 @@ import time
 from pathlib import Path
 
 import numpy as np
+import struct
+
 import pytest
+
+import darkstl
 
 from darkstl.app.config import Config
 from darkstl.app.meshpack import pack_mesh, unpack_mesh
@@ -61,7 +65,7 @@ def test_add_folder_lists_the_game(home, weapon_dir):  # noqa: F811
     (game,) = ov["games"]
     assert game["name"] == "Dark Souls III"
     assert [c["name"] for c in game["categories"]] == ["Weapons", "Armor", "Characters"]
-    assert game["folders"] == [{"path": str(weapon_dir), "count": 4, "notes": [], "missing": False, "collected": False}]
+    assert game["folders"] == [{"path": str(weapon_dir), "count": 4, "notes": [], "missing": False, "collected": False, "packed": None}]
     # the low-detail copy is left out unless asked for
     assert s.call("overview", {"lod": True})["total"] == 5
     weapons = s.call("models_query", {"game": "Dark Souls III", "category": "Weapons"})
@@ -82,6 +86,50 @@ def test_folders_are_kept_between_runs(service, home, weapon_dir):  # noqa: F811
     assert not again.call("app_info", {})["first_run"]
     wait(again, again.load_folders().id)
     assert again.call("overview", {})["total"] == 4
+
+    # an unchanged folder isn't scanned again at the next start: its last scan is used as it is
+    import threading
+
+    from darkstl import library as library_mod
+
+    scans = []
+    real = library_mod.Library.add_root
+    library_mod.Library.add_root = lambda self, *a, **k: scans.append(a) or real(self, *a, **k)
+    try:
+        unchanged = make_service(home)
+        wait(unchanged, unchanged.load_folders().id)
+    finally:
+        library_mod.Library.add_root = real
+    assert scans == [] and unchanged.call("overview", {})["total"] == 4
+
+    # a folder that changed is: the library is listed from the last scan at once, while it's scanned again
+    (weapon_dir / "readme.txt").write_text("a file added since")
+
+    release, scanning = threading.Event(), threading.Event()
+    real = library_mod.Library.add_root
+
+    def slow(self, *a, **k):
+        scanning.set()
+        release.wait(30)
+        return real(self, *a, **k)
+
+    third = make_service(home)
+    library_mod.Library.add_root = slow
+    try:
+        job = third.load_folders()
+        assert scanning.wait(30)
+        assert third.call("overview", {})["total"] == 4 and third.call("overview", {})["scanning"]
+        opened = third.call("models_query", {"game": "Dark Souls III"})["items"][0]["id"]
+        assert third.call("model_open", {"id": opened})["sid"]
+    finally:
+        release.set()
+        library_mod.Library.add_root = real
+    wait(third, job.id)
+    assert third.call("overview", {})["total"] == 4
+    # a snapshot from another version, or of another game, is not used
+    assert library_mod.Snapshot.load(third.snapshots, weapon_dir, "Dark Souls III", "0.0.0") is None
+    assert library_mod.Snapshot.load(third.snapshots, weapon_dir, "Elden Ring", darkstl.__version__) is None
+    assert library_mod.Snapshot.load(third.snapshots, weapon_dir, "Dark Souls III", darkstl.__version__) is not None
 
     again.call("folder_set_game", {"path": str(weapon_dir), "game": "My DS3"})
     assert [g["name"] for g in again.call("overview", {})["games"]] == ["My DS3"]
@@ -338,6 +386,24 @@ def test_settings_round_trip(home, tmp_path):
     assert make_service(home).call("prefs_get", {}) == {"ds-ui": {"theme": "night"}}
     with pytest.raises(AppError, match="Unknown command"):
         s.call("nothing_like_this", {})
+
+
+def test_unreal_keys_and_type_mappings_settings(home, tmp_path):
+    s = make_service(home)
+    with pytest.raises(AppError):
+        s.call("settings_set", {"unreal_keys": "0x1234"})
+    key = "0x" + "ab" * 32
+    r = s.call("settings_set", {"unreal_keys": key + "  # Wonderlands"})
+    assert r["unreal_keys"].startswith(key) and (home / "unreal-keys.txt").is_file()
+    bad = tmp_path / "bad.usmap"
+    bad.write_bytes(b"nope")
+    with pytest.raises(AppError):
+        s.call("settings_set", {"usmap_add": str(bad)})
+    good = tmp_path / "BL4.usmap"
+    good.write_bytes(struct.pack("<HBiBII", 0x30C4, 3, 0, 0, 12, 12) + struct.pack("<III", 0, 0, 0))
+    r = s.call("settings_set", {"usmap_add": str(good)})
+    assert r["usmaps"] == ["BL4.usmap"]
+    assert s.call("settings_set", {"usmap_remove": "BL4.usmap"})["usmaps"] == []
 
 
 def test_packed_mesh_splits_uv_seams_and_groups_materials():

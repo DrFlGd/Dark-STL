@@ -34,9 +34,22 @@
 .first-tips h2 { margin: 0; font-size: 16px; }
 .first-tips p { margin: 0; }
 
+/* the bar's place (crumbs and title) gives way once the search box is at its
+   narrowest; with flex-shrink below 1 and nothing else able to shrink, a long
+   title (Cyberpunk's depot names) pushed the bar past the window */
+.bar-place { flex: 0 1 auto; }
+.bar-search { flex-shrink: 1000; }
+.bar-place #mp-count { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-up a { min-width: 0; max-width: 18em; overflow: hidden; text-overflow: ellipsis; }
+
 /* a game's library */
 .card-file { display: block; min-width: 0; font-family: var(--font-mono); font-size: 11px; color: var(--graphite); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.group-chips { flex-wrap: wrap; overflow: visible; }
+.group-chips-wrap { display: flex; align-items: flex-start; gap: 6px; padding-right: 24px; }
+.group-chips { flex: 1; min-width: 0; flex-wrap: wrap; overflow: hidden; max-height: 66px; align-content: flex-start; }
+.group-chips-wrap.open .group-chips { max-height: min(30vh, 260px); overflow-y: auto; }
+.group-chips-wrap > .group-chips-more { flex: none; margin-top: 10px; white-space: nowrap; }
+.group-chips > .chip-btn { max-width: 200px; min-width: 0; }
+.chip-btn .chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 a.chip-btn { color: var(--ink); text-decoration: none; display: inline-flex; gap: 5px; align-items: baseline; }
 a.chip-btn:hover { border-color: var(--graphite); }
 a.chip-btn.on { background: var(--sel); }
@@ -75,6 +88,8 @@ a.chip-btn.on { background: var(--sel); }
 .insp-note { margin: 0; padding: 8px 10px; border-radius: var(--radius-s); background: var(--panel); border: 1px solid var(--steel-2); overflow-wrap: anywhere; }
 .file-info summary { cursor: pointer; font-size: 13px; color: var(--graphite); }
 .file-info pre { margin: 6px 0 0; padding: 8px; max-height: 260px; overflow: auto; font-size: 11.5px; line-height: 1.4; background: var(--panel); border-radius: var(--radius-s); white-space: pre-wrap; overflow-wrap: anywhere; }
+.mat-trace { margin: 8px 0 0; font-size: 13px; }
+.mat-trace pre { margin: 4px 0 0; padding: 8px; max-height: 200px; overflow: auto; font-size: 11.5px; line-height: 1.4; background: var(--panel); border-radius: var(--radius-s); white-space: pre-wrap; overflow-wrap: anywhere; }
 .stage-pose { font-weight: 400; }
 #pose-anim { width: 100%; font-family: var(--font-mono); font-size: 12.5px; }
 #pose-frame { width: 100%; }
@@ -149,3 +164,34 @@ a.chip-btn.on { background: var(--sel); }
 .compare-divider span:first-child { right: 6px; }
 .compare-divider span:last-child { left: 6px; }
 .compare-empty { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; text-align: center; padding: 12px; }
+
+/* Cut tab: the planes, each cut's joint, and the pieces made */
+.cut-add { flex-wrap: wrap; gap: 6px; }
+.cut-list li { cursor: pointer; }
+.cut-list li > span:first-child, .piece-list li > span:first-child { display: grid; }
+.cut-list li.selected { background: color-mix(in srgb, #e0913a 16%, transparent); box-shadow: inset 3px 0 0 #e0913a; }
+.cut-list small, .piece-list small { font-size: 11.5px; }
+#cut-edit .field-row { flex-wrap: wrap; gap: 6px; }
+#cut-edit input[type="range"] { flex: 1 1 120px; min-width: 0; }
+.compact-number { width: 84px; }
+.joint-seg { flex-wrap: wrap; }
+.joint-seg button { flex: 1 1 auto; }
+.piece-list li > span:first-child { grid-template-columns: auto 1fr; column-gap: 8px; align-items: center; }
+.piece-list li > span:first-child small { grid-column: 2; }
+.piece-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; grid-row: span 2; }
+#cut-explode { width: 100%; }
+#finish-stats li > span:last-child { flex: none; text-align: right; }
+
+/* Configure tab: a part per slot, presets, and the configuration's editor */
+.config-slot { display: grid; gap: 4px; margin-bottom: 10px; }
+.config-slot select, #preset-select { width: 100%; }
+.config-file { display: block; font-family: var(--font-mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.config-preset-form, .config-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+.config-preset-form input, .config-row input[type="text"], .config-row input[type="search"] { flex: 1 1 auto; min-width: 0; }
+.config-edit-option { border-left: 2px solid var(--line, #8884); padding: 2px 0 6px 8px; margin: 8px 0; display: grid; gap: 4px; }
+.config-vec { display: flex; gap: 4px; align-items: center; font-size: 12px; }
+.config-vec span:first-child { width: 34px; }
+.config-vec input { width: 64px; min-width: 0; }
+.part-results { max-height: 240px; overflow: auto; margin-top: 6px; }
+.part-result { width: 100%; text-align: left; justify-content: flex-start; }
+.config-tag { font-size: 11.5px; }

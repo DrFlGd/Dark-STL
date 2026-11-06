@@ -4,6 +4,8 @@ installed (pip install playwright && python -m playwright install chromium)."""
 
 import os
 from pathlib import Path
+from urllib.parse import quote
+
 
 import pytest
 
@@ -12,6 +14,7 @@ from darkstl.app.server import AppServer
 from darkstl.app.service import Service
 
 from test_pipeline import weapon_dir  # noqa: F401 - fixture
+from test_unpack import keypair, packed_ds3  # noqa: F401 - fixtures
 
 sync_api = pytest.importorskip("playwright.sync_api")
 
@@ -322,3 +325,303 @@ def test_previews_stay_shown_and_a_job_stops_from_the_status_bar(page, app, weap
     page.wait_for_selector("text=Stopped evening out", timeout=120000)
     assert page.locator("#mesh-error").count() == 0 and page.locator("#mesh-kept").count() == 0
     assert page.text_content("#mesh-run") == "Even out the vertices"
+
+
+def test_cut_a_model_into_pieces_with_joints_and_export_them(page, app, tmp_path):
+    pytest.importorskip("manifold3d")
+    from test_cut import figure_obj
+
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    path = figure_obj(tmp_path)
+    opened = app.service.call("model_open", {"path": str(path)})
+    page.goto(f"{app.url}#/model/{quote(opened['id'], safe='')}")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    page.click("#rail-cut")
+    page.wait_for_selector("#cut-none")
+    # the original is cut: nothing has been generated
+    assert page.get_attribute('#cut-from button:has-text("Enhanced")', "disabled") is not None
+    page.click('#cut-add [data-axis="z"]')
+    page.wait_for_selector('#cut-list li[data-cut="1"][aria-selected="true"]')
+    page.wait_for_function("window.__viewer.cutGroup.children.length === 1")  # drawn after the list shows
+    assert "across z · 0.00 mm from the middle · Pegs" in page.text_content("#cut-list")
+    # moved to the waist with the number box, then dragged in the 3D view a little way up
+    page.fill("#cut-position-mm", "-10")
+    page.press("#cut-position-mm", "Tab")
+    page.wait_for_selector("#cut-list :text('-10.00 mm from the middle')")
+    page.wait_for_timeout(400)  # the view settles (it eases to a stop)
+    corner = page.evaluate(PLANE_CORNER)
+    page.mouse.move(*corner)
+    page.mouse.down()
+    page.mouse.move(corner[0], corner[1] - 6, steps=4)
+    page.mouse.up()
+    page.wait_for_function("!document.querySelector('#cut-list').textContent.includes('-10.00 mm')")
+    page.fill("#cut-position-mm", "-12")
+    page.press("#cut-position-mm", "Tab")
+    # a second cut through the neck, with magnets and a looser clearance
+    page.click('#cut-add [data-axis="z"]')
+    page.fill("#cut-position-mm", "13")
+    page.press("#cut-position-mm", "Tab")
+    page.click('#cut-joint [data-value="magnets"]')
+    page.wait_for_selector("#cut-magnet-d")
+    page.fill("#cut-magnet-d", "5")
+    page.press("#cut-magnet-d", "Tab")
+    page.fill("#cut-clearance", "0.3")
+    page.press("#cut-clearance", "Tab")
+    page.wait_for_selector("#cut-list :text('Magnets, 0.30 mm clearance')")
+    page.wait_for_function("window.__viewer.cutGroup.children.length === 2")  # drawn after the list shows
+    if shots:
+        page.screenshot(path=os.path.join(shots, "cut-planes.png"))
+    page.click("#cut-run")
+    page.wait_for_selector("#cut-result", timeout=60000)
+    page.wait_for_selector("text=Cut into 3 pieces")
+    page.wait_for_selector('#show-which [data-value="pieces"][aria-pressed="true"]')
+    page.wait_for_selector("#stage-canvas:not([data-loading])")
+    assert page.locator("#piece-list li").count() == 3
+    page.wait_for_function("window.__viewer.mesh.children.length === 3")
+    page.wait_for_function("window.__viewer.cutGroup.children.length === 0")  # the planes aren't drawn over the pieces
+    page.fill("#cut-explode", "0.6")
+    page.dispatch_event("#cut-explode", "input")
+    assert page.evaluate("window.__viewer.mesh.children[0].position.length()") > 0
+    if shots:
+        page.screenshot(path=os.path.join(shots, "cut-pieces.png"))
+    # cutting again with the same planes is instant
+    page.click("#cut-run")
+    page.wait_for_selector("text=Cut with these planes already: shown")
+    # each piece in its own file
+    page.click("#rail-export")
+    page.wait_for_selector('#export-which button[aria-pressed="true"]:has-text("Pieces")')
+    page.fill("#export-folder", str(tmp_path / "out"))
+    page.press("#export-folder", "Tab")
+    page.click("#export-run")
+    page.wait_for_selector("#export-done", timeout=60000)
+    assert "3 files in figure_pieces" in page.text_content("#export-done")
+    files = sorted(p.name for p in (tmp_path / "out" / "figure_pieces").iterdir())
+    assert files == ["figure_piece1.stl", "figure_piece2.stl", "figure_piece3.stl"]
+    # the cuts are remembered for the model (in the settings, saved as they change)
+    for _ in range(100):
+        plans = (app.service.call("prefs_get", {}).get("ds-ui") or {}).get("cutPlans") or {}
+        if len(plans.get(opened["id"], [])) == 2:
+            break
+        page.wait_for_timeout(50)
+    page.reload()
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    page.wait_for_selector("#rail-cut")
+    if not page.locator("#cut-tab").count():  # (it may be open already: the tab last saved; clicking it would fold it)
+        page.click("#rail-cut")
+    page.wait_for_selector("#cut-list")
+    assert page.locator("#cut-list li").count() == 2
+
+
+def test_make_a_model_watertight_then_export_and_cut_it(page, app, tmp_path):
+    pytest.importorskip("manifold3d")
+    from test_cut import figure_obj
+
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    opened = app.service.call("model_open", {"path": str(figure_obj(tmp_path))})
+    page.goto(f"{app.url}#/model/{quote(opened['id'], safe='')}")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    assert page.get_attribute('#show-which [data-value="finished"]', "disabled") is not None
+    page.click("#rail-finish")
+    page.wait_for_selector("#finish-tab")
+    assert page.get_attribute('#finish-from button:has-text("Enhanced")', "disabled") is not None
+    assert page.is_checked("#finish-hollows") and not page.is_checked("#finish-gaps")
+    page.check("#finish-gaps")
+    page.wait_for_selector("#finish-gap-mm")
+    page.uncheck("#finish-gaps")
+    page.click("#finish-run")
+    page.wait_for_selector("#finish-result", timeout=60000)
+    page.wait_for_selector("text=Made watertight")
+    page.wait_for_selector('#show-which [data-value="finished"][aria-pressed="true"]')
+    page.wait_for_selector("#stage-canvas:not([data-loading])")
+    assert "3 parts joined into one" in page.text_content("#finish-result")
+    assert page.text_content("#finish-stats").count("1") >= 1
+    if shots:
+        page.screenshot(path=os.path.join(shots, "finish-tab.png"))
+    # other settings: shown as made with other ones until made again
+    page.check("#finish-loose")
+    page.wait_for_selector("#finish-stale")
+    page.uncheck("#finish-loose")
+    page.wait_for_selector("#finish-stale", state="detached")
+    # Export and Cut can use it
+    page.click("#rail-export")
+    page.wait_for_selector('#export-which button[aria-pressed="true"]:has-text("Finished")')
+    assert page.get_attribute("#export-name", "placeholder") == "figure_watertight"
+    page.fill("#export-folder", str(tmp_path / "out"))
+    page.press("#export-folder", "Tab")
+    page.click("#export-run")
+    page.wait_for_selector("#export-done", timeout=60000)
+    assert (tmp_path / "out" / "figure_watertight.stl").exists()
+    page.click("#rail-cut")
+    page.wait_for_selector("#cut-tab")
+    assert page.get_attribute('#cut-from button:has-text("Finished")', "disabled") is None
+
+
+PLANE_CORNER = """() => {
+  const v = window.__viewer;
+  const g = v.cutGroup.children[0];
+  const size = g.children[0].geometry.parameters.width;
+  const at = g.localToWorld(new g.position.constructor(size * 0.42, size * 0.42, 0)).project(v.camera);
+  const r = v.canvas.getBoundingClientRect();
+  return [r.left + (at.x + 1) / 2 * r.width, r.top + (1 - at.y) / 2 * r.height];
+}"""
+
+
+def test_unpack_a_packed_game(page, packed_ds3):  # noqa: F811
+    """Adding a game's install folder whose models are in its archives goes on to the Unpack dialog;
+    unpacking lists the models from the app's library."""
+    import shutil
+
+    game, lists = packed_ds3
+    home = Path(os.environ["DARKSTL_HOME"])
+    shutil.copytree(lists, home / "filelists")
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    page.wait_for_selector("#first-run")
+    page.click("#first-add-folder")
+    page.fill("#folder-path", str(game.parent))
+    page.wait_for_selector("text=Recognised as Dark Souls III.")
+    page.click("#add-folder-dialog-ok")
+    page.wait_for_selector("#unpack-dialog")
+    page.wait_for_selector("#unpack-groups")
+    assert "No models were found loose" in page.inner_text("#unpack-why")
+    assert page.is_checked('[data-group="parts"]') and page.is_checked('[data-group="characters"]')
+    assert not page.is_checked('[data-group="maps"]') and page.is_disabled('[data-group="maps"]')
+    assert page.input_value("#unpack-dest").endswith("Dark Souls III")
+    assert "1 other file" in page.inner_text("#unpack-names")
+    if shots:
+        page.locator("#unpack-dialog").screenshot(path=str(Path(shots) / "unpack-dialog.png"))
+    page.click("#unpack-dialog-ok")
+    page.wait_for_selector("#unpack-dialog", state="detached", timeout=30000)
+    page.wait_for_selector('#kind-tiles [data-sub="Weapons"]')
+    assert page.inner_text("#browse-count") == "4 models"
+    page.goto(page.url.split("#")[0] + "#/settings")
+    page.wait_for_selector("#settings-archives")
+    page.wait_for_selector("#filelists-status >> text=Downloaded lists for Dark Souls III")  # the copied list counts as one
+    if shots:
+        page.locator("#settings-archives").screenshot(path=str(Path(shots) / "settings-archives.png"))
+
+
+def test_many_long_groups_stay_two_rows_of_chips(page, tmp_path):
+    """Cyberpunk's depot folders give a kind hundreds of groups, some with long names: the chips
+    keep to two rows (names cut short, full name on hover) and the rest open in a short scrolling box."""
+    import synth_red as S
+    from test_redengine import write_loose
+
+    pos, nrm, uv, idx = S.grid_plane(2, 1.0)
+    mesh = S.build_mesh([S.SynthChunk(pos, nrm, uv, idx)], [("m", r"base\surfaces\m.mi")])
+    long = "a_very_long_folder_name_from_the_depot_that_goes_on_and_on_and_on"
+    files = {fr"base\environment\{long}_{i:03d}\prop_{i:03d}.mesh" if i % 3 == 0 else fr"base\environment\kind_{i:03d}\prop_{i:03d}.mesh": mesh
+             for i in range(120)}
+    root = tmp_path / "exported"
+    write_loose(root, files)
+    page.wait_for_selector("#first-run")
+    page.click("#first-add-folder")
+    page.fill("#folder-path", str(root))
+    page.wait_for_selector("text=Recognised as Cyberpunk 2077.")
+    page.click("#add-folder-dialog-ok")
+    page.wait_for_selector('#kind-tiles [data-sub="Objects"]')
+    page.click('[data-sub="Objects"]')
+    page.wait_for_selector("#group-chips-more")
+    box = page.locator("#group-chips").bounding_box()
+    assert box["height"] < 80
+    assert page.locator(".results [data-model]").first.bounding_box()["y"] < 300
+    chip = page.locator("#group-chips .chip-btn").nth(1)
+    assert chip.bounding_box()["width"] <= 201
+    assert chip.get_attribute("title").startswith("A Very Long Folder Name")
+    # a group far down the list comes up front when it is the one shown
+    page.click("#group-chips-more")
+    assert page.get_attribute("#group-chips-more", "aria-expanded") == "true"
+    assert page.locator("#group-chips").bounding_box()["height"] <= 270
+    last = page.locator('#group-chips [data-group="Kind 119"]')
+    last.scroll_into_view_if_needed()
+    last.click()
+    page.wait_for_selector('#group-chips [data-group="Kind 119"].on')
+    assert page.get_attribute("#group-chips-more", "aria-expanded") == "false"
+    assert page.locator("#group-chips .chip-btn").nth(1).get_attribute("data-group") == "Kind 119"
+    assert page.locator('#group-chips [data-group="Kind 119"]').is_visible()
+    # the model page's bar keeps a long group and file name inside the window
+    page.click('#group-chips [data-group^="A Very Long"]')
+    page.locator(".results [data-model]").first.dblclick()
+    page.wait_for_selector("#mp-name")
+    assert page.evaluate("document.querySelector('#mp-head').scrollWidth <= document.querySelector('#mp-head').clientWidth + 1")
+    assert page.locator("#mp-name").bounding_box()["width"] > 60
+
+
+def test_configure_a_weapon_from_its_parts(page, app, tmp_path):
+    """A configurable model is listed with its slots, opens on its Configure tab, puts itself together
+    again when a part is chosen, and its configuration can be edited and kept."""
+    import json
+    import time
+
+    from test_configs import cube_obj
+
+    root = tmp_path / "game"
+    w = root / "weapons" / "rifle"
+    cube_obj(w / "rifle_body.obj", 0.2)
+    cube_obj(w / "rifle_mag_std.obj", 0.05, (0, 0, -0.15))
+    cube_obj(w / "rifle_mag_drum.obj", 0.08, (0, 0, -0.16))
+    cube_obj(w / "rifle_scope.obj", 0.04, (0, 0.12, 0))
+    (root / "guns.darkstl-configs.json").write_text(json.dumps({"format": "darkstl-configurations", "game": "Test game",
+        "configurations": [{"id": "rifle", "label": "Test rifle", "base": "weapons/rifle/rifle_body.obj", "slots": [
+            {"id": "mag", "label": "Magazine", "required": True, "options": [
+                {"id": "std", "label": "Standard", "model": "rifle_mag_std"}, {"id": "drum", "label": "Drum", "model": "rifle_mag_drum"}]},
+            {"id": "sight", "label": "Sight", "options": [{"id": "scope", "label": "Scope", "model": "rifle_scope"}]}],
+            "presets": {"Heavy": {"mag": "drum", "sight": "scope"}}}]}))
+    s = app.service
+    job = s.call("folder_add", {"path": str(root), "game": "Test game"})["job"]
+    end = time.time() + 30
+    while s.call("job", {"id": job})["state"] == "running" and time.time() < end:
+        time.sleep(0.05)
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    page.goto(f"{app.url}#/browse/{quote('Test game')}/Weapons")
+    page.wait_for_selector(".card:has-text('Configurable: 2 slots, 3 parts')")
+    page.dblclick(".card:has-text('Test rifle')")
+    page.wait_for_selector("#configure-tab")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    assert page.input_value("#slot-mag") == "std" and page.input_value("#slot-sight") == ""
+    tris = lambda: page.text_content("#stage-size")  # noqa: E731
+    assert "24 triangles" in tris()
+    page.select_option("#preset-select", "Heavy")
+    page.wait_for_function("document.querySelector('#slot-sight').value === 'scope'")
+    page.wait_for_function("document.querySelector('#stage-size').textContent.includes('36 triangles')", timeout=30000)
+    assert page.input_value("#slot-mag") == "drum"
+    if shots:
+        page.wait_for_timeout(500)
+        page.screenshot(path=str(Path(shots) / "configure-tab.png"))
+    # the parts show on the Model tab, each of which can be left out
+    page.click("#rail-model")
+    assert page.locator(".part-row").count() == 3 and "Sight: Scope" in page.text_content("#parts")
+    # edit: rename it, lift the scope 10 mm, save; it's kept and put together again
+    page.click("#rail-configure")
+    page.click("#config-edit")
+    page.fill("#config-label", "My rifle")
+    page.fill('[data-slot="sight"] [aria-label="Move Z (mm)"]', "10")
+    page.press('[data-slot="sight"] [aria-label="Move Z (mm)"]', "Tab")
+    # and add a part from the library to a new slot
+    page.click("#config-add-slot")
+    page.click('[data-slot="slot3"] .add-part')
+    page.fill(".part-search", "rifle_scope")
+    page.click(".part-result[data-file='rifle_scope.obj']")
+    page.click('[data-slot="slot3"] button:has-text("Done")')
+    if shots:
+        page.screenshot(path=str(Path(shots) / "configure-edit.png"))
+    page.click("#config-save")
+    page.wait_for_selector("#configure-tab h3:has-text('My rifle')")
+    page.wait_for_selector("#slot-slot3")
+    saved = json.loads((Path(os.environ["DARKSTL_HOME"]) / "configurations" / "Test game.json").read_text())
+    (c,) = saved["configurations"]
+    assert c["label"] == "My rifle" and c["slots"][1]["options"][0]["attach"]["offset"] == [0, 0, 0.01]
+    assert c["slots"][2]["options"][0]["model"] == {"file": "weapons/rifle/rifle_scope.obj"}
+
+
+def test_collect_dialog_works_out_its_plan_in_a_job(page, app, weapon_dir):  # noqa: F811
+    app.service.call("folder_add", {"path": str(weapon_dir)})
+    page.goto(app.url + "#/browse/Dark%20Souls%20III")
+    page.wait_for_selector("#place-collect", timeout=30000)
+    page.click("#place-collect")
+    page.wait_for_selector("#collect-plan-text", timeout=30000)
+    assert "model" in page.text_content("#collect-plan-text")
+    jobs = [j for j in app.service.jobs.running()]
+    page.click('[data-collect="textures"]')  # another plan: the one before is let go
+    page.wait_for_selector("#collect-plan-text", timeout=30000)
+    assert not jobs or all(j.state != "running" for j in jobs)
+    assert any(j.label.startswith("Working out what to copy") for j in app.service.jobs._jobs.values())

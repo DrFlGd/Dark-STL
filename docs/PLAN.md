@@ -1,7 +1,7 @@
 # Dark STL: plan
 
 Dark STL is a desktop tool that reads models and textures extracted from games, starting with
-the FromSoftware games (Dark Souls, Bloodborne, Sekiro, Elden Ring), lets you browse them
+the FromSoftware games (Dark Souls, Bloodborne, Sekiro, Elden Ring) and Cyberpunk 2077, lets you browse them
 grouped by type, and turns them into high-fidelity meshes for 3D printing and rendering. It
 does that in three steps:
 
@@ -31,6 +31,8 @@ importer and registering it in `importers/__init__.py`:
 | Importer | Reads | Status |
 | --- | --- | --- |
 | FromSoftware | FLVER2 models in BND/DCX archives, TPF/DDS textures. Per-game differences (markers, compression, PS4 textures, where material data lives) are profiles in `importers/fromsoft/games.py` | Dark Souls Remastered and Bloodborne checked on real files; the rest on synthetic files |
+| REDengine 4 (Cyberpunk 2077) | `.mesh` and `.xbm` in the CR2W container, loose (WolvenKit exports under their depot paths) or inside the game's `.archive` packs, read directly; `.mi`/`.mt` material chains; Kraken buffers through the game's `oo2ext_7_win64.dll`. Formats worked out with WolvenKit as the reference | Built on synthetic files; awaiting a check against the game |
+| RE Engine (Capcom) | `.mesh` models (every generation from RE2 to RE Requiem, streamed buffers included), `.mdf2` materials, `.tex` textures, read from extracted files or from `.pak` archives through a community file list. Games in `importers/reengine/games.py` | Synthetic RE2 and RE4 files; real files next |
 | Wavefront OBJ | OBJ + MTL with PNG/JPG/TGA/DDS textures, from any other tool | Done |
 
 An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
@@ -45,12 +47,24 @@ themes, command bar, inspector rails, menus and three.js viewer), so the three a
 work alike. Everything the page does goes through one command table (`app/service.py`), which
 the tests call directly.
 
-- **Game folders.** *Add game folder…* takes a game's install folder (unpacked) or any folder
+- **Game folders.** *Add game folder…* takes a game's install folder or any folder
   of extracted files. The game is recognised from its files (or chosen, or named freely), and
   the folder is scanned in the background. Folders are kept in the app's settings file and
   scanned again at start-up; each can be rescanned, moved to another game or removed. A folder
   inside one already added is refused; adding a parent folder takes in the ones inside it. A
-  game still packed in its archives gets a note saying how to unpack it.
+  game still packed in its archives gets a note and an *Unpack…* button.
+- **Unpacking (0.12.0).** `importers/fromsoft/unpack.py` with `formats/bhd5.py`: Dark Souls
+  PTDE (plain BHD5), Dark Souls II (keys from its `*KeyCode.pem` files), Dark Souls III,
+  Sekiro and Elden Ring (published keys in `formats/bhd5_keys.py`). The RSA public operation
+  undoes the header encryption (kept decrypted in the cache afterwards), AES-128-ECB ranges are
+  decrypted per file, and files are cut to their unpadded size. Names: bundled file lists
+  (Smithbox's copies of UXM's), downloaded UXM Selective Unpacker lists in the settings folder,
+  and names guessed by varying the last number of known ones (checked against the file's
+  contents for the 32-bit hash games). Only model, texture and animation files of `chr/`,
+  `parts/`, `obj/`, `asset/` and `map/` are written, into `<app library>/<game>/` (a folder of
+  collected files), with the Oodle DLL. Engine commands `unpack_plan`, `unpack_run`,
+  `filelists`, `filelists_download`; CLI `darkstl unpack`. Dark Souls II `.bnd` models are now
+  listed too (unchecked on real files).
 - **One library per game.** The menu lists each game with its model count. A game's page shows
   its kinds of model (weapons, armour, characters...) as tiles; a kind shows its groups as chips
   and its models as cards or rows, searchable, with the selected model's details beside them.
@@ -106,6 +120,15 @@ part of the mesh options, so Generate and Export, the cache of generated models 
 previews all take it into account without knowing about animations. Root motion
 (`extractedMotion`) is ignored: the model stays where its bind pose puts it.
 
+RE Engine models are posed the same way (`reengine/animation.py`): the mesh's bone weights
+(eight joints per vertex, six 10-bit ones in Street Fighter 6 and later) pick bones through the
+mesh's skin list, and the game's `.motlist` / `.mot` motions (`formats/motion.py`, following
+shadowcookie's REE-Lib, MIT) move them by name hash (MurmurHash3 of the UTF-16 bone name).
+A model's motions are the ones filed under its character id (`pl0000`, RE4's `cha0` family
+folder for `cha000`, Village's `ch01`): those of its own animation folders first, cutscenes
+after, and only motion files that move one of the model's bones are offered. What each motion
+file holds is kept in the importer's cache. Root bones' translation is left out, as above.
+
 The library groups models by their FromSoftware naming:
 
 | Prefix | Category | Grouped by |
@@ -122,6 +145,35 @@ low-detail copy is listed. The game is detected from the folder (executable, `dv
 or the folder name), and otherwise from the paths stored inside the archives, which name the
 studio's project (`N:\SPRJ\...` is Bloodborne, `N:\FDP\...` Dark Souls III), so a folder of
 loose extracted files is recognised too.
+
+### Reading Cyberpunk 2077 files
+
+Every REDengine resource is a CR2W file: tables of strings, names and imports (the depot paths
+of the resources it refers to), then chunks, each a class instance serialised property by
+property as `name, type, size, value`, then buffers (vertex data, pixels), each raw or
+Kraken-compressed behind a `KARK` header. Because every property names its type, the reader
+is generic (`Red` objects with plain Python values) and the mesh and texture readers pick what
+they need; properties of types it does not know are kept as bytes and skipped by their size.
+
+- **Meshes** (`CMesh`): the `rendRenderMeshBlob` header lists the chunks (sub-meshes) with
+  their vertex layouts (per-stream packing elements) and one buffer holds every stream and the
+  index buffer. Positions are signed 16-bit over `quantizationScale/Offset`, normals 10-10-10-2,
+  UVs half floats. All levels of detail are chunks of the same file, told apart by `lodMask`;
+  the full level is kept by default. Game space is right-handed, Z up, metres: nothing is rotated.
+- **Textures** (`CBitmapTexture`): the setup's compression picks the codec (BC1, BC3, BC5 for
+  normal maps, BC7, raw formats) and the PC render blob's buffer holds the mips largest first,
+  decoded like DDS surfaces.
+- **Materials**: a chunk's `CMaterialInstance` (kept in the mesh, or an external `.mi`) chains
+  through `baseMaterial` to the `.mt` template; the merged parameters name the textures
+  (`BaseColor`/`DiffuseTexture`, `Normal`/`NormalTexture`/`GlobalNormal`, `Roughness`,
+  `Metalness`, detail normals). Multilayered materials blend tiled layers at run time; only
+  their global normal map is used and the model says so. Appearances are the model's variants.
+- **Archives** (`RDAR`): files keyed by the FNV-1a hash of their lower-case depot path, in
+  segments (resource, then buffers). No names are stored, so the first scan reads every
+  resource's import table and names the meshes that entities, appearances and other meshes refer
+  to; the result is cached per archive. Members are listed under the pseudo path
+  `<pack>.archive\<hash>.mesh`. Collecting extracts them under their depot paths, so the copies
+  read like a WolvenKit export.
 
 ### Step 1: even vertex spacing
 
@@ -190,6 +242,89 @@ used, so the side stays straight instead of swelling into a bulge. This is on by
   along their seams as well as possible, and what still differs is faded smoothly into each
   island over a few vertex spacings.
 
+### Making it watertight (Finish tab, before cutting or export)
+
+Post-processing for printing lives on the **Finish** tab (`finish.py`). *Make watertight* wraps the
+whole model (enhanced or original) into one solid with nothing left inside:
+
+- **Parts made solid and joined**, as for cutting (below): where parts cross, the union removes the
+  triangles inside the other part, and the outside surface stays exactly as it was. Parts are
+  connected through shared edges only, so two closed parts that touch at a vertex (a plate's corner
+  on a body) are each kept as they are; a part still tangled is tried again split into the game's
+  own sub-meshes before falling back to voxels.
+- **Hollows filled** (default on): the union's surface is split into its closed shells; shells
+  facing inwards (negative volume) bound space sealed inside, so only the outward shells are kept
+  and united again.
+- **Gaps closed** (optional, up to a width): the solid is marked in a voxel grid (a quarter of the
+  width, at most about 6 M voxels), closed morphologically with a ball of half the width, eroded
+  two voxels so the bridges sit under the real surface, and turned into a surface (manifold's level
+  set) that is united with the exact solid. Only where it bridges a gap does it show.
+- **Loose bits removed** (optional): separate solids under a share of the biggest one's volume.
+
+The result is kept per model, source and settings (last 2), shown as *Finished*, exported as
+`<name>_watertight`, and can be cut (*Cut › Finished*); it has no UVs or textures.
+
+### Configurable models: a base and parts chosen per slot
+
+Weapons in Cyberpunk 2077, the RE Engine games and Borderlands are kept as a body and separate
+part models (magazines, sights, barrels, stocks, muzzles). A *configuration* (`configs.py`) names
+the base model and, per slot, the parts that fit it and where each goes; choosing a part per slot
+(or a preset that chooses them all) gives one assembled `SourceModel`, so the Mesh, Displace, Cut
+and Export steps need nothing new. The library lists each configuration as a model of its own
+(*Configurable: N slots, M parts*), and its page opens on a **Configure** tab.
+
+Relationships come per game from lists, the later winning when two share an id: what an
+importer works out from a folder (its `configurations` hook: Cyberpunk and RE Engine weapons are
+guessed from the part files beside each weapon), lists shipped with the app
+(`importers/<importer>/configurations/*.json`), `*.darkstl-configs.json` files in a game folder,
+and the user's own list, which *Edit…* and *Make configurable…* write. The list format is in
+`docs/configurations.md`. Parts are placed in place (game parts usually are), on a named socket of
+the base or of another chosen part (`SourceModel.sockets`, which importers fill), and/or by a
+matrix, offset, turn and scale.
+
+### Cutting into pieces (before export)
+
+A model too big for the printer, or with parts that print better apart, is cut on the **Cut** tab
+(`cut.py`, on [manifold3d](https://github.com/elalish/manifold), whose booleans are exact and always
+give closed meshes).
+
+- **Made solid first.** A plane through an open shell has no inside to close, and game meshes are
+  open shells with overlapping parts. So the model (the enhanced one, or the original) is welded,
+  duplicate triangles are dropped (two-sided cloth is often one side and its mirror), and each
+  connected part is taken in turn: already closed, it is used as it is; with small openings (fill
+  area under 30 % of the part's), each opening is closed with a fan; an open surface (a cape) is
+  thickened inwards by *Open surfaces* (1.2 mm); anything still broken (edges shared by three
+  faces) is rebuilt from voxels as a last resort. The parts are then united into one solid. The
+  solid is kept, so moving a cut only cuts again.
+- **Cuts.** Each cut is a plane (a normal and a point, in model millimetres) split exactly through
+  every piece it crosses. In the 3D view a plane is a translucent square through the model's middle;
+  dragging it slides it along its normal (the closest point between the pointer's ray and the
+  normal's line), dragging its round handle tilts it (the handle follows the pointer over a plane
+  facing the camera), and *Pick a point* moves it through a clicked point. The tab has the same as
+  a position slider, tilt and turn angles, and X / Y / Z / *Facing me* presets.
+- **Joints**, per cut, each with its own **clearance** (the gap on each side between parts that
+  fit together):
+
+  | Joint | What it makes |
+  | --- | --- |
+  | Flat | The faces as they are, to glue |
+  | Pegs | Pegs on the side the normal points to (or the other), holes wider by 2 × clearance and deeper by the clearance on the other |
+  | Dowels | Holes on both sides, and dowel pieces of the exact diameter (or none, for bought pins or filament) |
+  | Magnets | Round pockets on both sides for disc magnets, wider and deeper by the clearance |
+  | Key | A tongue shaped like the cut face inset by the wall, into a groove inset by the wall less the clearance: the pieces only fit one way |
+
+  The cut face is sliced (the solid turned into the plane's frame) and each island of it (a leg, a
+  sleeve) gets its own features: round ones go where a grid of candidates inside the face, inset by
+  the radius and the *Wall around joints* (1.6 mm), is deepest, or (two or more) as far apart as
+  they can be. A feature that would break through the far side of a piece (tested by intersecting a
+  slightly fatter probe with the piece) is shortened, tried in the middle alone, or left out, and the
+  tab says how many places were left flat.
+- **Results.** The pieces (top down, then dowels) are kept like generated models (the last three
+  sets) and shown in colour under *Show › Pieces*, spread apart with a slider. Export writes each
+  to its own file in a `<name>_pieces` folder, laid on its biggest flat cut face without pegs or a
+  tongue on it, centred on the bed. On the command line, `--cut AXIS=MM[:JOINT]` (or `AXIS=50%`)
+  and `--clearance` do the same for `export` and `enhance`.
+
 ### Step 3: export
 
 | Format | Content |
@@ -213,20 +348,32 @@ src/darkstl/
                 height per material), mesh.py (FLVER -> mesh, skinned to a pose), animation.py
                 (skeletons, spline-compressed animations, poses), catalog.py (classifies models
                 by FromSoftware naming)
+    redengine/  formats/ (CR2W container, .archive packs, CMesh render blobs, CBitmapTexture),
+                depot.py (depot paths -> loose files or archive members), materials.py (.mi/.mt
+                chains -> texture roles), mesh.py (chunks -> mesh), catalog.py (names learnt
+                from import tables, groups by depot path)
+    reengine/   formats/ (mesh, tex, mdf2, pak with MurmurHash3 names), games.py (RE Engine games and
+                how a folder is recognised), files.py (a model, its streamed half, materials and textures,
+                on disk or inside a pak, and its animations), materials.py (texture roles from slot
+                types), catalog.py (classifies models by the engine's folder layout), animation.py
+                (.motlist / .mot motions -> poses, skinning)
     wavefront.py  OBJ + MTL
   geometry/     TriMesh, subdivision, isotropic remesh, UV seam matching, closest-point queries,
                 displacement
   textures/     DDS decoding, normal map -> height, grayscale height, UV coverage, texel size
   library.py    the library: game folders scanned by every importer, by game, kind and group
+  configs.py    configurable models: configuration lists, finding their files, assembling a choice
   collect.py    copies the files chosen models need into the app's own library folder
   thumbnails.py preview pictures for the library's cards, cached on disk
   pipeline.py   the three steps with their settings
+  cut.py        the model made solid and cut into pieces with joints (manifold3d)
   export.py     STL, OBJ, PLY, GLB writers
   cli.py        command line
   app/          the desktop app: service.py (the page's commands), server.py (local web
                 server), meshpack.py (meshes for the 3D view), config.py, desktop.py (window)
   web/          the page: Model Library's interface (styles.css, ui/ layout, inspector,
-                menus) with Dark STL's pages: home.js, browser.js, modelpage.js, settings.js
+                menus) with Dark STL's pages: home.js, browser.js, modelpage.js, configure.js,
+                settings.js
 tests/          synthetic game files built byte by byte (no game data in the repo)
 ```
 
@@ -264,11 +411,18 @@ differs:
       frame; Dark Souls Remastered's `c2240.hkx` skeleton (tagfile) reads. Still to check on
       real files: Dark Souls PTDE (hk_2010), Dark Souls III, Sekiro and Elden Ring (compendium)
 - [ ] Compare against the before/after example: same weapon, same look
+- [ ] RE Engine: a Resident Evil 2 and a Resident Evil 4 character, weapon and object, extracted and
+      straight from the paks (the readers follow the community's format descriptions and pass on
+      synthetic files; the normal maps' green direction and the texture roles of each game's slot
+      names need a look on real files)
 
 ### Phase 2: print-ready output
 
 - [ ] Watertight option: game meshes are open shells with overlapping parts, so add a
-      solidify step (voxel or winding-number remesh) that outputs one closed manifold
+      solidify step (voxel or winding-number remesh) that outputs one closed manifold. Cut
+      pieces are watertight since 0.9.0 (openings closed, open surfaces thickened, parts
+      united); the same could be offered for the whole model
+- [x] Cut into pieces with joints (flat, pegs, dowels, magnets, key) and a clearance per cut
 - [ ] Thin-part thickening for blades and capes
 - [x] Per-material strength and on/off in the material list
 - [x] Use detail normal maps as well as the main normal map (blend maps still to do)
@@ -298,8 +452,14 @@ differs:
 ## Known limits today
 
 - Of the real game files, Dark Souls Remastered weapons and Bloodborne characters, objects and
-  armour have been loaded so far (Phase 1).
-- Output is not guaranteed watertight; most slicers repair it, but Phase 2 adds a proper fix.
+  armour have been loaded so far (Phase 1). The RE Engine importer has only seen synthetic files.
+- RE Engine: `.pak` archives with an encrypted table of contents (Monster Hunter Wilds and later)
+  and GDeflate-compressed textures are not read; extract those games with a pak tool first.
+  MPLY stage meshes and blend shapes are not read. Posing RE models has only been tried on
+  synthetic motions; motion trees, additive layers and animations kept in `.motbank` /
+  `.motfsm2` setups (rather than in the motlists themselves) are not used.
+- Output is not guaranteed watertight (pieces cut on the Cut tab are); most slicers repair it,
+  but Phase 2 adds a proper fix.
 - Without an anibnd beside the model, skinned meshes (characters, armor) are shown in their
   bind pose, which is a T or A pose. Armour pieces take the player's animations
   (`c0000.anibnd`) only when that archive is copied next to them.
