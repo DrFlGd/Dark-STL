@@ -231,3 +231,27 @@ def test_app_saves_your_own_configurations(app, gun_dir):
     assert app.call("model_open", {"id": rifle["id"]})["configuration"]["label"] == "Test rifle"
     with pytest.raises(AppError):
         app.call("config_delete", {"id": body["id"]})
+
+
+def test_a_material_slot_repaints_the_parts():
+    def model(name, mats):
+        def build(options):
+            return TriMesh(np.zeros((3, 3)) + [[0, 0, 0], [1, 0, 0], [0, 1, 0]], np.array([[0, 1, 2]]))
+        return SourceModel(name=name, path=Path(name), importer="t", build=build,
+                           materials=[Material(m, f"{m}.dds") for m in mats], textures={f"{m}.dds": m for m in mats},
+                           parts=[Part(name, 0, 3, 1)])
+
+    files = {"base": model("base", ["gun", "glass"]), "barrel": model("barrel", ["metal"]),
+             "skin": model("skin", ["paint"])}
+    c = configs.Configuration("g", "Gun", "G", configs.ModelRef("base"), [
+        configs.Slot("barrel", "Barrel", [configs.PartOption("b", "B", configs.ModelRef("barrel"))], True),
+        configs.Slot("skin", "Skin", [configs.PartOption("red", "Red", configs.ModelRef("skin", "v", []))], False,
+                     None, "material")])
+    plain = configs.assemble(c, None, lambda f, v: files[f])
+    assert [m.albedo for m in plain.materials] == ["gun.dds", "glass.dds", "barrel:metal.dds"]
+    painted = configs.assemble(c, {"skin": "red"}, lambda f, v: files[f])
+    # the skin's one material replaces each model's first; the base's second stays
+    assert [m.albedo for m in painted.materials] == ["skin:paint.dds", "glass.dds", "skin:paint.dds"]
+    assert painted.textures["skin:paint.dds"] == "paint" and painted.build_mesh().n_faces == 2
+    with pytest.raises(FormatError):
+        configs.parse({"configurations": [{"id": "x", "base": "b", "slots": [{"id": "s", "kind": "colour"}]}]})

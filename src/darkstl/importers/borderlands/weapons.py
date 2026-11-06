@@ -10,6 +10,13 @@ fragments its parts name: a ``WeaponPartDefinition``'s
 ``GestaltModeSkeletalMeshName`` plus its ``AdditionalGestaltModeSkeletalMeshNames``
 (body variants); ``*_None`` parts draw nothing.
 
+The gestalt mesh's own materials are placeholders: the game paints a gun with
+the skin its Material part (``PartType=WP_Material``, ``GD_Weap_Pistol.
+ManufacturerMaterials.Mat_Jakobs_1``...) names in its ``Material`` property, a
+``MaterialInstanceConstant`` whose chain ends at ``Master_Gun``, and puts it in
+the mesh's first material slot (``WillowWeapon.BuildWeaponMaterial``, as traced
+by BL2_ReBased's docs/research/NATIVE_WEAPON_VISUALS.md).
+
 These rules are documented by the BL2_ReBased project (github.com/zuhuHix/BL2_ReBased,
 docs/verification/WEAPON_PART_ASSETS.md), which checked them against the running game.
 """
@@ -140,8 +147,57 @@ def gestalt_for_mesh(pkg: upk.Package, export: upk.Export) -> Gestalt | None:
 class WeaponPart:
     path: str
     name: str
-    slot: str
+    slot: str  # a slot of SLOTS, or "skin" for a Material part
     fragments: list[str]
+    package: str = ""  # the stem of the package it was read from
+    material: str = ""  # a skin's material instance (its object path)
+
+
+SKIN = "skin"
+# weapon type (a gestalt definition's kind, lower case) -> words in a skin's paths that name it
+_KIND_WORDS = [
+    ("sniperrifle", ("sniper",)),
+    ("assaultrifle", ("assaultrifle", "assault_rifle", "_ar_", ".ar.")),
+    ("launcher", ("launcher", "rocket")),
+    ("shotgun", ("shotgun",)),
+    ("smg", ("smg",)),
+    ("pistol", ("pistol",)),
+]
+
+
+def _kind_key(kind: str) -> str:
+    """``Pistol``, ``GestaltDef_Pistol``, ``SniperRifle``... -> a key of _KIND_WORDS."""
+    k = re.sub(r"[^a-z]", "", kind.lower())
+    if k in ("ar", "assaultrifle"):
+        return "assaultrifle"
+    for key, words in _KIND_WORDS:
+        if key in k or any(w.strip("._") in k for w in words if len(w.strip("._")) > 2):
+            return key
+    return k
+
+
+def skin_kind(part: WeaponPart) -> str | None:
+    """The weapon type a skin is for, from its part's path (``GD_Weap_Pistol...``), then its material's."""
+    for text in (part.path, part.material):
+        low = f".{text.lower()}."
+        for kind, words in _KIND_WORDS:
+            if any(w in low for w in words):
+                return kind
+    return None
+
+
+def skins_for(kind: str, parts: list[WeaponPart]) -> list[WeaponPart]:
+    """The skins of one weapon type, one per material instance, by name."""
+    want = _kind_key(kind)
+    out, seen = [], set()
+    for p in sorted(parts, key=lambda p: (p.name.lower(), p.path.lower())):
+        if p.slot != SKIN or not p.material or skin_kind(p) != want:
+            continue
+        if p.material.lower() in seen:
+            continue
+        seen.add(p.material.lower())
+        out.append(p)
+    return out
 
 
 def slot_of(text: str) -> str | None:
@@ -154,14 +210,19 @@ def slot_of(text: str) -> str | None:
 def read_part(pkg: upk.Package, export: upk.Export) -> WeaponPart | None:
     props = object_props(pkg, pkg.export_data(export))
     slot = _PART_TYPES.get(str(props.get("PartType", ""))) or slot_of(export.path) or slot_of(export.name)
-    if slot is None or slot == "material":
+    material = props.get("Material")
+    if slot == "material" or (slot is None and isinstance(material, ObjectRef) and material):
+        if not isinstance(material, ObjectRef) or not material:
+            return None
+        return WeaponPart(export.path, export.name, SKIN, [], pkg.path.stem, material.path)
+    if slot is None:
         return None
     names = []
     if not export.name.lower().endswith("_none"):
         for n in [props.get("GestaltModeSkeletalMeshName"), *props.all("AdditionalGestaltModeSkeletalMeshNames")]:
             if n and str(n) != "None" and str(n) not in names:
                 names.append(str(n))
-    return WeaponPart(export.path, export.name, slot, names)
+    return WeaponPart(export.path, export.name, slot, names, pkg.path.stem)
 
 
 def fragments_by_slot(g: Gestalt) -> dict[str, list[tuple[str, list[int]]]]:
@@ -185,10 +246,10 @@ def option_label(name: str, kind: str) -> str:
     """``Pistol_Barrel_Bandit_3`` -> ``Bandit 3``."""
     words = [w for w in re.split(r"_+", name) if w]
     drop = {kind.lower(), "pistol", "smg", "ar", "assaultrifle", "shotgun", "sniper", "sniperrifle", "launcher", "l",
-            "sr", "sg", "sm", "acc"} | set(_SLOT_WORDS)
+            "sr", "sg", "sm", "acc", "mat", "mati"} | set(_SLOT_WORDS)
     kept = [w for w in words if w.lower() not in drop]
     return " ".join(kept) or name
 
 
-__all__ = ["Fragment", "Gestalt", "SLOTS", "WeaponPart", "fragments_by_slot", "gestalt_for_mesh", "gestalts_in",
-           "option_label", "read_gestalt", "read_part", "slot_of"]
+__all__ = ["Fragment", "Gestalt", "SKIN", "SLOTS", "WeaponPart", "fragments_by_slot", "gestalt_for_mesh", "gestalts_in",
+           "option_label", "read_gestalt", "read_part", "skin_kind", "skins_for", "slot_of"]

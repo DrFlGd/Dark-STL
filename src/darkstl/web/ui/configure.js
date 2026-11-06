@@ -119,7 +119,7 @@ function ConfigEditor({ m }) {
   const submit = async () => {
     setBusy(true);
     try {
-      const slots = d.slots.map((s) => ({ id: s.id, label: s.label, required: !!s.required,
+      const slots = d.slots.map((s) => ({ id: s.id, label: s.label, required: !!s.required, kind: s.kind || "parts",
         default: s.options.some((o) => o.id === s.default) ? s.default : null,
         options: s.options.map((o) => ({ id: o.id, label: o.label, path: o.path, variant: o.variant ?? null, parts: o.parts ?? null,
           attach: { ...(o.attach || {}), offset: o.offset_mm.map((v) => (Number(v) || 0) / 1000), rotate: o.rotate.map((v) => Number(v) || 0) } })) }));
