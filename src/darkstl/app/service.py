@@ -272,7 +272,7 @@ def mesh_stats(mesh: TriMesh) -> dict:
 # ------------------------------------------------------------------ service
 
 class Service:
-    BYTES = {"model_mesh", "texture", "thumb", "texture_crop"}
+    BYTES = {"model_mesh", "texture", "thumb", "texture_crop", "paint_texture"}
     # opening a model and what its page shows first: library previews pause while these run
     FOREGROUND = {"model_open", "model_mesh", "model_stats", "model_animations", "texture", "texture_info",
                   "texture_maps", "texture_crop"}
@@ -304,6 +304,7 @@ class Service:
         self.cuts: OrderedDict[tuple, Any] = OrderedDict()  # CutResult by the model cut and the cut settings
         self.solids: OrderedDict[tuple, Any] = OrderedDict()  # cut.Solid by the model made solid and the sheet thickness
         self.finished: OrderedDict[tuple, Any] = OrderedDict()  # finish.FinishResult by the model and the settings
+        self.palettes: OrderedDict[tuple, dict] = OrderedDict()  # suggested paint palettes by model, parts and count
         self.cache = Path(cache)
         self.snapshots = Path(cache) / "library"  # what each folder's last scan found (library.Snapshot)
         self.collect_plans: OrderedDict[str, tuple[float, collect.Plan]] = OrderedDict()  # by _plan_key()
@@ -1524,6 +1525,8 @@ class Service:
         session = self._session(args)
         which = args.get("which", "enhanced")
         if which == "pieces":
+            if str(args.get("format") or "").lower() == ".3mf":
+                raise AppError("Cut pieces have no textures to paint from: export the Enhanced or Original model.")
             return self._export_pieces(session, args)
         if which == "enhanced":
             if session.result is None:
@@ -1544,16 +1547,89 @@ class Service:
         folder = Path(args.get("folder") or self.config.export_folder)
         base = _safe_name(str(args.get("name") or Path(session.model.variant or session.model.name).stem))
         model = session.model
+        paint = paint_settings(args.get("paint") or {}) if ext == ".3mf" else None
+        if ext == ".3mf" and which == "finished":
+            raise AppError("The Finished model has no textures to paint from: export the Enhanced or Original model.")
 
         def run(job: Job):
-            opts = ExportOptions(scale=scale, material_names=[m.name for m in model.materials])
-            if args.get("textures", True) and ext in (".obj", ".glb"):
+            opts = ExportOptions(scale=scale, material_names=[m.name for m in model.materials], paint=paint,
+                                 progress=job.report)
+            if (args.get("textures", True) and ext in (".obj", ".glb")) or ext == ".3mf":
                 opts.textures = _albedo(model, mesh)
+            if ext == ".3mf" and not opts.textures:
+                raise AppError("This model has no colour textures to paint from.")
             job.report(0.2, "Writing")
             path = export_mesh(mesh, _free_name(folder / f"{base}{ext}"), opts)
-            return {"path": str(path), "bytes": path.stat().st_size}
+            out = {"path": str(path), "bytes": path.stat().st_size}
+            if opts.painting is not None:
+                out["paint"] = {**opts.painting.stats(), "palette_file": str(path.with_name(f"{path.stem}_palette.png"))}
+            return out
 
         return {"job": self.jobs.start(f"Exporting {base}{ext}", run, stoppable=True).id}
+
+    # ------------------------------------------------------------ painting (3MF)
+
+    def _paint_mesh(self, session: Session, args: dict):
+        """The mesh whose surface the palette is weighed over: the original with the chosen parts."""
+        return session.build(mesh_options(_parse_lists(args)))
+
+    def cmd_paint_palette(self, args: dict) -> dict:
+        """The colours that stand best for the model's textures over its surface (paint.suggest_palette),
+        for the Export tab's swatches; kept per model, parts and count."""
+        from .. import paint as painting
+
+        session = self._session(args)
+        colours = int(args.get("colours") or 4)
+        if not 2 <= colours <= painting.MAX_COLOURS:
+            raise AppError(f"Choose between 2 and {painting.MAX_COLOURS} colours.")
+        mesh = self._paint_mesh(session, args)
+        key = (session.sid, session.mesh_key, colours)
+        with self.lock:
+            if key in self.palettes:
+                return self.palettes[key]
+        textures = _albedo(session.model, mesh)
+        if not textures:
+            raise AppError("This model has no colour textures to paint from.")
+        try:
+            palette, coverage = painting.suggest_palette(mesh, textures, colours)
+        except ValueError as exc:
+            raise AppError(str(exc)) from None
+        out = {"colours": [painting.hex_colour(c) for c in palette], "coverage": [round(float(c), 4) for c in coverage]}
+        with self.lock:
+            self.palettes[key] = out
+            while len(self.palettes) > 32:
+                self.palettes.popitem(last=False)
+        return out
+
+    def cmd_paint_texture(self, args: dict) -> bytes:
+        """A material's colour texture reduced to the palette, as a PNG for the 3D view (the Export tab's
+        preview of the painted model). ``settings`` is the paint settings as JSON."""
+        from .. import paint as painting
+
+        session = self._session(args)
+        key = str(args.get("key") or "")
+        tex = session.model.textures.get(key)
+        if tex is None:
+            raise AppError(f"No texture '{key}' in this model.")
+        settings = paint_settings(_json_arg(args.get("settings")) or {})
+        size = int(args.get("max") or 2048)
+        cache_key = (session.sid, "paint", key, settings.key(), size)
+        with self.lock:
+            if cache_key in self.textures_png:
+                return self.textures_png[cache_key]
+        if settings.palette:
+            palette = np.array([painting.parse_colour(c) for c in settings.palette], np.uint8)
+        else:
+            palette = np.array([painting.parse_colour(c) for c in self.cmd_paint_palette(
+                {**args, "colours": settings.colours})["colours"]], np.uint8)
+        img = painting._shrink(painting._rgb(tex.decode()), size)
+        index = painting.cleanup(painting.quantize(img, palette), len(palette), settings.cleanup)
+        data = texture_png(palette[index], size)
+        with self.lock:
+            self.textures_png[cache_key] = data
+            while len(self.textures_png) > 48:
+                self.textures_png.popitem(last=False)
+        return data
 
     def _forget_models(self) -> None:
         with self.lock:
@@ -1566,6 +1642,7 @@ class Service:
             self.cuts.clear()
             self.solids.clear()
             self.finished.clear()
+            self.palettes.clear()
 
     # ------------------------------------------------------------ cutting into pieces
 
@@ -1758,6 +1835,34 @@ def _parse_lists(args: dict) -> dict:
         out["parts"] = [int(p) for p in args["parts"].split(",") if p != ""] if args["parts"] != "all" else None
     if isinstance(args.get("flags"), str):
         out["flags"] = {k: v == "1" for k, _, v in (f.partition(":") for f in args["flags"].split(",") if f)}
+    return out
+
+
+def paint_settings(s: dict):
+    """paint.PaintSettings from the page's or the CLI's settings dict."""
+    from ..paint import MAX_COLOURS, PaintSettings, parse_colour
+
+    out = PaintSettings()
+    try:
+        out.colours = int(s.get("colours") or out.colours)
+        palette = [str(c) for c in (s.get("palette") or []) if str(c).strip()]
+        if palette:
+            for c in palette:
+                parse_colour(c)
+            out.palette = palette
+        out.print_height_mm = float(s.get("print_height_mm") or out.print_height_mm)
+        out.feature_mm = float(s.get("feature_mm") or out.feature_mm)
+        out.cleanup = str(s.get("cleanup") or out.cleanup)
+        out.max_depth = int(s.get("max_depth") or out.max_depth)
+    except (TypeError, ValueError) as exc:
+        raise AppError(f"Paint settings: {exc}") from None
+    if not 2 <= out.colours <= MAX_COLOURS or (out.palette and not 1 <= len(out.palette) <= MAX_COLOURS):
+        raise AppError(f"Choose between 2 and {MAX_COLOURS} colours.")
+    if out.print_height_mm <= 0 or out.feature_mm <= 0:
+        raise AppError("The print height and the feature size must be above zero.")
+    if out.cleanup not in ("none", "light", "strong"):
+        raise AppError("Clean-up is none, light or strong.")
+    out.max_depth = min(max(out.max_depth, 1), 10)
     return out
 
 

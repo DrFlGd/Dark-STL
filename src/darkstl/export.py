@@ -1,4 +1,4 @@
-"""Mesh and texture writers: STL, OBJ (+MTL), PLY, glTF binary (GLB), PNG.
+"""Mesh and texture writers: STL, OBJ (+MTL), PLY, glTF binary (GLB), painted 3MF, PNG.
 
 Meshes arrive in the internal frame (right-handed, Z up, metres). STL and PLY
 keep Z up, which is what slicers expect; OBJ and glTF are Y-up formats, so
@@ -12,6 +12,7 @@ import json
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Callable
 
 import numpy as np
 
@@ -22,6 +23,7 @@ FORMATS = {
     ".obj": "Wavefront OBJ with materials",
     ".ply": "PLY (binary)",
     ".glb": "glTF binary with textures",
+    ".3mf": "Painted 3MF - multi-colour printing (Bambu, Orca, Prusa)",
 }
 
 Z_UP_TO_Y_UP = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]])
@@ -32,8 +34,11 @@ class ExportOptions:
     scale: float = 1000.0  # metres -> millimetres
     ascii_stl: bool = False
     write_normals: bool = True
-    textures: dict[int, np.ndarray] = field(default_factory=dict)  # material -> RGBA image (OBJ/GLB)
+    textures: dict[int, np.ndarray] = field(default_factory=dict)  # material -> RGBA image (OBJ/GLB/3MF)
     material_names: list[str] = field(default_factory=list)
+    paint: Any = None  # paint.PaintSettings for 3MF (None: the defaults); the Painting made is put in `painting`
+    painting: Any = None
+    progress: Callable[[float, str], None] | None = None
 
 
 def export_mesh(mesh: TriMesh, path: str | Path, options: ExportOptions | None = None) -> Path:
@@ -49,6 +54,8 @@ def export_mesh(mesh: TriMesh, path: str | Path, options: ExportOptions | None =
         write_ply(mesh, path, options.scale)
     elif ext == ".glb":
         write_glb(mesh, path, options)
+    elif ext == ".3mf":
+        write_3mf(mesh, path, options)
     else:
         raise ValueError(f"Unsupported export format '{ext}' (choose from {', '.join(FORMATS)})")
     return path
@@ -272,3 +279,141 @@ def write_glb(mesh: TriMesh, path: Path, options: ExportOptions) -> None:
         fh.write(js)
         fh.write(struct.pack("<I4s", len(blob), b"BIN\0"))
         fh.write(bytes(blob))
+
+
+# ---------------------------------------------------------------------------
+# painted 3MF
+
+
+def write_3mf(mesh: TriMesh, path: Path, options: ExportOptions) -> None:
+    """A 3MF painted from the model's colour textures for multi-colour printing (see :mod:`darkstl.paint`):
+    the mesh as one object, each triangle carrying its paint as Bambu Studio / OrcaSlicer (``paint_color``)
+    and PrusaSlicer (``slic3rpe:mmu_segmentation``) store it. Filament slot n is the palette's nth colour,
+    which is listed in the file's metadata and drawn in a PNG beside it (``<name>_palette.png``)."""
+    import zipfile
+    from xml.sax.saxutils import escape
+
+    from . import paint as painting_mod
+
+    if not options.textures:
+        raise ValueError("This model has no colour textures to paint from (the Finished model and cut pieces have none).")
+    settings = options.paint or painting_mod.PaintSettings()
+    painting = painting_mod.paint_mesh(mesh, options.textures, settings, options.progress)
+    options.painting = painting
+    if options.progress:
+        options.progress(0.96, "Writing")
+    v = mesh.vertices * options.scale
+    name = escape(path.stem)
+    palette = ";".join(painting_mod.hex_colour(c) for c in painting.palette)
+    head = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" '
+        'xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06">\n'
+        ' <metadata name="Application">Dark STL</metadata>\n'
+        f' <metadata name="Title">{name}</metadata>\n'
+        ' <metadata name="slic3rpe:Version3mf">1</metadata>\n'
+        ' <metadata name="slic3rpe:MmPaintingVersion">1</metadata>\n'
+        f' <metadata name="DarkSTL:Palette">{palette}</metadata>\n'
+        ' <resources>\n'
+        f'  <object id="1" name="{name}" type="model">\n'
+        '   <mesh>\n    <vertices>\n'
+    )
+    parts = [head]
+    verts = ["     <vertex x=\"%.6g\" y=\"%.6g\" z=\"%.6g\"/>" % tuple(row) for row in v.tolist()]
+    parts.append("\n".join(verts))
+    parts.append("\n    </vertices>\n    <triangles>\n")
+    tris = []
+    for (a, b, c), s in zip(mesh.faces.tolist(), painting.strings):
+        if s:
+            tris.append(f'     <triangle v1="{a}" v2="{b}" v3="{c}" paint_color="{s}" slic3rpe:mmu_segmentation="{s}"/>')
+        else:
+            tris.append(f'     <triangle v1="{a}" v2="{b}" v3="{c}"/>')
+    parts.append("\n".join(tris))
+    parts.append(
+        "\n    </triangles>\n   </mesh>\n  </object>\n </resources>\n <build>\n"
+        '  <item objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0" printable="1"/>\n'
+        " </build>\n</model>\n"
+    )
+    model_xml = "".join(parts)
+    n_faces = mesh.n_faces
+    prusa_config = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n<config>\n <object id="1" instances_count="1">\n'
+        f'  <metadata type="object" key="name" value="{name}"/>\n'
+        '  <metadata type="object" key="extruder" value="1"/>\n'
+        f'  <volume firstid="0" lastid="{max(n_faces - 1, 0)}">\n'
+        f'   <metadata type="volume" key="name" value="{name}"/>\n'
+        '   <metadata type="volume" key="volume_type" value="ModelPart"/>\n'
+        '   <metadata type="volume" key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>\n'
+        '   <metadata type="volume" key="source_object_id" value="0"/>\n'
+        '   <metadata type="volume" key="source_volume_id" value="0"/>\n'
+        '   <mesh edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/>\n'
+        "  </volume>\n </object>\n</config>\n"
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n'
+        ' <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n'
+        ' <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>\n'
+        ' <Default Extension="png" ContentType="image/png"/>\n'
+        "</Types>\n"
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n'
+        ' <Relationship Target="/3D/3dmodel.model" Id="rel-1" '
+        'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>\n'
+        "</Relationships>\n"
+    )
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", content_types)
+        z.writestr("_rels/.rels", rels)
+        z.writestr("3D/3dmodel.model", model_xml)
+        z.writestr("Metadata/Slic3r_PE_model.config", prusa_config)
+    write_palette_png(painting.palette, painting.coverage, path.with_name(f"{path.stem}_palette.png"))
+
+
+def write_palette_png(palette: np.ndarray, coverage: np.ndarray | None, path: Path) -> None:
+    """A strip of the palette's colours, numbered by filament slot, to set the slicer's filaments by."""
+    from PIL import Image, ImageDraw
+
+    k = len(palette)
+    sw, sh, pad = 120, 90, 8
+    img = Image.new("RGB", (pad + k * (sw + pad), sh + 2 * pad + 44), (250, 250, 250))
+    draw = ImageDraw.Draw(img)
+    for i, rgb in enumerate(palette):
+        x = pad + i * (sw + pad)
+        colour = tuple(int(c) for c in rgb[:3])
+        draw.rectangle([x, pad, x + sw, pad + sh], fill=colour, outline=(120, 120, 120))
+        lum = 0.2126 * colour[0] + 0.7152 * colour[1] + 0.0722 * colour[2]
+        draw.text((x + 8, pad + 6), str(i + 1), fill=(255, 255, 255) if lum < 128 else (0, 0, 0))
+        text = f"{i + 1}: #{colour[0]:02X}{colour[1]:02X}{colour[2]:02X}"
+        if coverage is not None and i < len(coverage):
+            text += f"  {coverage[i] * 100:.0f}%"
+        draw.text((x + 2, pad + sh + 8), text, fill=(30, 30, 30))
+    draw.text((pad, pad + sh + 26), "Filament slot: colour, share of the surface", fill=(110, 110, 110))
+    img.save(path)
+
+
+def read_3mf(path: str | Path) -> tuple[np.ndarray, np.ndarray, list[str], list[str]]:
+    """Read back a 3MF written here: vertices, faces, the paint string per triangle (Bambu's), and the
+    palette (for tests and checks)."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    ns = {"m": "http://schemas.microsoft.com/3dmanufacturing/core/2015/02",
+          "slic3rpe": "http://schemas.slic3r.org/3mf/2017/06"}
+    with zipfile.ZipFile(path) as z:
+        root = ET.fromstring(z.read("3D/3dmodel.model"))
+    palette = []
+    for meta in root.findall("m:metadata", ns):
+        if meta.get("name") == "DarkSTL:Palette":
+            palette = [c for c in (meta.text or "").split(";") if c]
+    mesh = root.find("m:resources/m:object/m:mesh", ns)
+    verts = np.array([[float(e.get(a)) for a in "xyz"] for e in mesh.findall("m:vertices/m:vertex", ns)])
+    tris = mesh.findall("m:triangles/m:triangle", ns)
+    faces = np.array([[int(e.get(a)) for a in ("v1", "v2", "v3")] for e in tris], np.int64).reshape(-1, 3)
+    paint = [e.get("paint_color") or "" for e in tris]
+    prusa = [e.get("{http://schemas.slic3r.org/3mf/2017/06}mmu_segmentation") or "" for e in tris]
+    if prusa != paint:
+        raise ValueError("The Bambu and PrusaSlicer paint strings differ")
+    return verts, faces, paint, palette
