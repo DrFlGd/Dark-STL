@@ -114,3 +114,39 @@ def test_grayscale_height():
     img[0, 0, :3] = 0
     f = hm.height_from_grayscale(img)
     assert f.height[1, 1] == pytest.approx(0.5) and f.height[0, 0] == pytest.approx(-0.5)
+
+
+def _ring_slopes(n=96, hr=8, sample="point"):
+    """Slopes of a raised ring with steep 1.5-texel walls, sampled at texel centres (stair-stepped, as an
+    under-resolved bake) or averaged over each texel (the smooth truth)."""
+    y, x = (np.mgrid[0:n * hr, 0:n * hr] + 0.5) / hr
+    r = np.hypot(x - n / 2, y - n / 2)
+    h = np.clip((n * 0.3 - r) / 1.5, 0, 1) * 1.5
+    gy, gx = np.gradient(h)
+    gx, gy = gx * hr, gy * hr
+    if sample == "point":
+        return gx[hr // 2::hr, hr // 2::hr], gy[hr // 2::hr, hr // 2::hr]
+    return (gx.reshape(n, hr, n, hr).mean(axis=(1, 3)), gy.reshape(n, hr, n, hr).mean(axis=(1, 3)))
+
+
+def test_smooth_jagged_edges_takes_out_stair_steps():
+    p, q = _ring_slopes()
+    tp, tq = _ring_slopes(sample="area")
+    sp, sq = hm.smooth_jagged_edges(p, q)
+    before = np.hypot(p - tp, q - tq)
+    after = np.hypot(sp - tp, sq - tq)
+    edge = np.hypot(tp, tq) > 0.05
+    assert np.sqrt((after[edge] ** 2).mean()) < 0.85 * np.sqrt((before[edge] ** 2).mean())
+    # the wall stays as steep as it was: smoothed along the edge, not across it
+    assert np.abs(sp).max() > 0.8 * np.abs(p).max()
+
+
+def test_smooth_jagged_edges_leaves_grid_edges_and_grain():
+    rng = np.random.default_rng(3)
+    p = np.zeros((64, 64), np.float32)
+    p[:, 20:24] = 1.0  # a wall running down the texel grid: no steps to take out
+    p += rng.normal(0, 0.02, p.shape).astype(np.float32)
+    q = rng.normal(0, 0.02, p.shape).astype(np.float32)
+    sp, sq = hm.smooth_jagged_edges(p, q)
+    assert np.abs(sp - p).max() < 0.02 and np.abs(sq - q).max() < 0.02
+    assert hm.smooth_jagged_edges(p, q, strength=0)[0] is p
