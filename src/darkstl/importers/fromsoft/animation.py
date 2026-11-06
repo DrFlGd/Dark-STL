@@ -448,10 +448,16 @@ class AnimationInfo:
     duration: float
     fps: float
     source: str = ""
+    moves: int | None = None  # how many of the model's bones it has tracks for, when the format says
+    fixed: bool = False  # one key per track: a held pose, nothing moves between frames
 
     def as_dict(self) -> dict:
-        return {"name": self.name, "frames": self.frames, "duration": round(self.duration, 4),
-                "fps": round(self.fps, 3), "source": self.source}
+        out = {"name": self.name, "frames": self.frames, "duration": round(self.duration, 4),
+               "fps": round(self.fps, 3), "source": self.source}
+        if self.moves is not None:
+            out["moves"] = self.moves
+            out["fixed"] = self.fixed
+        return out
 
 
 class AnimationSet:

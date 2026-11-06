@@ -28,7 +28,7 @@ from .formats import motion as motfmt
 from .formats import pak as pakfmt
 from .formats.mesh import Bone
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 
 
 def bone_hashes(names: list[str]) -> np.ndarray:
@@ -78,6 +78,8 @@ class _Entry:
     duration: float
     fps: float
     label: str
+    moves: int = 0  # bones of the model it has clips for
+    fixed: bool = False  # every track one key: a held pose
 
 
 _lock = threading.Lock()
@@ -99,7 +101,8 @@ def _read(path: Path) -> bytes:
 
 
 def _summary(path: Path) -> dict:
-    """{'hashes': bone hashes moved anywhere in the file, 'motions': [[name, offset, frame count, fps], ...]}"""
+    """{'hashes': bone hashes moved anywhere in the file,
+    'motions': [[name, offset, frame count, fps, [its bone hashes], most keys in a track], ...]}"""
     data = _read(path)
     if motfmt.is_motlist(data):
         headers = motfmt.read_motlist(data).motions
@@ -111,10 +114,12 @@ def _summary(path: Path) -> dict:
     motions = []
     for h in headers:
         try:
-            hashes.update(motfmt.clip_hashes(data, h))
+            own = motfmt.clip_hashes(data, h)
+            keys = max(motfmt.clip_key_counts(data, h), default=0)
         except Exception:  # noqa: BLE001 - a broken header hides only that motion
             continue
-        motions.append([h.name, h.offset, h.frame_count, h.fps])
+        hashes.update(own)
+        motions.append([h.name, h.offset, h.frame_count, h.fps, sorted(set(own)), keys])
     return {"hashes": sorted(hashes), "motions": motions}
 
 
@@ -221,7 +226,7 @@ class REAnimations:
                     continue
                 stem = files.file_stem(p.name)
                 where = p.as_posix().split("/natives/", 1)[-1]
-                for i, (name, offset, frame_count, fps) in enumerate(s["motions"]):
+                for i, (name, offset, frame_count, fps, moved, keys) in enumerate(s["motions"]):
                     label = f"{stem} / {name or f'motion {i}'}"
                     key, n = label, 2
                     while key in out:
@@ -229,7 +234,8 @@ class REAnimations:
                     fc = float(frame_count)
                     frames = max(1, int(np.floor(fc + 1e-4)) + 1)
                     rate = float(fps) or 60.0
-                    out[key] = _Entry(key, p, int(offset), frames, fc / rate, rate, where)
+                    out[key] = _Entry(key, p, int(offset), frames, fc / rate, rate, where,
+                                      len(own.intersection(moved)), int(keys) <= 1)
             self._entries = dict(sorted(out.items(), key=lambda kv: kv[0].lower()))
         return self._entries
 
@@ -258,10 +264,11 @@ class REAnimations:
 
     def info(self, name: str) -> AnimationInfo:
         e = self._entry(name)
-        return AnimationInfo(e.name, e.frames, e.duration, e.fps, e.label)
+        return AnimationInfo(e.name, e.frames, e.duration, e.fps, e.label, e.moves, e.fixed)
 
     def list(self) -> list[AnimationInfo]:
-        return [AnimationInfo(e.name, e.frames, e.duration, e.fps, e.label) for e in self.entries().values()]
+        return [AnimationInfo(e.name, e.frames, e.duration, e.fps, e.label, e.moves, e.fixed)
+                for e in self.entries().values()]
 
     def clamp(self, name: str, frame: int) -> int:
         return min(max(int(frame), 0), self.info(name).frames - 1)

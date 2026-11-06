@@ -611,14 +611,16 @@ def load_model(path: os.PathLike | str, texture_dirs: tuple[str, ...] = ()) -> M
 # A model's animations
 
 _CHARACTER_ID = re.compile(r"^([a-z]+)(\d+)")
+_CHARACTER_ID2 = re.compile(r"^([a-z]+)(\d+)_(\d{4})(?=$|_)")  # Village: ch03_0200 (series ch03, character 0200)
 _CUTSCENE = re.compile(r"/(event|cutscene|ev|cs|presentation)/", re.I)
 MAX_MOTION_LISTS = 400
 
 
 def character_id(stem: str) -> str | None:
     """The id a model's animations are filed under: the letters and digits its name starts with
-    (``pl0000`` for pl0000_body, ``cha000`` for RE4's cha000_00, ``ch01`` for Village's ch01_1201_upperbody)."""
-    m = _CHARACTER_ID.match(stem.lower())
+    (``pl0000`` for pl0000_body, ``cha000`` for RE4's cha000_00, ``ch01_1201`` for Village's ch01_1201_upperbody,
+    whose animations are filed under ``ch01_1201`` with the series ``ch01`` as the family)."""
+    m = _CHARACTER_ID2.match(stem.lower()) or _CHARACTER_ID.match(stem.lower())
     return m.group(0) if m else None
 
 
@@ -626,15 +628,21 @@ def _id_score(cid: str, rel: str) -> int:
     """How well a motion file's path names character ``cid``: 3 the same id (pl0000), 2 a family it belongs
     to (RE4's cha0 folder for cha000, RE2's pl00 for pl0000), 1 a sibling (pl1000's animations for
     pl1001), 0 not at all."""
+    two = _CHARACTER_ID2.match(cid)
     letters, digits = _CHARACTER_ID.match(cid).groups()
+    sub = two.group(3) if two else None
     best = 0
-    for token in re.split(r"[/_.\-]", rel.lower()):
+    tokens = re.split(r"[/_.\-]", rel.lower())
+    for t, token in enumerate(tokens):
         m = _CHARACTER_ID.fullmatch(token)
         if not m or m.group(1) != letters:
             continue
         d = m.group(2)
         if d == digits:
-            return 3
+            if sub is None or (t + 1 < len(tokens) and tokens[t + 1] == sub):
+                return 3
+            best = max(best, 2)  # the series: Village's ch03 for ch03_0200
+            continue
         if digits.startswith(d):
             best = max(best, 2)
         elif len(d) == len(digits) >= 3 and d[:-1] == digits[:-1]:
