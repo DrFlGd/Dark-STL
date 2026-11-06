@@ -639,6 +639,10 @@ def assemble(config: Configuration, choices: dict | None, load: Loader) -> Sourc
         if not paint.materials:
             notes.append(f"{s.label}: {opt.label} has no materials")
             continue
+        if not paint.textures:  # painting with it would only take the parts' own textures away
+            notes.append(f"{s.label}: {opt.label} has no textures, so the parts keep their own")
+            notes += [f"{s.label}: {n}" for n in paint.notes]
+            continue
         prefix = f"{s.id}:"
         for k, t in paint.textures.items():
             textures[prefix + k] = t
