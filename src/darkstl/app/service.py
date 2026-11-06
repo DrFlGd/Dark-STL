@@ -1051,9 +1051,12 @@ class Service:
         return out
 
     def _configurable_as(self, path: Path) -> list[dict]:
-        """The configurable models this model is the base of (a gun's shared mesh -> the gun to configure)."""
+        """The configurable models this model is the base or a part of (a gun part -> the gun to configure)."""
         with self.lock:
-            found = [e for e in self.library.configurations if e.config is not None and Path(e.path) == Path(path)]
+            found = [e for e in self.library.configurations if e.config is not None
+                     and (Path(e.path) == Path(path) or any(Path(o.model.file) == Path(path)
+                                                            for s in e.config.slots if s.kind == "parts"
+                                                            for o in s.options))]
         return [{"id": e.id, "label": e.label, "slots": len(e.config.slots)} for e in found]
 
     def _part_model(self, path: str, variant: str | None) -> SourceModel:

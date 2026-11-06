@@ -17,6 +17,7 @@ The package and mesh layouts follow UE Viewer (gildor2/UEViewer, MIT licence).
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +35,8 @@ from .formats.skeletal import read_skeletal_mesh
 from .formats.static import read_static_mesh
 from .formats.texture import Texture2D
 from .mesh import build_trimesh
+
+log = logging.getLogger(__name__)
 
 GAMES = (GAME_BL1, GAME_BL2, GAME_TPS, GAME_BL3, GAME_WL, GAME_BL4)
 
@@ -253,8 +256,14 @@ class BorderlandsImporter(Importer):
     def configurations(self, folder: Path, game: str, entries: list[CatalogEntry]) -> list:
         """Each gun type as a configuration of its gestalt mesh's parts (Borderlands 2, The Pre-Sequel)."""
         if game in unreal4.UE4_GAMES:
+            from .ue4.balances import balance_configurations
             from .ue4.guns import gun_configurations
-            return gun_configurations(entries, game)
+            try:  # the game's own part lists, then guesses from the meshes' names where it has none
+                found, covered = balance_configurations(Path(folder), game, entries)
+            except (FormatError, OSError) as exc:
+                log.warning("Couldn't read %s's gun balances: %s", game, exc)
+                found, covered = [], set()
+            return found + [c for c in gun_configurations(entries, game) if c.group not in covered]
         from .configurations import build_configurations
 
         return build_configurations(Path(folder), game, entries, self.cache)
