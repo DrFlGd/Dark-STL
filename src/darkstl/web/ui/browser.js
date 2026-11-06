@@ -14,7 +14,7 @@ import { Inspector } from "./inspector.js";
 import { openMenu, usePageKeys } from "./actions.js";
 import { Thumb } from "./thumbs.js";
 import { GameBadge, CategoryIcon } from "./gameicons.js";
-import { gameMenu, rescanFolder, collectItem, collectModelItem } from "./games.js";
+import { gameMenu, rescanFolder, collectItem, collectModelItem, unpackFolder, UNPACK_HINT } from "./games.js";
 
 const PAGE = 300;
 const VIEWS = [["grid", "Grid", "grid"], ["list", "List", "list"]];
@@ -98,6 +98,7 @@ function GameFolders({ game }) {
       <div class="insp-actions">
         <button type="button" class="ghost" disabled=${f.missing} onClick=${() => showInFolder(f.path)}>${Icon.folder(14)} Show</button>
         <button type="button" class="ghost" disabled=${f.missing} onClick=${() => rescanFolder(f.path)}>${Icon.refresh(14)} Rescan</button>
+        ${f.packed ? html`<button type="button" class="primary compact folder-unpack" disabled=${f.missing} title=${UNPACK_HINT} onClick=${() => unpackFolder(f.path, f.packed.game)}>${Icon.inbox(14)} Unpack…</button>` : null}
       </div></div>`)}
     <button type="button" class="ghost" id="game-add-folder" onClick=${() => ui.set({ dialog: { type: "add-folder", game: game.name } })}>${Icon.plus(14)} Add another folder…</button>
   </section>`;
@@ -217,7 +218,8 @@ export function Browser({ route }) {
     <div class="browse-main">
       ${cat ? html`<${GroupChips} game=${game.name} cat=${cat} group=${place.group} />` : null}
       <div class="browse-scroll">
-        ${notes.map((f) => html`<div class="warn-note folder-note" key=${f.path}>${f.notes.map((n, i) => html`<p key=${i}>${n}</p>`)}</div>`)}
+        ${notes.map((f) => html`<div class="warn-note folder-note" key=${f.path}>${f.notes.map((n, i) => html`<p key=${i}>${n}</p>`)}
+          ${f.packed ? html`<p><button type="button" class="primary compact folder-unpack" onClick=${() => unpackFolder(f.path, f.packed.game)}>${Icon.inbox(14)} Unpack ${f.packed.game}…</button></p>` : null}</div>`)}
         <${SearchNote} q=${s.q} found=${fresh ? `${plural(fresh.total, "model")} found in ${name}` : ""}
           wider=${s.q && place.category ? html`<a href=${routeHash(placeRoute(game.name))} id="search-game">Search all of ${game.name}</a>` : null}
           onClear=${() => { setText(""); ui.set({ q: "" }); }} />

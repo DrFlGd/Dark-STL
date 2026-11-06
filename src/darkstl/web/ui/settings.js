@@ -8,7 +8,7 @@ import { api, info, plural, bytesText, toast, showInFolder, pickFolder, followJo
 import { CommandBar } from "./layout.js";
 import { Icon } from "./icons.js";
 import { GameBadge } from "./gameicons.js";
-import { rescanFolder, removeFolder, changeGame } from "./games.js";
+import { rescanFolder, removeFolder, changeGame, unpackFolder, UNPACK_HINT } from "./games.js";
 import { forgetThumbs } from "./thumbs.js";
 
 const msg = (e) => String(e?.message || e);
@@ -26,6 +26,7 @@ function GameFolders() {
         ${f.notes.map((n, i) => html`<small class="warn-text" key=${i}>${n}</small>`)}</span>
       <span class="folder-actions">
         <button type="button" class="ghost" title="Show in folder" aria-label="Show in folder" disabled=${f.missing} onClick=${() => showInFolder(f.path)}>${Icon.folder(14)}</button>
+        ${f.packed ? html`<button type="button" class="primary compact folder-unpack" disabled=${f.missing} title=${UNPACK_HINT} onClick=${() => unpackFolder(f.path, f.packed.game)}>Unpack…</button>` : null}
         <button type="button" class="ghost folder-rescan" disabled=${f.missing} onClick=${() => rescanFolder(f.path)}>Rescan</button>
         <button type="button" class="ghost folder-game-btn" onClick=${() => changeGame(f.path, g.name)}>Change game…</button>
         <button type="button" class="ghost danger-text folder-remove" onClick=${() => removeFolder(f.path, g.name)}>Remove…</button></span></li>`))}</ul>`
@@ -92,6 +93,7 @@ function Engine() {
       ${moving ? html`<p class="muted" id="library-moving">${moving}</p>` : null}
       <div><button type="button" class="ghost" id="library-show" onClick=${() => showInFolder(s.library_dir)}>${Icon.folder(14)} Show in folder</button></div>
     </section>
+    <${GameArchives} />
     <section class="ls-section" id="settings-textures">
       <h2>Texture folders</h2>
       <p class="muted">Where to look for textures a model uses but doesn't hold itself: map pieces and some objects share textures kept elsewhere in the game.</p>
@@ -120,6 +122,40 @@ function Engine() {
         try { const r = await api("thumbs_clear"); forgetThumbs(); toast(`Cleared ${plural(r.removed, "preview")}. They're drawn again as they come into view.`); } catch (e) { toast(msg(e)); }
       }}>Draw them again</button></div>
     </section>`;
+}
+
+/** Unpacking the games that keep their files in archives, and the file lists it names them with. */
+function GameArchives() {
+  const [lists, setLists] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState(null);
+  const ov = useStore(ui, (s) => s.overview);
+  useEffect(() => { api("filelists").then(setLists, (e) => setError(msg(e))); }, []);
+  const packed = (ov?.games || []).flatMap((g) => g.folders.filter((f) => f.packed).map((f) => ({ ...f, game: g.name })));
+  const download = async () => {
+    setBusy("Downloading…"); setError(null);
+    try {
+      const { job } = await api("filelists_download");
+      const r = await followJob(job, "Downloading file lists", (j) => setBusy(j.message || "Downloading…"));
+      setLists(await api("filelists"));
+      toast(`Downloaded ${plural(r.downloaded.length, "file list")}${r.failed.length ? ` (${r.failed.length} failed)` : ""}. Unpacking uses them from now on.`);
+    } catch (e) { setError(msg(e)); }
+    setBusy("");
+  };
+  const got = lists?.games.filter((g) => g.downloaded.length) || [];
+  return html`<section class="ls-section" id="settings-archives">
+    <h2>Game archives</h2>
+    <p class="muted">Dark Souls, Dark Souls II, Dark Souls III, Sekiro and Elden Ring keep their models in archives (Data0.bhd and .bdt and so on).
+      Dark STL unpacks them itself: add the game's install folder, then choose <i>Unpack…</i> on it. Only the models, their textures and their
+      animations are written out, into the App library below; the game's folder isn't changed.</p>
+    ${packed.length ? html`<ul class="ls-list" id="packed-folders">${packed.map((f) => html`<li key=${f.path}><span>${f.game}${" "}<span class="note-path">${f.path}</span></span>
+      <button type="button" class="primary compact folder-unpack" onClick=${() => unpackFolder(f.path, f.packed.game)}>Unpack…</button></li>`)}</ul>` : null}
+    <p class="muted">The archives only keep a number for each file, so names come from lists the modding community made (UXM's lists, as Smithbox ships them, come with Dark STL).
+      Newer lists, such as those naming Elden Ring's Shadow of the Erdtree files, can be downloaded from${" "}<a href=${lists?.source || "https://github.com/Nordgaren/UXM-Selective-Unpack"} target="_blank" rel="noreferrer">UXM Selective Unpacker</a>.</p>
+    <p id="filelists-status">${!lists ? html`<span class="muted">…</span>` : got.length ? html`${Icon.check(14)} Downloaded lists for ${got.map((g) => g.game).join(", ")} (${got[0].downloaded_at})` : html`<span class="muted">Using the bundled lists.</span>`}</p>
+    ${error ? html`<p class="warn-text" role="alert" id="filelists-error">${error}</p>` : null}
+    <div><button type="button" class="ghost" id="filelists-download" disabled=${!!busy} onClick=${download}>${busy || (got.length ? "Download again" : "Download newer file lists")}</button></div>
+  </section>`;
 }
 
 export function Settings() {

@@ -10,7 +10,7 @@ import { CommandBar } from "./layout.js";
 import { Icon } from "./icons.js";
 import { Thumb } from "./thumbs.js";
 import { GameBadge, CategoryIcon } from "./gameicons.js";
-import { gameMenu } from "./games.js";
+import { gameMenu, unpackFolder } from "./games.js";
 import { openMenu } from "./actions.js";
 
 const addFolder = () => ui.set({ dialog: { type: "add-folder" } });
@@ -44,6 +44,7 @@ function FolderNotes({ games }) {
     ${notes.map(({ game, folder }) => html`<div class="warn-note folder-note" key=${folder.path} data-folder=${folder.path}>
       <p><b>${game.name}</b> · <span class="note-path">${folder.path}</span></p>
       ${folder.notes.map((n, i) => html`<p key=${i}>${n}</p>`)}
+      ${folder.packed ? html`<p><button type="button" class="primary compact folder-unpack" onClick=${() => unpackFolder(folder.path, folder.packed.game)}>${Icon.inbox(14)} Unpack ${folder.packed.game}…</button></p>` : null}
     </div>`)}
   </section>`;
 }
@@ -116,9 +117,10 @@ function FirstRun({ error }) {
     </div>
     <div class="home-card first-tips">
       <h2>What to choose</h2>
-      <p><b>The game's install folder, once unpacked.</b> Dark Souls Remastered keeps its models loose, so its install folder works as it is.
-        Dark Souls II, Dark Souls III, Sekiro and Elden Ring pack them in archives: unpack those first with UXM Selective Unpacker
-        (UDSFM for Dark Souls: Prepare to Die Edition). For Bloodborne, choose the folder of files extracted from the game.
+      <p><b>The game's install folder.</b> Dark Souls Remastered keeps its models loose, so its install folder works as it is.
+        Dark Souls, Dark Souls II, Dark Souls III, Sekiro and Elden Ring pack them in archives: add the install folder as it is, and Dark STL
+        offers to unpack the models (characters, weapons and armour, objects, map pieces) into its own library; the game's folder isn't changed.
+        A folder unpacked with UXM Selective Unpacker works too. For Bloodborne, choose the folder of files extracted from the game.
         For Cyberpunk 2077, choose its install folder as it is: the models are read from its archives (the first scan reads through them once), or choose a folder of files exported with WolvenKit.
         Resident Evil 2, 3, 4, 7 and Village (RE Engine) are read from the files a pak tool (REtool, ree-pak) extracts, or straight from
         the game's folder when its file list (a <code>.list</code> file from the modding community) is copied in beside the <code>.pak</code> archives.</p>

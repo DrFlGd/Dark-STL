@@ -55,12 +55,20 @@ neither.
 
 ## Getting the game files
 
-Dark STL reads the files as the community unpackers leave them; it does not read the games'
-encrypted archives directly.
-
-- **PC games:** unpack them with the usual community unpacker for each game (UXM Selective
-  Unpacker, or UDSFM for Dark Souls PTDE). Models end up in `parts/`, `chr/`, `obj/` or
-  `asset/`, and `map/` as `.dcx` files, which Dark STL opens as they are.
+- **PC games (Dark Souls PTDE, Dark Souls II, Dark Souls III, Sekiro, Elden Ring):** add the
+  game's install folder as it is. Its models are still packed in the game's archives
+  (`Data0.bhd`/`.bdt` and so on), so Dark STL offers to **unpack** them (also *Unpack…* in the
+  folder's menu, and *Settings > Game archives*): it decrypts the archives' file lists with
+  the games' published keys and writes out the groups you choose (characters, weapons and
+  armour, objects and assets, map pieces) with their textures and animations, into its own
+  library folder, laid out as `chr/`, `parts/`, `obj/` or `asset/`, and `map/`. Nothing in
+  the game's folder is changed, and nothing else (sound, scripts, collision) is unpacked.
+  File names come from the community's lists (UXM's, as Smithbox ships them, are included;
+  newer ones, which name Elden Ring's Shadow of the Erdtree files, download from
+  UXM Selective Unpacker in *Settings*), and models that follow the pattern of known names
+  are found too. From the command line: `darkstl unpack <game folder> -o <folder>
+  [--only characters,parts,objects,maps]`. A folder already unpacked with UXM Selective
+  Unpacker or UDSFM works as it is.
 - **Bloodborne:** use the extracted `dvdroot_ps4` folder from your own console dump, or any
   folder of `.chrbnd.dcx`, `.objbnd.dcx` and `.partsbnd.dcx` files taken from it. The PS4
   textures are rebuilt into ordinary DDS on the fly.
@@ -92,8 +100,8 @@ Start *Dark STL* from the Start menu, or from a source install:
 darkstl            # or darkstl-gui; darkstl gui --browser opens it in your browser
 ```
 
-1. **Add your games.** *Add game folder…* takes a game's folder (once unpacked) or any folder
-   of extracted model files. Dark STL recognises the game from its files and lists it in the
+1. **Add your games.** *Add game folder…* takes a game's install folder (offering to unpack
+   the games that keep their models in archives) or any folder of extracted model files. Dark STL recognises the game from its files and lists it in the
    menu. Add as many games and folders as you like; *Settings* lists them, with Rescan,
    Change game and Remove. Nothing in your folders is ever changed. Models you *Collect into
    the app* are copied into Dark STL's library folder (movable in *Settings*); on a fresh
@@ -195,7 +203,12 @@ merge.
 
 The file format knowledge comes from the FromSoftware modding community, in particular
 [SoulsFormats](https://github.com/JKAnderson/SoulsFormats) by TKGP and
-[Soulstruct](https://github.com/Grimrukh/soulstruct) by Grimrukh. Dark STL is an independent
+[Soulstruct](https://github.com/Grimrukh/soulstruct) by Grimrukh. Unpacking follows the
+archive format as BinderTool (Atvaark), UXM (TKGP) and
+[UXM Selective Unpacker](https://github.com/Nordgaren/UXM-Selective-Unpack) (Nordgaren)
+read it; the archive keys and the bundled file lists are copied from
+[Smithbox](https://github.com/vawser/Smithbox) (MIT, see
+`src/darkstl/importers/fromsoft/filelists/LICENSE.txt`). Dark STL is an independent
 reimplementation and contains no code or data from the games; you need your own copies.
 
 The page bundles [Preact](https://preactjs.com) (MIT), [htm](https://github.com/developit/htm)

@@ -27,12 +27,13 @@ import numpy as np
 
 from .. import __version__
 from .. import collect
+from ..errors import FormatError
 from ..export import FORMATS, ExportOptions, export_mesh
 from ..geometry.mesh import TriMesh
 from ..library import Library, detect_game, folder_relation, known_games
 from ..model import CatalogEntry, MeshOptions, SourceModel, path_id
 from ..thumbnails import ThumbnailCache
-from .config import Config, models_dir
+from .config import Config, filelists_dir, models_dir
 from .meshpack import pack_mesh
 
 UNITS = {"mm": 1000.0, "m": 1.0, "cm": 100.0, "in": 39.3701}
@@ -289,6 +290,8 @@ class Service:
         self.upscaled: OrderedDict[tuple, Any] = OrderedDict()  # normal maps made ready (UpscaledMap) by _upscale_key()
         self.cuts: OrderedDict[tuple, Any] = OrderedDict()  # CutResult by the model cut and the cut settings
         self.solids: OrderedDict[tuple, Any] = OrderedDict()  # cut.Solid by the model made solid and the sheet thickness
+        self.cache = Path(cache)
+        self.unpack_plans: dict[tuple, Any] = {}  # unpack.Plan by (game folder, destination), the last few
         if config.oodle:
             self._use_oodle(config.oodle)
 
@@ -466,6 +469,7 @@ class Service:
         for g in games:
             for f in g["folders"]:
                 f["collected"] = self._is_collection(Path(f["path"]))
+                f["packed"] = self._packed(Path(f["path"]), g["name"]) if not f["collected"] else None
         return {"scanning": self.scanning > 0, "games": games, "total": sum(g["count"] for g in games)}
 
     def cmd_folder_check(self, args: dict) -> dict:
@@ -548,7 +552,8 @@ class Service:
         count = sum(1 for e in lib.entries if not lib.hides(e))  # as the library lists them
         path, game = folders[0]
         return {"game": game, "games": list(dict.fromkeys(g for _p, g in folders)), "path": str(path),
-                "count": count, "notes": lib.notes.get(path, [])}
+                "count": count, "notes": lib.notes.get(path, []),
+                "packed": None if self._is_collection(path) else self._packed(path, game)}
 
     def cmd_folder_remove(self, args: dict) -> dict:
         path = Path(str(args.get("path") or ""))
@@ -612,6 +617,123 @@ class Service:
     def _save_folders(self) -> None:
         self.config.game_folders = [{"path": str(p), "game": g} for p, g in self.library.roots.items()]
         self.config.save()
+
+    # ------------------------------------------------------------ unpacking game archives
+
+    @staticmethod
+    def _packed(folder: Path, game: str | None) -> dict | None:
+        """{"game": ...} when ``folder`` holds a game's packed archives Dark STL can unpack."""
+        from ..importers.fromsoft import unpack
+
+        try:
+            games = unpack.packed_games(folder)
+        except OSError:
+            return None
+        if not games:
+            return None
+        return {"game": game if game in games else games[0]}
+
+    def _unpack_args(self, args: dict) -> tuple[Path, str | None, Path]:
+        raw = str(args.get("path") or "").strip().strip('"')
+        if not raw:
+            raise AppError("Choose the game's folder first.")
+        path = Path(os.path.abspath(os.path.expanduser(raw)))
+        if not path.is_dir():
+            raise AppError(f"There is no folder at {path}")
+        with self.lock:
+            game = self.library.roots.get(path) or str(args.get("game") or "").strip() or None
+        packed = self._packed(path, game)
+        if packed is None:
+            raise AppError(f"There are no game archives to unpack in {path} (Data0.bhd, Data1.bhd, GameDataEbl.bhd, "
+                           "dvdbnd0.bhd5 ...). Choose the game's install folder.")
+        game = packed["game"]
+        dest_raw = str(args.get("dest") or "").strip().strip('"')
+        dest = Path(os.path.abspath(os.path.expanduser(dest_raw))) if dest_raw else \
+            self.config.library_folder / collect._folder_name(game)
+        if _is_under(dest, path):
+            raise AppError("Choose a folder outside the game's folder: Dark STL doesn't change the game's files.")
+        return path, game, dest
+
+    def _unpack_plan(self, path: Path, game: str | None, dest: Path, job: Job):
+        from ..importers.fromsoft import unpack
+
+        try:
+            plan = unpack.plan(path, dest, game, self.cache / "archives", filelists_dir(), job.report)
+        except FormatError as exc:
+            raise AppError(str(exc)) from None
+        with self.lock:
+            self.unpack_plans[(path, dest)] = plan
+            while len(self.unpack_plans) > 3:
+                self.unpack_plans.pop(next(iter(self.unpack_plans)))
+        return plan
+
+    def cmd_unpack_plan(self, args: dict) -> dict:
+        """What unpacking a game folder's archives would write, by group (a job: the first time, reading the
+        archives' encrypted headers takes a while)."""
+        path, game, dest = self._unpack_args(args)
+
+        def run(job: Job):
+            out = self._unpack_plan(path, game, dest, job).summary()
+            out["path"] = str(path)
+            out["default_dest"] = str(self.config.library_folder / collect._folder_name(out["game"]))
+            return out
+
+        return {"job": self.jobs.start(f"Reading {game}'s archives", run, stoppable=True).id}
+
+    def cmd_unpack_run(self, args: dict) -> dict:
+        """Unpack the chosen groups of a game folder's archives into ``dest`` (the app's library by default)
+        and list the models from there."""
+        from ..importers.fromsoft import unpack
+
+        path, game, dest = self._unpack_args(args)
+        known = {g.id for g in unpack.GROUPS}
+        groups = [str(g) for g in args.get("groups") or [] if str(g) in known]
+        if not groups:
+            raise AppError("Choose what to unpack: characters, weapons and armour, objects or map pieces.")
+        with self.lock:
+            plan = self.unpack_plans.get((path, dest))
+
+        def run(job: Job):
+            p = plan or self._unpack_plan(path, game, dest, job)
+            result = unpack.run(p, groups, job.report)
+            collect.write_manifest(dest, p.game, sources=[str(path)])
+            job.report(1.0, f"Reading {dest.name}")
+            lib = Library()
+            lib.add_root(dest, p.game)
+            self.thumbs.forget({e.path for e in lib.entries})
+            with self.lock:
+                for inner in folder_relation(dest, self.library.roots)[1]:
+                    self.library.remove_root(inner)
+                self.library.merge(lib)
+                self._save_folders()
+                self.unpack_plans.pop((path, dest), None)
+            result["count"] = sum(1 for e in lib.entries if not lib.hides(e))
+            return result
+
+        return {"job": self._scan_job(f"Unpacking {game}", run).id}
+
+    def cmd_filelists(self, args: dict) -> dict:
+        """The file lists unpacking names files with: bundled ones and those downloaded from Settings."""
+        from ..importers.fromsoft import unpack
+
+        return {"folder": str(filelists_dir()), "games": unpack.lists_status(filelists_dir()),
+                "source": unpack.DOWNLOAD_PAGE}
+
+    def cmd_filelists_download(self, args: dict) -> dict:
+        """Download UXM Selective Unpacker's newer file lists (all games, or ``games``) into the settings folder."""
+        from ..importers.fromsoft import unpack
+
+        games = [str(g) for g in args.get("games") or []] or None
+
+        def run(job: Job):
+            out = unpack.download_lists(filelists_dir(), games, job.report)
+            if not out["downloaded"]:
+                raise AppError("Couldn't download the file lists: " + "; ".join(out["failed"][:3]))
+            with self.lock:
+                self.unpack_plans.clear()
+            return out
+
+        return {"job": self.jobs.start("Downloading file lists", run, stoppable=False).id}
 
     # ------------------------------------------------------------ collecting into the app's library
 

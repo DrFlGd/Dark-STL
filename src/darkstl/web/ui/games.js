@@ -33,6 +33,12 @@ export function removeFolder(path, game) {
 
 export const changeGame = (path, game) => ui.set({ dialog: { type: "change-game", path, game } });
 
+/** Open the Unpack dialog for a game folder whose files are still in the game's archives. */
+export const unpackFolder = (path, game) => ui.set({ dialog: { type: "unpack", path, game } });
+
+/** What Unpack does, in a line (menus and button tips). */
+export const UNPACK_HINT = "write the models in the game's archives out into the app's library";
+
 /** Open the Collect dialog for a game, a place in it ({ game, category, group }) or one model ({ game, model }). */
 export const collectInto = (scope) => ui.set({ dialog: { type: "collect", ...scope } });
 
@@ -72,6 +78,7 @@ export function gameMenu(game, place) {
     const name = f.path.split(/[\\/]/).filter(Boolean).pop();
     items.push({ sep: true }, { head: f.collected ? `${name} (kept by Dark STL)` : name });
     items.push({ id: "folder-show", label: "Show in folder", icon: "folder", run: () => showInFolder(f.path), disabled: f.missing ? "This folder isn't there any more." : false });
+    if (f.packed) items.push({ id: "folder-unpack", label: "Unpack…", sub: UNPACK_HINT, icon: "inbox", run: () => unpackFolder(f.path, f.packed.game), disabled: f.missing ? "This folder isn't there any more." : false });
     items.push({ id: "folder-rescan", label: "Rescan", sub: "after unpacking or adding files", icon: "refresh", run: () => rescanFolder(f.path), disabled: f.missing ? "This folder isn't there any more." : false });
     items.push({ id: "folder-game", label: "Change game…", icon: "edit", run: () => changeGame(f.path, game.name) });
     items.push({ id: "folder-remove", label: "Remove from library…", icon: "trash", danger: true, run: () => removeFolder(f.path, game.name) });

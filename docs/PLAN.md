@@ -47,12 +47,24 @@ themes, command bar, inspector rails, menus and three.js viewer), so the three a
 work alike. Everything the page does goes through one command table (`app/service.py`), which
 the tests call directly.
 
-- **Game folders.** *Add game folder…* takes a game's install folder (unpacked) or any folder
+- **Game folders.** *Add game folder…* takes a game's install folder or any folder
   of extracted files. The game is recognised from its files (or chosen, or named freely), and
   the folder is scanned in the background. Folders are kept in the app's settings file and
   scanned again at start-up; each can be rescanned, moved to another game or removed. A folder
   inside one already added is refused; adding a parent folder takes in the ones inside it. A
-  game still packed in its archives gets a note saying how to unpack it.
+  game still packed in its archives gets a note and an *Unpack…* button.
+- **Unpacking (0.12.0).** `importers/fromsoft/unpack.py` with `formats/bhd5.py`: Dark Souls
+  PTDE (plain BHD5), Dark Souls II (keys from its `*KeyCode.pem` files), Dark Souls III,
+  Sekiro and Elden Ring (published keys in `formats/bhd5_keys.py`). The RSA public operation
+  undoes the header encryption (kept decrypted in the cache afterwards), AES-128-ECB ranges are
+  decrypted per file, and files are cut to their unpadded size. Names: bundled file lists
+  (Smithbox's copies of UXM's), downloaded UXM Selective Unpacker lists in the settings folder,
+  and names guessed by varying the last number of known ones (checked against the file's
+  contents for the 32-bit hash games). Only model, texture and animation files of `chr/`,
+  `parts/`, `obj/`, `asset/` and `map/` are written, into `<app library>/<game>/` (a folder of
+  collected files), with the Oodle DLL. Engine commands `unpack_plan`, `unpack_run`,
+  `filelists`, `filelists_download`; CLI `darkstl unpack`. Dark Souls II `.bnd` models are now
+  listed too (unchecked on real files).
 - **One library per game.** The menu lists each game with its model count. A game's page shows
   its kinds of model (weapons, armour, characters...) as tiles; a kind shows its groups as chips
   and its models as cards or rows, searchable, with the selected model's details beside them.
