@@ -89,6 +89,14 @@ class Entries(Mapping):
         i = int(np.searchsorted(self._hashes, np.uint64(h)))
         return i if i < len(self._hashes) and int(self._hashes[i]) == h else -1
 
+    def contains(self, hashes) -> np.ndarray:
+        """For many hashes at once: whether each is in the archive."""
+        h = np.asarray(hashes, dtype=np.uint64)
+        if not len(self._hashes) or not len(h):
+            return np.zeros(len(h), bool)
+        i = np.minimum(np.searchsorted(self._hashes, h), len(self._hashes) - 1)
+        return self._hashes[i] == h
+
     def _entry(self, i: int) -> Entry:
         return Entry(int(self._hashes[i]), int(self._starts[i]), int(self._ends[i]), bytes(self._sha1[i]))
 

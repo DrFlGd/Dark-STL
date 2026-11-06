@@ -9,7 +9,10 @@ and a folder of extracted files, say); they are listed together.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
+import pickle
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -76,6 +79,53 @@ def folder_configurations(root: Path, game: str, found: list[CatalogEntry]) -> l
     for c in listed:
         c.game = c.game or game
     return out + [c for c in listed if c.game == game]
+
+
+# ---------------------------------------------------------------------------
+# What each folder's last scan found, kept on disk, so the app opens with its library listed straight away
+# (the folders are scanned again behind it)
+
+
+SNAPSHOT_VERSION = 1
+
+
+@dataclass
+class Snapshot:
+    root: Path
+    game: str
+    found: list[CatalogEntry]
+    notes: list[str]
+    configs: list
+    version: str = ""
+
+    @staticmethod
+    def file(folder: Path, root: Path) -> Path:
+        key = hashlib.sha1(os.path.normcase(os.path.abspath(root)).encode("utf-8")).hexdigest()[:16]
+        return Path(folder) / f"{key}.pickle"
+
+    def save(self, folder: Path) -> None:
+        target = self.file(folder, self.root)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(f".{threading.get_ident()}.tmp")
+            with open(tmp, "wb") as f:
+                pickle.dump((SNAPSHOT_VERSION, self), f, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp, target)
+        except (OSError, pickle.PicklingError, TypeError, AttributeError):
+            pass  # only a quicker start lost
+
+    @classmethod
+    def load(cls, folder: Path, root: Path, game: str | None, version: str) -> "Snapshot | None":
+        """The snapshot of ``root`` (written by this version of Dark STL, for the same game), or None."""
+        try:
+            with open(cls.file(folder, root), "rb") as f:
+                kind, snap = pickle.load(f)  # our own cache file, written by save()
+        except Exception:  # noqa: BLE001 - missing, cut short or from an older version: scanned instead
+            return None
+        if (kind != SNAPSHOT_VERSION or not isinstance(snap, cls) or snap.version != version
+                or Path(snap.root) != Path(root) or (game and snap.game != game)):
+            return None
+        return snap
 
 
 def folder_relation(folder: str | os.PathLike, roots) -> tuple[Path | None, list[Path]]:
@@ -158,13 +208,18 @@ class Library:
         root = Path(root)
         game = game or detect_game(root) or root.name
         found, notes = scan_folder(root, game, progress)
+        self.add_scanned(root, game, found, notes, folder_configurations(root, game, found))
+        return found
+
+    def add_scanned(self, root: Path, game: str, found: list[CatalogEntry], notes: list[str], configs: list) -> None:
+        """Take in a folder scanned already (by :meth:`add_root`, or read back from a :class:`Snapshot`)."""
+        root = Path(root)
         self.roots[root] = game
-        self.notes[root] = notes
-        self.found_configs[root] = folder_configurations(root, game, found)
-        self.entries = [e for e in self.entries if not _is_under(e.path, root)] + found
+        self.notes[root] = list(notes)
+        self.found_configs[root] = list(configs)
+        self.entries = [e for e in self.entries if not _is_under(e.path, root)] + list(found)
         self.entries.sort(key=lambda e: e.sort_key)
         self._changed()
-        return found
 
     def remove_root(self, root: str | os.PathLike) -> None:
         root = Path(root)

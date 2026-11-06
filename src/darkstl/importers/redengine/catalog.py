@@ -27,6 +27,8 @@ import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
+import numpy as np
+
 from ...errors import FormatError
 from ...model import LOD_SUFFIX, CatalogEntry
 from ..fromsoft.formats import oodle
@@ -195,10 +197,13 @@ def learn_names(archives: Iterable[arc.Archive]) -> None:
     known: dict[int, str] = {}
     for a in archives:
         known.update(a.names)
-    for a in archives:
-        for h, n in known.items():
-            if h in a.entries:
-                a.names.setdefault(h, n)
+    if not known:
+        return
+    hashes = np.fromiter(known, dtype=np.uint64, count=len(known))
+    for a in archives:  # a million names and dozens of archives: looked up all at once
+        for h in hashes[a.entries.contains(hashes)].tolist():
+            if h not in a.names:
+                a.names[h] = known[h]
 
 
 # ---------------------------------------------------------------------------

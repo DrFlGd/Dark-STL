@@ -31,7 +31,7 @@ from .. import configs
 from ..errors import FormatError
 from ..export import FORMATS, ExportOptions, export_mesh
 from ..geometry.mesh import TriMesh
-from ..library import Library, detect_game, folder_relation, known_games
+from ..library import Library, Snapshot, detect_game, folder_relation, known_games
 from ..model import CatalogEntry, MeshOptions, SourceModel, path_id
 from ..thumbnails import ThumbnailCache
 from .config import Config, config_dir, filelists_dir, models_dir
@@ -304,6 +304,7 @@ class Service:
         self.solids: OrderedDict[tuple, Any] = OrderedDict()  # cut.Solid by the model made solid and the sheet thickness
         self.finished: OrderedDict[tuple, Any] = OrderedDict()  # finish.FinishResult by the model and the settings
         self.cache = Path(cache)
+        self.snapshots = Path(cache) / "library"  # what each folder's last scan found (library.Snapshot)
         self.collect_plans: OrderedDict[str, tuple[float, collect.Plan]] = OrderedDict()  # by _plan_key()
         self.unpack_plans: dict[tuple, Any] = {}  # unpack.Plan by (game folder, destination), the last few
         self.part_models: OrderedDict[tuple, SourceModel] = OrderedDict()  # models opened to assemble configurations
@@ -507,27 +508,50 @@ class Service:
     # ------------------------------------------------------------ library
 
     def load_folders(self) -> Job | None:
-        """Scan every saved game folder (at start-up)."""
+        """Read every saved game folder (at start-up). Each folder's last scan is kept on disk, so the library
+        is listed at once; then the folders are scanned again behind it (scanning also readies what opening
+        a model needs, such as the texture index), each replacing its listing as it's done."""
         folders = [(Path(f["path"]), f.get("game") or None) for f in self.config.game_folders]
         if not folders:
             return None
 
         def run(job: Job):
             lib = Library()
-            for i, (path, game) in enumerate(folders):
-                job.report(i / len(folders), f"Reading {path.name}")
-                if path.is_dir():
-                    lib.add_root(path, game)
-                    if _is_under(path, self.config.library_folder) and collect.read_manifest(path) is None:
-                        collect.write_manifest(path, game or path.name)  # collected before version 0.5.1
-                else:
+            for path, game in folders:
+                if not path.is_dir():
                     lib.roots[path] = game or path.name
                     lib.notes[path] = [f"This folder isn't there any more: {path}"]
+                    continue
+                snap = Snapshot.load(self.snapshots, path, game, __version__)
+                if snap is not None:
+                    lib.add_scanned(path, snap.game, snap.found, snap.notes, snap.configs)
+                else:
+                    lib.roots[path] = game or path.name  # listed in order, filled in when scanned below
             with self.lock:
                 self.library.merge(lib)  # keeps a folder added while this ran
-            return {"games": len(lib.games()), "models": len(lib.entries)}
+            for i, (path, game) in enumerate(folders):
+                if not path.is_dir():
+                    continue
+                job.report(i / len(folders), f"Reading {path.name}")
+                one = Library()
+                self._scan_folder(one, path, game, job)
+                with self.lock:
+                    self.library.merge(one)
+                if _is_under(path, self.config.library_folder) and collect.read_manifest(path) is None:
+                    collect.write_manifest(path, game or path.name)  # collected before version 0.5.1
+            with self.lock:
+                self.collect_plans.clear()
+                return {"games": len(self.library.games()), "models": len(self.library.entries)}
 
         return self._scan_job("Reading game folders", run, stoppable=False)  # the library would be left half read
+
+    def _scan_folder(self, lib: Library, path: Path, game: str | None, job: Job | None = None) -> None:
+        """Scan one folder into ``lib``, and keep what was found for the next start."""
+        report = (lambda i, name: job.report(job.progress, name if i < 0 else f"{i:,} files: {name}")) if job else None
+        found = lib.add_root(path, game, report)
+        g = lib.roots[path]
+        Snapshot(path, g, found, lib.notes.get(path, []), lib.found_configs.get(path, []), __version__) \
+            .save(self.snapshots)
 
     def _scan_job(self, label: str, fn: Callable[[Job], Any], stoppable: bool = True) -> Job:
         with self.lock:
@@ -614,7 +638,7 @@ class Service:
         """The work of a scan job (see _scan), in ``job``."""
         lib = Library()
         for path, game in folders:
-            lib.add_root(path, game, lambda i, name: job.report(0.0, name if i < 0 else f"{i:,} files: {name}"))
+            self._scan_folder(lib, path, game, job)
         job.check()
         if redraw:
             with self.lock:
