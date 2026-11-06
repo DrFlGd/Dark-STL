@@ -29,7 +29,8 @@ other games come next (Phase 1 of the plan).
 Importing is modular: each game family has its own importer, and everything after import
 (the explorer, the three steps, export) is shared. FromSoftware files (Dark Souls, Bloodborne,
 Dark Souls III, Sekiro, Elden Ring), Cyberpunk 2077 files, Capcom RE Engine files (Resident Evil
-2, 3, 4, 7 and Village, Devil May Cry 5) and Wavefront OBJ are supported today.
+2, 3, 4, 7 and Village, Devil May Cry 5), Borderlands packages (Borderlands, Borderlands 2, The
+Pre-Sequel) and Wavefront OBJ are supported today.
 
 ## Install
 
@@ -96,6 +97,16 @@ neither.
   Pose tab with the game's `.motlist` animations filed under their id (`pl0000`, `cha0`...). Games whose archives are
   encrypted (Monster Hunter Wilds and later) need extracting first; their GDeflate textures
   are not read yet.
+
+- **Borderlands, Borderlands 2, The Pre-Sequel (Unreal Engine 3):** add the game's install
+  folder as it is. The models are read straight from the `.upk` packages in
+  `WillowGame\CookedPCConsole` (`CookedPC` for the first game), LZO-compressed as they are;
+  the large texture mips come from the `.tfc` texture caches beside them. The first scan
+  opens every package once and keeps what it found. Borderlands 2 and The Pre-Sequel keep
+  every gun part of a weapon type in one shared mesh in `Startup.upk`; it is listed under
+  Weapons with each part as a part of the model, and each weapon type is also a
+  configurable model (body, grip, barrel, sight, stock, elemental, accessory) built from the
+  game's own part definitions in the `GD_Weap_*` packages.
 
 ## Using the app
 

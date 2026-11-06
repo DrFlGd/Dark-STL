@@ -53,7 +53,8 @@ def package_contents(path: Path, cache: Path | None = None) -> list[dict]:
     if cf is not None and cf.is_file():
         try:
             data = json.loads(cf.read_text("utf-8"))
-            if data.get("version") == VERSION and data.get("size") == st.st_size and data.get("mtime") == st.st_mtime_ns:
+            same = data.get("size") == st.st_size and data.get("mtime") == st.st_mtime_ns
+            if data.get("version") == VERSION and same:
                 return data["objects"]
         except (OSError, ValueError, KeyError):
             pass

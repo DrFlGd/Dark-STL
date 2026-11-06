@@ -105,7 +105,7 @@ function FirstRun({ error }) {
   const games = (info().games || []).filter((g) => g !== "Other models");
   return html`<div class="pages"><div class="first-run" id="first-run">
     <h1>Add your games</h1>
-    <p>Dark STL lists the models in your games (FromSoftware's, Cyberpunk 2077 and the Resident Evil games) by game and kind (weapons, armour, characters and more),
+    <p>Dark STL lists the models in your games (FromSoftware's, Cyberpunk 2077, the Resident Evil games and Borderlands) by game and kind (weapons, armour, characters and more),
       shows them with their textures, and turns them into detailed meshes you can 3D print.</p>
     <p>Add a game's folder to start. Dark STL only reads it; nothing in it is changed. Once a game is listed, the models you want
       can be collected into the app, so the game's folder isn't needed afterwards.</p>
@@ -123,7 +123,8 @@ function FirstRun({ error }) {
         A folder unpacked with UXM Selective Unpacker works too. For Bloodborne, choose the folder of files extracted from the game.
         For Cyberpunk 2077, choose its install folder as it is: the models are read from its archives (the first scan reads through them once), or choose a folder of files exported with WolvenKit.
         For Resident Evil 2, 3, 4, 7, Village and Devil May Cry 5 (RE Engine), choose the install folder as it is: the models are read straight from
-        its <code>.pak</code> archives, named through the file lists that come with Dark STL (Ekey's). A folder a pak tool (REtool, ree-pak) extracted works too.</p>
+        its <code>.pak</code> archives, named through the file lists that come with Dark STL (Ekey's). A folder a pak tool (REtool, ree-pak) extracted works too.
+        For Borderlands, Borderlands 2 and The Pre-Sequel, choose the install folder as it is: the models are read from the packages in <code>WillowGame\CookedPCConsole</code> (the first scan reads through them once).</p>
       <p><b>Or any folder of extracted files</b>, such as .partsbnd, .chrbnd, .objbnd, .flver, .mesh or .obj files you've pulled out with other tools.</p>
       <p><b>Or models Dark STL collected before</b> (on this computer or another): choose its library folder, or one game's folder in it, with <i>Add collected files</i>. Each game can come from either its own folder or its collected files.</p>
       ${games.length ? html`<p class="muted">Recognised: ${games.join(", ")}. Other folders can be added under a name you choose.</p>` : null}
