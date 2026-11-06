@@ -191,6 +191,21 @@ def index_archive(path: Path, cache: Path | None = None, progress: Callable[[int
     return ar, meshes
 
 
+def restore_names(paths: list[Path], cache: Path | None) -> None:
+    """Ready a game folder's archives as a scan leaves them (each archive's names, from the cache, shared
+    between them), without looking through the folder."""
+    if not paths:
+        return
+    oodle.add_hint_path(paths[0].parent)
+    opened = []
+    for path in paths:
+        try:
+            opened.append(index_archive(path, cache)[0])
+        except (FormatError, OSError):
+            continue
+    learn_names(opened)
+
+
 def learn_names(archives: Iterable[arc.Archive]) -> None:
     """Names found in one archive apply to the others (gamedata names the textures in basegame_3...)."""
     archives = list(archives)
@@ -211,10 +226,9 @@ def learn_names(archives: Iterable[arc.Archive]) -> None:
 
 
 def iter_files(root: Path) -> Iterable[Path]:
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames.sort()
-        for name in sorted(filenames):
-            yield Path(dirpath) / name
+    from ...listing import files_under
+
+    return files_under(root)
 
 
 def scan(root: str | os.PathLike, game: str | None = None, progress: Callable[[int, str], None] | None = None,

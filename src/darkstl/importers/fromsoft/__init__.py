@@ -121,6 +121,14 @@ class FromSoftwareImporter(Importer):
         texindex.build(folder, paths, self.cache / "textures" if self.cache else None, progress)
         return entries
 
+    def scan_state(self, folder: Path):
+        index = texindex.index_for(folder)
+        return index if index is not None and texindex._norm(index.root) == texindex._norm(Path(folder)) else None
+
+    def restore_state(self, folder: Path, state) -> None:
+        if isinstance(state, texindex.TextureIndex):
+            texindex.register(state)
+
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
         packed = []
         for d in (folder, folder / "sd"):

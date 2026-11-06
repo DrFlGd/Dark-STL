@@ -69,14 +69,31 @@ class RedEngineImporter(Importer):
     file_filter = "Cyberpunk 2077 models (*.mesh *.archive)"
     games = (GAME,)
 
+    def __init__(self):
+        self._packed_in: dict[str, bool] = {}  # folder -> whether its last scan found models in archives
+
     def detect_game(self, folder: Path) -> str | None:
         return catalog.detect_game(folder)
 
     def scan(self, folder: Path, game: str, progress: ScanProgress | None = None) -> list[CatalogEntry]:
-        return catalog.scan(folder, game, progress, self.cache)
+        found = catalog.scan(folder, game, progress, self.cache)
+        self._packed_in[str(folder)] = any(e.packed for e in found)
+        return found
 
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
         return catalog.folder_notes(folder, found)
+
+    def scan_state(self, folder: Path):
+        """The folder's archives, whose names (kept in this importer's cache) are read again once one is opened."""
+        if not self._packed_in.pop(str(folder), False):
+            return None
+        return [str(p) for p in catalog.iter_files(Path(folder)) if p.name.lower().endswith(".archive")]
+
+    def restore_state(self, folder: Path, state) -> None:
+        if isinstance(state, list) and state:  # read when one of them is first opened, not at start-up
+            paths, cache = [Path(p) for p in state], self.cache
+            catalog.oodle.add_hint_path(paths[0].parent)
+            archive.when_first_opened(paths, lambda: catalog.restore_names(paths, cache))
 
     def configurations(self, folder: Path, game: str, entries: list[CatalogEntry]) -> list:
         """Weapons kept as a body and separate parts in one folder, guessed from their names."""
