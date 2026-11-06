@@ -53,7 +53,7 @@ def test_strings_match_the_slicers():
         decode_string("3")  # a split with no children
     with pytest.raises(ValueError):
         decode_string("44")  # digits left over
-    assert decode_string("441") == [0, 1, 1]  # a one-sided split: special side 0, two children
+    assert decode_string("441") == (0, [1, 1])  # a one-sided split: special side 0, two children
     assert leaf_colours([1, 0, 1, 1], 2).tolist() == [0.25, 0.75, 0.0]
 
 
@@ -149,6 +149,89 @@ def test_tiny_triangles_take_one_colour():
     uv = np.array([[[0.1, 0.5], [0.101, 0.5], [0.101, 0.501]], [[0.9, 0.5], [0.901, 0.5], [0.901, 0.501]]], np.float32)
     p = paint.paint_mesh(TriMesh(v, f, corner_uvs=uv), {0: halves()}, PaintSettings(palette=["#DE0202", "#0202DE"]))
     assert p.strings == ["4", "8"] and p.split_faces == 0
+
+
+def slicer_leaves(tree, corners):
+    """(slot, corners) per leaf, splitting as PrusaSlicer's TriangleSelector::perform_split does: the corners
+    taken round from the special side, midpoints inserted into that list, children picked from it."""
+    if isinstance(tree, int):
+        return [(tree, corners)]
+    special, children = (0, tree) if isinstance(tree, list) else tree
+    sides = len(children) - 1
+    v = [corners[(special + j) % 3] for j in range(3)]
+    mid = lambda i, j: (v[i] + v[j]) / 2
+    if sides == 1:
+        v.insert(2, mid(2, 1))
+        kids = [(v[0], v[1], v[2]), (v[2], v[3], v[0])]
+    elif sides == 2:
+        v.insert(1, mid(1, 0))
+        v.insert(4, mid(0, 3))
+        kids = [(v[0], v[1], v[4]), (v[1], v[2], v[4]), (v[2], v[3], v[4])]
+    else:
+        v.insert(1, mid(1, 0))
+        v.insert(3, mid(3, 2))
+        v.insert(5, mid(0, 4))
+        kids = [(v[0], v[1], v[5]), (v[1], v[2], v[3]), (v[3], v[4], v[5]), (v[1], v[3], v[5])]
+    out = []
+    for child, c in zip(children, kids):
+        out += slicer_leaves(child, c)
+    return out
+
+
+def test_slivers_split_only_their_long_sides():
+    # a sliver 1 m tall and 2 cm wide, its texture red below the middle and blue above: with 3 mm features on
+    # a 100 mm print (3 cm on the model) the short side is never split, only the two long ones
+    v = np.array([[0, 0, 0], [0, 0, 1], [0.02, 0, 0]], float)
+    uv = np.array([[[0, 0.5], [1, 0.5], [0, 0.52]]], np.float32)
+    mesh = TriMesh(v, np.array([[0, 1, 2]]), corner_uvs=uv)
+    p = paint.paint_mesh(mesh, {0: halves()}, PaintSettings(palette=["#DE0202", "#0202DE"], print_height_mm=100,
+                                                            feature_mm=3))
+    tree = decode_string(p.strings[0])
+    assert isinstance(tree, tuple) and tree[0] == 1 and len(tree[1]) == 3  # two sides split, the short one kept
+    assert encode_tree(tree) == p.strings[0]
+    digits = {int(c, 16) & 3 for c in p.strings[0]}
+    assert 1 in digits or 2 in digits
+    # every leaf, laid out as the slicer splits, has the colour of the texture under it, except the few
+    # pieces the border runs through; the part above the middle is the tip, a quarter of the area
+    corners = tuple(np.array(c, float) for c in uv[0])
+    pieces = slicer_leaves(tree, corners)
+    assert len(pieces) == p.leaves and len(pieces) < 40  # splitting all three sides would make hundreds
+    wrong = 0
+    for slot, c in pieces:
+        us = [x[0] for x in c]
+        if min(us) < 0.5 < max(us):
+            continue
+        wrong += slot != (1 if np.mean(us) < 0.5 else 2)
+    assert wrong == 0
+    assert leaf_colours(tree, 2)[1:].tolist() == pytest.approx([0.75, 0.25], abs=0.05)
+    # one-sided splits too, and both kinds read back as they were written
+    for t in [(0, [1, 2]), (1, [2, (2, [1, 1, 2])]), (2, [1, [1, 2, 1, 1], 2])]:
+        assert decode_string(encode_tree(t)) == t
+    assert leaf_colours((1, [1, 2]), 2).tolist() == [0, 0.5, 0.5]
+    assert leaf_colours((0, [1, 1, 2]), 2).tolist() == [0, 0.5, 0.5]
+
+
+def test_palette_is_learned_from_flat_texels(monkeypatch):
+    # red and blue stripes joined by blends (a third of the striped half), and green below: three colours are
+    # red, blue and green, never a blend, though the triangles are big (thousands of texels each)
+    n = 256
+    img = np.zeros((n, n, 4), np.uint8)
+    img[..., 3] = 255
+    x = np.arange(n) % 16
+    t = np.clip(np.select([x < 5, x < 8, x < 13], [0.0, (x - 4) / 4, 1.0], (16 - x) / 4), 0, 1)[None, :, None]
+    img[: n // 2, :, :3] = np.round((1 - t) * (220, 0, 0) + t * (0, 0, 220))
+    img[n // 2:, :, :3] = (0, 200, 0)
+    palette, coverage = paint.suggest_palette(square(), {0: img}, 3)
+    assert sorted(paint.hex_colour(c) for c in palette) == ["#0202DE", "#02CA02", "#DE0202"]
+    assert coverage.sum() == pytest.approx(1) and coverage.max() == pytest.approx(0.5, abs=0.02)
+    # learned from every texel instead, a blend takes one of the three colours
+    monkeypatch.setattr(paint, "FLAT_SHARE", 2.0)
+    blended = sorted(paint.hex_colour(c) for c in paint.suggest_palette(square(), {0: img}, 3)[0])
+    assert blended != ["#0202DE", "#02CA02", "#DE0202"]
+    monkeypatch.undo()
+    # a texture with no flat texels at all (noise) still gets a palette, learned from every texel
+    noise = np.random.default_rng(3).integers(0, 255, (64, 64, 4)).astype(np.uint8)
+    assert len(paint.suggest_palette(square(), {0: noise}, 4)[0]) == 4
 
 
 # ---------------------------------------------------------------------------

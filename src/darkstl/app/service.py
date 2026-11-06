@@ -1862,7 +1862,7 @@ def paint_settings(s: dict):
         raise AppError("The print height and the feature size must be above zero.")
     if out.cleanup not in ("none", "light", "strong"):
         raise AppError("Clean-up is none, light or strong.")
-    out.max_depth = min(max(out.max_depth, 1), 10)
+    out.max_depth = min(max(out.max_depth, 1), 16)
     return out
 
 
