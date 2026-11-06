@@ -28,6 +28,17 @@ export function unpackMesh(buf) {
   return { header, positions, normals, uvs, index };
 }
 
+/** sRGB-to-linear decoding of the colour map in the fragment shader (three's own transfer function). */
+function decodeMapInShader(shader) {
+  shader.fragmentShader = shader.fragmentShader.replace(
+    "#include <map_fragment>",
+    `#ifdef USE_MAP
+      vec4 sampledDiffuseColor = sRGBTransferEOTF( texture2D( map, vMapUv ) );
+      diffuseColor *= sampledDiffuseColor;
+    #endif`,
+  );
+}
+
 export class Viewer {
   constructor(canvas) {
     this.canvas = canvas;
@@ -206,13 +217,17 @@ export class Viewer {
     let tex = this.textures.get(url);
     if (!tex) {
       tex = new THREE.TextureLoader().load(url, () => this.redraw());
-      tex.colorSpace = THREE.SRGBColorSpace;
+      // The map is sRGB, but it is uploaded as plain bytes and decoded in the shader (decodeMapInShader):
+      // some GPUs and webviews skip the sRGB texture format, which showed dark game textures light and washed out.
+      tex.colorSpace = THREE.NoColorSpace;
       tex.flipY = false; // Dark STL's UVs run down the image
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
       tex.anisotropy = 4;
       this.textures.set(url, tex);
     }
-    return new THREE.MeshStandardMaterial({ map: tex, roughness: 0.7, metalness: 0.0, side: THREE.DoubleSide, wireframe });
+    const m = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.7, metalness: 0.0, side: THREE.DoubleSide, wireframe });
+    m.onBeforeCompile = decodeMapInShader;
+    return m;
   }
 
   /** Take the mesh off show. Its geometry belongs to whoever built it; the textures stay for the next. */
