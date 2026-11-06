@@ -257,7 +257,7 @@ function Workspace({ m, variant, switching }) {
 /** The Configure tab of a model that configurable models are built on: open one to choose its parts. */
 function ConfigureLinks({ m }) {
   return html`<div class="tab-pad" id="config-links"><section class="insp-section"><h3>Build one model</h3>
-    <p class="muted">This model holds the parts of ${m.configurable_as.length > 1 ? "these configurable models" : "a configurable model"}. Open it to choose its parts, and its skin where the game has them.</p>
+    <p class="muted">This model is part of ${m.configurable_as.length > 1 ? "these configurable models" : "a configurable model"}. Open it to choose its parts, and its skin where the game has them.</p>
     ${m.configurable_as.map((c) => html`<p key=${c.id}><button type="button" class="primary compact config-link" data-config=${c.id}
       onClick=${() => { location.hash = routeHash(`model:${c.id}`); }}>${Icon.layers(15)} ${c.label}</button></p>`)}
   </section></div>`;

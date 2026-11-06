@@ -48,8 +48,6 @@ def build_configurations(folder: Path, game: str, entries: list[CatalogEntry], c
             gestalt_pkgs.append(path)
         if "WeaponPartDefinition" in classes:
             part_pkgs.append(path)
-    if not gestalt_pkgs:
-        return []
     parts: dict[str, weapons.WeaponPart] = {}
     for path in part_pkgs:
         try:
@@ -85,6 +83,79 @@ def build_configurations(folder: Path, game: str, entries: list[CatalogEntry], c
             c = _configuration(configs, g, pkg, mesh_export, game, list(parts.values()))
             if c is not None:
                 out.append(c)
+    covered = {c.id.split("-", 1)[1] for c in out}
+    out += _from_part_meshes(configs, game, entries, list(parts.values()), covered)
+    return out
+
+
+# weapon type (as weapons._KIND_WORDS keys it) -> (the prefix of its part meshes' names, its gestalt-style kind)
+_MESH_PREFIX = re.compile(r"^(ar|assaultrifle|pistol|ps|smg|sm|sg|shotgun|sr|sniper|sniperrifle|rl|launcher)_",
+                          re.I)
+_PREFIX_KIND = {"ar": "AssaultRifle", "assaultrifle": "AssaultRifle", "pistol": "Pistol", "ps": "Pistol",
+                "smg": "SMG", "sm": "SMG", "sg": "Shotgun", "shotgun": "Shotgun", "sr": "SniperRifle",
+                "sniper": "SniperRifle", "sniperrifle": "SniperRifle", "rl": "Launcher", "launcher": "Launcher"}
+
+
+def _from_part_meshes(configs, game: str, entries: list[CatalogEntry], parts: list[weapons.WeaponPart],
+                      covered: set[str]) -> list:
+    """Guns whose parts are meshes of their own (``AR_Body_Jakobs``, ``AR_Barrel_Dahl``...): each weapon type a
+    configuration, its parts in the slots the game's part definitions put them in (whose
+    ``GestaltModeSkeletalMeshName`` names the mesh), else the slots their names say, and its skins."""
+    slot_of_mesh: dict[str, str] = {}
+    for p in parts:
+        if p.slot != weapons.SKIN:
+            for n in p.fragments:
+                slot_of_mesh.setdefault(n.lower(), p.slot)
+    by_kind: dict[str, list[CatalogEntry]] = {}
+    for e in entries:
+        if e.config is not None or e.is_lod or e.category != "Weapons" or not e.path.name.endswith(".SkeletalMesh"):
+            continue
+        m = _MESH_PREFIX.match(e.stem)
+        if m:
+            by_kind.setdefault(_PREFIX_KIND[m.group(1).lower()], []).append(e)
+    out = []
+    for kind, items in sorted(by_kind.items()):
+        if kind.lower() in covered:
+            continue
+        matched = 0
+        by_slot: dict[str, list[CatalogEntry]] = {}
+        seen = set()
+        for e in sorted(items, key=lambda x: x.stem.lower()):
+            if e.stem.lower() in seen:
+                continue
+            seen.add(e.stem.lower())
+            slot = slot_of_mesh.get(e.stem.lower())
+            if slot is None:
+                slot = weapons.slot_of(e.stem[len(_MESH_PREFIX.match(e.stem).group(0)):])
+            else:
+                matched += 1
+            if slot is not None:
+                by_slot.setdefault(slot, []).append(e)
+        bodies = by_slot.get("body")
+        if not bodies or len(by_slot) < 2:
+            continue
+        slots = []
+        for sid, label, required, _words in weapons.SLOTS:
+            options = by_slot.get(sid)
+            if not options:
+                continue
+            opts = [configs.PartOption(e.stem, weapons.option_label(e.stem, kind), configs.ModelRef(str(e.path)))
+                    for e in options]
+            slots.append(configs.Slot(sid, label, opts, required=required))
+        base = str(bodies[0].path)
+        skins = weapons.skins_for(kind, parts)
+        if skins:
+            opts = [configs.PartOption(p.name, weapons.option_label(p.name, kind),
+                                       configs.ModelRef(base, f"{SKIN_VARIANT}{p.package}:{p.path}", []))
+                    for p in skins]
+            slots.append(configs.Slot("skin", "Skin", opts, required=True, default=_default_skin(slots, opts),
+                                      kind="material"))
+        guessed = not matched
+        out.append(configs.Configuration(
+            id=f"parts-{kind.lower()}", label=gun_label(kind), game=game, base=configs.ModelRef(base, None, []),
+            slots=slots, category="Weapons", group=bodies[0].group or _GROUPS.get(kind.lower(), "Weapon parts"),
+            source="The game's part definitions" if not guessed else "Matched by the part meshes' names",
+            guessed=guessed))
     return out
 
 
