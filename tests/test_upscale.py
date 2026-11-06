@@ -137,3 +137,14 @@ def test_bundled_model_is_picked_by_compression(tmp_path, monkeypatch):
     r = pipeline.enhance(model, pipeline.EnhanceSettings(target_vertices=8000, smooth=0.0, upsample="ai"))
     assert any("2x by up-any.onnx (included" in x for x in r.fields[0].steps)
     assert not r.warnings
+
+
+def test_jagged_edges_smoothed_before_upscaling(tmp_path):
+    _resize_model(tmp_path / "x2.onnx", 2)
+    mesh = bench.panel_mesh(32)
+    model = bench.source_model(mesh, bench.normal_texture(bench.scene_engraving(32)))
+    s = pipeline.EnhanceSettings(target_vertices=8000, smooth=0.0, upsample="ai", ai_model="x2.onnx", models_dir=tmp_path)
+    steps = pipeline.enhance(model, s).fields[0].steps
+    assert steps.index("smoothed jagged edges") < next(i for i, x in enumerate(steps) if "2x by x2.onnx" in x)
+    off = pipeline.enhance(model, pipeline.EnhanceSettings(**{**s.__dict__, "edge_smoothing": 0.0}))
+    assert "smoothed jagged edges" not in off.fields[0].steps

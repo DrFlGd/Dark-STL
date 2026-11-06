@@ -163,8 +163,9 @@ class Method:
 
 
 METHODS = [
-    Method("v0.1: texture integration", {"integration": "texture", "smooth_sampling": False}),
+    Method("v0.1: texture integration", {"integration": "texture", "smooth_sampling": False, "edge_smoothing": 0.0}),
     Method("mesh integration (default)", {}),
+    Method("mesh, jagged edges left", {"edge_smoothing": 0.0}),
     Method("mesh + guided upsampling", {"upsample": "guided"}),
     Method("mesh + deblock smoothing", {"deblock": "smooth"}),
     Method("mesh + edge keeping", {"edge_keeping": 0.5}),
