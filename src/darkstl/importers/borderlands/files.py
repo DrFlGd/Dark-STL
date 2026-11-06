@@ -237,7 +237,31 @@ def resolve(ref: ObjectRef, class_name: str | None = None) -> tuple[upk.Package,
     e = pkg.find_export(path, cls) or pkg.find_export(path.rsplit(".", 1)[-1], cls)
     if e is not None:
         return pkg, e
-    return None
+    return _elsewhere(pkg, path, cls)
+
+
+_CONTENTS_CACHE: list[Path | None] = [None]
+
+
+def use_cache(cache: Path | None) -> None:
+    """The importer's cache folder, whose package lists :func:`resolve` searches for objects cooked elsewhere."""
+    _CONTENTS_CACHE[0] = cache
+
+
+def _elsewhere(pkg: upk.Package, path: str, cls: str | None) -> tuple[upk.Package, upk.Export] | None:
+    """A copy of the object cooked into any other package of the game folder."""
+    from .catalog import LOOKUP_CLASSES, object_index
+    if cls not in LOOKUP_CLASSES:
+        return None
+    hit = object_index(game_root(pkg.path), _CONTENTS_CACHE[0]).find(path, cls)
+    if hit is None or hit[0] == pkg.path:
+        return None
+    try:
+        opkg = upk.open_package(hit[0])
+    except (FormatError, OSError):
+        return None
+    e = opkg.find_export(hit[1], cls)
+    return (opkg, e) if e is not None else None
 
 
 def canonical_path(pkg: upk.Package, e: upk.Export) -> str:
@@ -254,4 +278,4 @@ def canonical_path(pkg: upk.Package, e: upk.Export) -> str:
 
 __all__ = ["GAME_BL1", "GAME_BL2", "GAME_BL3", "GAME_BL4", "GAME_TPS", "GAME_WL", "MODEL_CLASSES", "PackageIndex",
            "UE3_GAMES", "canonical_path", "detect_game", "game_root", "index_for", "is_member", "iter_packages",
-           "member_path", "resolve", "split_member"]
+           "member_path", "resolve", "split_member", "use_cache"]

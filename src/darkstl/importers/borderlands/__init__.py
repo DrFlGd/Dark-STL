@@ -89,6 +89,7 @@ class BorderlandsImporter(Importer):
         if game in unreal4.UE4_GAMES or (game not in files.UE3_GAMES and files.is_unreal4_folder(folder)):
             from .ue4 import catalog4
             return catalog4.scan(folder, game, progress)
+        files.use_cache(self.cache)
         return catalog.scan(folder, game, progress, self.cache)
 
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
@@ -106,6 +107,7 @@ class BorderlandsImporter(Importer):
         path = Path(path)
         if unreal4.is_asset_path(path):
             return unreal4.load(self.key, path, [Path(d) for d in texture_dirs])
+        files.use_cache(self.cache)
         pkg, e, cls = _open(path)
         dirs = [Path(d) for d in texture_dirs]
         game = files.detect_game(files.game_root(pkg.path)) or None

@@ -88,6 +88,8 @@ a.chip-btn.on { background: var(--sel); }
 .insp-note { margin: 0; padding: 8px 10px; border-radius: var(--radius-s); background: var(--panel); border: 1px solid var(--steel-2); overflow-wrap: anywhere; }
 .file-info summary { cursor: pointer; font-size: 13px; color: var(--graphite); }
 .file-info pre { margin: 6px 0 0; padding: 8px; max-height: 260px; overflow: auto; font-size: 11.5px; line-height: 1.4; background: var(--panel); border-radius: var(--radius-s); white-space: pre-wrap; overflow-wrap: anywhere; }
+.mat-trace { margin: 8px 0 0; font-size: 13px; }
+.mat-trace pre { margin: 4px 0 0; padding: 8px; max-height: 200px; overflow: auto; font-size: 11.5px; line-height: 1.4; background: var(--panel); border-radius: var(--radius-s); white-space: pre-wrap; overflow-wrap: anywhere; }
 .stage-pose { font-weight: 400; }
 #pose-anim { width: 100%; font-family: var(--font-mono); font-size: 12.5px; }
 #pose-frame { width: 100%; }

@@ -458,9 +458,14 @@ function TexturesTab({ m, args, s, set, run, setRun, call, sendSettings, over, u
     } catch (e) { if (e.stopped) toast("Stopped upscaling"); else setError(msg(e)); }
   };
   if (!m.textures.length) {
+    const texNotes = m.notes.filter((n) => /textur|material|skin|\.tfc/i.test(n));
     return html`<div class="tab-pad" id="textures-tab"><p>No textures were found for this model.</p>
-      <p class="muted">Map pieces and some objects use textures kept elsewhere in the game. Add the folders that hold them under
-        <a href="#/settings">Settings › Texture folders</a>.</p></div>`;
+      <p class="muted">Map pieces and some objects use textures kept elsewhere in the game. Add the folders that hold them${" "}
+        under <a href="#/settings">Settings › Texture folders</a>.</p>
+      ${m.materials.some((mat) => mat.details.length) ? html`<section class="insp-section" id="material-trace"><h3>What each material points to</h3>
+        ${m.materials.map((mat, i) => html`<div class="mat-trace" key=${i}><b>${mat.name}</b>
+          ${mat.details.length ? html`<pre>${mat.details.join("\n")}</pre>` : html`<p class="muted">Nothing recorded.</p>`}</div>`)}</section>` : null}
+      ${texNotes.length ? html`<section class="insp-section" id="texture-notes"><h3>Notes</h3>${texNotes.map((n, i) => html`<p class="insp-note" key=${i}>${n}</p>`)}</section>` : null}</div>`;
   }
   return html`<div class="tab-pad" id="textures-tab">
     <div class="tex-grid" role="listbox" aria-label="Textures">${m.textures.map((t) => html`<button type="button" key=${t.key} class="tex-tile" role="option"
