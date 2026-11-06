@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 import numpy as np
 
@@ -118,6 +118,10 @@ class SourceModel:
     info: list[str] = field(default_factory=list)  # description lines (format, version, counts)
     notes: list[str] = field(default_factory=list)  # things the user should know
     animations: Animations | None = field(default=None, repr=False)  # how the model can be posed, if it can
+    # named points parts can be fitted to (a weapon's magazine or sight socket): 4x4 matrices, column vectors,
+    # in the export frame (metres, Z up), in the bind pose. See configs.Attach.
+    sockets: dict[str, np.ndarray] = field(default_factory=dict, repr=False)
+    configuration: dict | None = field(default=None, repr=False)  # set on a model assembled by configs.assemble
 
     def build_mesh(self, options: MeshOptions | None = None) -> TriMesh:
         options = options or MeshOptions()
@@ -157,10 +161,13 @@ class CatalogEntry:
     importer: str = ""
     is_lod: bool = False
     packed: bool = True
+    config: Any = None  # a configs.Configuration (its files resolved) when this entry is a configurable model
 
     @property
     def id(self) -> str:
         """A short stable id for the file, used by the app's pages and its preview cache."""
+        if self.config is not None:
+            return path_id(f"{self.path}#config:{self.config.id}")
         return path_id(self.path)
 
     @property
