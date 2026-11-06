@@ -354,7 +354,66 @@ class Service:
         return {"texture_dirs": list(self.config.texture_dirs), "oodle": self.config.oodle,
                 "oodle_found": str(found) if found else None, "export_dir": str(self.config.export_folder),
                 "library_dir": str(lib), "library_files": files, "library_bytes": size,
-                "previews": str(self.thumbs.folder), "settings_file": str(self.config.path or "")}
+                "previews": str(self.thumbs.folder), "settings_file": str(self.config.path or ""),
+                **self._unreal_settings()}
+
+    def _unreal_settings(self) -> dict:
+        """The AES keys and type mappings (.usmap) the Unreal games' importer reads from the settings folder."""
+        from ..importers.borderlands.ue4 import vfs
+        from .config import config_dir
+
+        d = config_dir()
+        f = d / vfs.KEY_FILE
+        try:
+            keys = f.read_text("utf-8", "replace") if f.is_file() else ""
+        except OSError:
+            keys = ""
+        maps = sorted(p.name for p in d.glob("*.usmap")) if d.is_dir() else []
+        return {"unreal_keys": keys, "unreal_keys_file": str(f), "usmaps": maps, "settings_dir": str(d)}
+
+    def _forget_unreal(self) -> None:
+        from ..importers.borderlands.ue4 import unversioned, vfs
+
+        with vfs._OPEN_LOCK:
+            vfs._OPEN.clear()
+        unversioned.forget_mappings()
+        self._forget_models()
+
+    def _set_unreal(self, args: dict) -> None:
+        import shutil
+
+        from ..importers.borderlands.ue4 import pak, usmap, vfs
+        from .config import config_dir
+
+        d = config_dir()
+        if "unreal_keys" in args:
+            text = str(args["unreal_keys"] or "")
+            for line in text.splitlines():
+                t = line.split("#", 1)[0].strip()
+                if t:
+                    try:
+                        pak.parse_key(t)
+                    except FormatError as e:
+                        raise AppError(f"{t[:20]}…: {e}") from e
+            d.mkdir(parents=True, exist_ok=True)
+            (d / vfs.KEY_FILE).write_text(text.strip() + "\n" if text.strip() else "", "utf-8")
+            self._forget_unreal()
+        if args.get("usmap_add"):
+            src = Path(str(args["usmap_add"]).strip().strip('"'))
+            if not src.is_file():
+                raise AppError(f"There is no file at {src}")
+            try:
+                usmap.parse(src.read_bytes(), src.name)
+            except (FormatError, ValueError) as e:
+                raise AppError(f"{src.name} isn't a type mappings file Dark STL can read: {e}") from e
+            d.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, d / (src.stem + ".usmap"))
+            self._forget_unreal()
+        if args.get("usmap_remove"):
+            target = d / Path(str(args["usmap_remove"])).name
+            if target.suffix.lower() == ".usmap" and target.is_file():
+                target.unlink()
+            self._forget_unreal()
 
     def cmd_settings_set(self, args: dict) -> dict:
         if "texture_dirs" in args:
@@ -372,6 +431,7 @@ class Service:
             self.config.export_dir = str(args["export_dir"] or "").strip()
         if "library_dir" in args:
             self.config.library_dir = str(args["library_dir"] or "").strip()
+        self._set_unreal(args)
         self.config.save()
         return self.cmd_settings_get({})
 
