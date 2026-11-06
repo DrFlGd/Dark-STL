@@ -90,7 +90,7 @@ class PartOption:
     attach: Attach | None = None
 
 
-SLOT_KINDS = ("parts", "material")
+SLOT_KINDS = ("parts", "material", "finish")
 
 
 @dataclass
@@ -100,7 +100,8 @@ class Slot:
     options: list[PartOption] = field(default_factory=list)
     required: bool = False  # not required: "None" can be chosen
     default: str | None = None  # an option id; None: the first option if required, else none
-    kind: str = "parts"  # "parts": its option adds a part; "material": its option's materials repaint every part
+    kind: str = "parts"  # "parts": its option adds a part; "material": its option's materials repaint every
+    # part; "finish": they repaint the base model only
 
 
 @dataclass
@@ -625,8 +626,8 @@ def assemble(config: Configuration, choices: dict | None, load: Loader) -> Sourc
             mesh = c.model.build_mesh(MeshOptions())
             parts.append(Part(c.label, c.material_base, mesh.n_vertices, mesh.n_faces))
             c.keep, c.n_parts = None, 1
-    for s in config.slots:  # a material slot paints every component with its option's materials
-        if s.kind != "material":
+    for s in config.slots:  # a material slot paints every component with its option's materials, a finish the base
+        if s.kind not in ("material", "finish"):
             continue
         opt = next((o for o in s.options if o.id == chosen.get(s.id)), None)
         if opt is None:
@@ -646,7 +647,8 @@ def assemble(config: Configuration, choices: dict | None, load: Loader) -> Sourc
         prefix = f"{s.id}:"
         for k, t in paint.textures.items():
             textures[prefix + k] = t
-        for c in comps:  # its first material replaces each model's first, and so on; the rest stay
+        targets = comps[:1] if s.kind == "finish" else comps
+        for c in targets:  # its first material replaces each model's first, and so on; the rest stay
             for j in range(min(len(c.model.materials), len(paint.materials))):
                 old, new = materials[c.material_base + j], paint.materials[j]
                 materials[c.material_base + j] = Material(
