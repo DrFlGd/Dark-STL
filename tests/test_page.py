@@ -533,3 +533,17 @@ def test_configure_a_weapon_from_its_parts(page, app, tmp_path):
     (c,) = saved["configurations"]
     assert c["label"] == "My rifle" and c["slots"][1]["options"][0]["attach"]["offset"] == [0, 0, 0.01]
     assert c["slots"][2]["options"][0]["model"] == {"file": "weapons/rifle/rifle_scope.obj"}
+
+
+def test_collect_dialog_works_out_its_plan_in_a_job(page, app, weapon_dir):  # noqa: F811
+    app.service.call("folder_add", {"path": str(weapon_dir)})
+    page.goto(app.url + "#/browse/Dark%20Souls%20III")
+    page.wait_for_selector("#place-collect", timeout=30000)
+    page.click("#place-collect")
+    page.wait_for_selector("#collect-plan-text", timeout=30000)
+    assert "model" in page.text_content("#collect-plan-text")
+    jobs = [j for j in app.service.jobs.running()]
+    page.click('[data-collect="textures"]')  # another plan: the one before is let go
+    page.wait_for_selector("#collect-plan-text", timeout=30000)
+    assert not jobs or all(j.state != "running" for j in jobs)
+    assert any(j.label.startswith("Working out what to copy") for j in app.service.jobs._jobs.values())

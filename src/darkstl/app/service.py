@@ -304,6 +304,7 @@ class Service:
         self.solids: OrderedDict[tuple, Any] = OrderedDict()  # cut.Solid by the model made solid and the sheet thickness
         self.finished: OrderedDict[tuple, Any] = OrderedDict()  # finish.FinishResult by the model and the settings
         self.cache = Path(cache)
+        self.collect_plans: OrderedDict[str, tuple[float, collect.Plan]] = OrderedDict()  # by _plan_key()
         self.unpack_plans: dict[tuple, Any] = {}  # unpack.Plan by (game folder, destination), the last few
         self.part_models: OrderedDict[tuple, SourceModel] = OrderedDict()  # models opened to assemble configurations
         configs.set_user_folder((config.path.parent if config.path else config_dir()) / "configurations")
@@ -620,6 +621,7 @@ class Service:
                 before = [e.path for e in self.library.entries if any(_is_under(e.path, p) for p, _g in folders)]
             self.thumbs.forget(set(before) | {e.path for e in lib.entries})
         with self.lock:
+            self.collect_plans.clear()
             for old in replace or []:
                 self.library.remove_root(old)
             for path, _game in folders:
@@ -815,8 +817,31 @@ class Service:
 
     # ------------------------------------------------------------ collecting into the app's library
 
-    def _collect_plan(self, args: dict) -> collect.Plan:
-        """What collecting the chosen models (``ids``, ``paths``, or a game/category/group/search) would copy."""
+    COLLECT_ARGS = ("ids", "game", "category", "group", "q", "lod", "textures", "animations", "player_animations",
+                    "lod_copies", "extras")
+    KEEP_PLAN_SECONDS = 600  # a plan worked out for the Collect dialog is used by its Copy button
+
+    def _plan_key(self, args: dict) -> str:
+        return json.dumps({k: args.get(k) for k in self.COLLECT_ARGS}, sort_keys=True, default=str)
+
+    def _collect_plan(self, args: dict, job: Job | None = None) -> collect.Plan:
+        """What collecting the chosen models (``ids``, ``paths``, or a game/category/group/search) would copy.
+        Reading every model of a game for the textures it takes from elsewhere takes a while, so a plan is
+        kept for a few minutes, and ``job`` reports how far it has got (and can stop it)."""
+        key = self._plan_key(args)
+        with self.lock:
+            kept = self.collect_plans.get(key)
+        if kept is not None and time.time() - kept[0] < self.KEEP_PLAN_SECONDS:
+            return kept[1]
+        with self.thumbs.foreground():  # previews wait: this is what the user is waiting for
+            plan = self._make_collect_plan(args, job)
+        with self.lock:
+            self.collect_plans[key] = (time.time(), plan)
+            while len(self.collect_plans) > 4:
+                self.collect_plans.popitem(last=False)
+        return plan
+
+    def _make_collect_plan(self, args: dict, job: Job | None) -> collect.Plan:
         from ..importers import importer_for
         from ..importers.fromsoft.files import file_stem
 
@@ -858,7 +883,12 @@ class Service:
             return [f for key in importers for f in by_key[key].shared_files(root, games[0], options.player_animations)]
 
         game_roots = [r for r in roots if self.library.roots.get(r) == games[0]]
-        return collect.plan(self.config.library_folder, games[0], entries, game_roots, options, related, extras)
+        progress = None
+        if job is not None:
+            n = len(entries)
+            progress = lambda i, name: job.report(i / max(n, 1), f"Reading model {i + 1:,} of {n:,}: {name}")  # noqa: E731
+        return collect.plan(self.config.library_folder, games[0], entries, game_roots, options, related, extras,
+                            progress)
 
     def _expand_configs(self, entries: list[CatalogEntry]) -> list[CatalogEntry]:
         """A configurable model stands for its base and every part that fits it."""
@@ -878,13 +908,20 @@ class Service:
         return list(out.values())
 
     def cmd_collect_plan(self, args: dict) -> dict:
-        return self._collect_plan(args).summary()
+        """What collecting would copy. With ``job``, worked out in a job (stoppable, with progress), whose
+        result is the summary: the page asks this way, as a whole game can take minutes."""
+        if not args.get("job"):
+            return self._collect_plan(args).summary()
+        label = f"Working out what to copy from {args.get('game') or 'the game'}"
+        return {"job": self.jobs.start(label, lambda job: self._collect_plan(args, job).summary(), stoppable=True).id}
 
     def cmd_collect_run(self, args: dict) -> dict:
         """Copy the chosen models' files into the app's library and list them from there."""
         plan = self._collect_plan(args)
 
         def run(job: Job):
+            with self.lock:
+                self.collect_plans.clear()  # what is there now has changed
             result = collect.run(plan, job.report)
             folder = plan.folder
             if folder.is_dir():
