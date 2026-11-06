@@ -145,10 +145,12 @@ def resolve_material(ref: ObjectRef) -> ResolvedMaterial:
             continue
         tex = _texture(ref_t)
         if tex is None:
+            out.details.append(f"{name}: {ref_t.path} not found")
             continue
         if role == OTHER:
             role = role_from_texture(tex)
             if role == OTHER or role in out.roles:
+                out.details.append(f"{name}: {tex.name} (not used)")
                 continue
         out.roles[role] = tex
         out.details.append(f"{name}: {tex.name}")

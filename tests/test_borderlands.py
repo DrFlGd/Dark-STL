@@ -307,6 +307,51 @@ def test_gun_skins_paint_the_whole_gun(bl2):
     assert any("Skin: Jakobs 1" in line for line in jakobs.info)
 
 
+def test_a_skin_cooked_into_some_other_package_is_found(bl2):
+    """The skin's material instance is imported from a package that isn't a file of its own; a copy of it was
+    cooked (as a forced export) into some other package, and its texture into a third."""
+    from darkstl import configs
+    from darkstl.importers.borderlands import catalog
+
+    cooked = bl2 / "WillowGame" / "CookedPCConsole"
+    b = S.PackageBuilder()
+    top = b.add_export("Package", "GD_Weap_Pistol", b"", 0)
+    group = b.add_export("Package", "ManufacturerMaterials", b"", top)
+    common = b.add_import("Core", "Package", 0, "Common_GunMaterials")
+    mats = b.add_import("Core", "Package", common, "Materials")
+    mic = b.add_import("Engine", "MaterialInstanceConstant", mats, "Mati_Dahl_4_Emerald")
+    b.add_export("WeaponPartDefinition", "Mat_Dahl_4_Emerald",
+                 b.props(b.p_enum("PartType", "EWeaponPartType", "WP_Material"), b.p_obj("Material", mic)), group)
+    (cooked / "GD_Weap_Skins.upk").write_bytes(b.build("lzo"))
+
+    b = S.PackageBuilder()  # a level that uses the skin: the instance cooked in, its texture imported
+    forced = b.add_export("Package", "Common_GunMaterials", b"", 0, export_flags=0x01)
+    group = b.add_export("Package", "Materials", b"", forced)
+    textures = b.add_import("Core", "Package", 0, "Common_GunTextures")
+    dif = b.add_import("Engine", "Texture2D", textures, "Dahl_Emerald_Dif")
+    master = b.add_export("Material", "Master_Gun", S.material_data(b, []), group)
+    b.add_export("MaterialInstanceConstant", "Mati_Dahl_4_Emerald", S.mic_data(b, master, [("p_Diffuse", dif)]),
+                 group)
+    (cooked / "Dam_P.upk").write_bytes(b.build("lzo"))
+
+    b = S.PackageBuilder()  # another level with the texture
+    forced = b.add_export("Package", "Common_GunTextures", b"", 0, export_flags=0x01)
+    b.add_export("Texture2D", "Dahl_Emerald_Dif", S.texture_data(b, 8, 8, S.bc1_solid(8, 8, GREEN)), forced)
+    (cooked / "Fridge_P.upk").write_bytes(b.build("lzo"))
+
+    files._INDEXES.clear()
+    catalog.forget_object_index()
+    imp = BorderlandsImporter()
+    entries = imp.scan(bl2, files.GAME_BL2)
+    (c,) = imp.configurations(bl2, files.GAME_BL2, entries)
+    skin = next(s for s in c.slots if s.id == "skin")
+    assert [o.label for o in skin.options] == ["Dahl 4 Emerald"]
+    gun = configs.assemble(c, {"skin": "Mat_Dahl_4_Emerald"}, open_model)
+    colours = {tuple(gun.textures[mat.albedo].decode()[0, 0, :3].tolist()) for mat in gun.materials}
+    assert colours == {(0, 255, 0)}
+    assert all(any("Dahl_Emerald_Dif" in d for d in mat.details) for mat in gun.materials)
+
+
 def test_texture_formats_and_bad_data(tmp_path):
     b = S.PackageBuilder()
     raw = bytes([10, 20, 30, 255]) * 16

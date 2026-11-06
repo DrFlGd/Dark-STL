@@ -253,6 +253,12 @@ def test_a_material_slot_repaints_the_parts():
     # the skin's one material replaces each model's first; the base's second stays
     assert [m.albedo for m in painted.materials] == ["skin:paint.dds", "glass.dds", "skin:paint.dds"]
     assert painted.textures["skin:paint.dds"] == "paint" and painted.build_mesh().n_faces == 2
+    bare = model("bare", ["paint"])  # a skin whose textures weren't found leaves the parts as they are
+    bare.textures = {}
+    files["skin"] = bare
+    kept = configs.assemble(c, {"skin": "red"}, lambda f, v: files[f])
+    assert [m.albedo for m in kept.materials] == ["gun.dds", "glass.dds", "barrel:metal.dds"]
+    assert any("Red has no textures" in n for n in kept.notes)
     with pytest.raises(FormatError):
         configs.parse({"configurations": [{"id": "x", "base": "b", "slots": [{"id": "s", "kind": "colour"}]}]})
 

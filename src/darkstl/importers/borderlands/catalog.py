@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -22,9 +23,12 @@ from ...model import LOD_SUFFIX, CatalogEntry
 from . import files
 from .formats import upk
 
-VERSION = 1
+VERSION = 2
+# what materials need too, so an object cooked into some other package can be found (see object_index)
+LOOKUP_CLASSES = {"Material", "MaterialInstanceConstant", "MaterialInstanceTimeVarying", "Texture2D",
+                  "TextureFlipBook"}
 KEEP_CLASSES = set(files.MODEL_CLASSES) | {"GestaltSkeletalMeshDefinition", "WeaponPartDefinition",
-                                           "WeaponTypeDefinition"}
+                                           "WeaponTypeDefinition"} | LOOKUP_CLASSES
 
 _WEAPON_KINDS = [
     (re.compile(r"pistol", re.I), "Pistols"), (re.compile(r"smg|submachine", re.I), "SMGs"),
@@ -74,6 +78,56 @@ def package_contents(path: Path, cache: Path | None = None) -> list[dict]:
     return objects
 
 
+class ObjectIndex:
+    """Where the materials and textures of a game folder are, by their original path: cooked packages
+    carry copies of what they use, so an object a package only imports may sit in any other package."""
+
+    def __init__(self, root: Path, cache: Path | None):
+        self.where: dict[str, tuple[str, str, str]] = {}  # canonical path -> (package file, export path, class)
+        for path in files.iter_packages(root):
+            try:
+                objects = package_contents(path, cache)
+            except (FormatError, OSError, ValueError):
+                continue
+            home = path.stem.lower()
+            for o in objects:
+                if o["class"] not in LOOKUP_CLASSES:
+                    continue
+                key = o["canonical"].lower()
+                prev = self.where.get(key)
+                # the package the object belongs to wins over copies of it
+                if prev is None or (key.split(".", 1)[0] == home and Path(prev[0]).stem.lower() != home):
+                    self.where[key] = (str(path), o["path"], o["class"])
+
+    def find(self, path: str, class_name: str | None = None) -> tuple[Path, str] | None:
+        hit = self.where.get(path.lower())
+        if hit is None or (class_name and hit[2] != class_name):
+            return None
+        return Path(hit[0]), hit[1]
+
+
+_OBJECT_INDEXES: dict[str, ObjectIndex] = {}
+_OBJECT_LOCK = threading.Lock()
+
+
+def object_index(root: Path, cache: Path | None) -> ObjectIndex:
+    """The game folder's :class:`ObjectIndex`, made on first use (from the scan's cached package lists)."""
+    key = os.path.normcase(str(root))
+    with _OBJECT_LOCK:
+        idx = _OBJECT_INDEXES.get(key)
+        if idx is None:
+            idx = _OBJECT_INDEXES[key] = ObjectIndex(Path(root), cache)
+    return idx
+
+
+def forget_object_index(root: Path | None = None) -> None:
+    with _OBJECT_LOCK:
+        if root is None:
+            _OBJECT_INDEXES.clear()
+        else:
+            _OBJECT_INDEXES.pop(os.path.normcase(str(root)), None)
+
+
 def classify(obj: dict, package: Path, gestalt: bool = False) -> tuple[str, str]:
     canonical = obj["canonical"]
     top = canonical.split(".", 1)[0]
@@ -113,6 +167,7 @@ def _map_name(stem: str) -> str:
 def scan(root: str | os.PathLike, game: str, progress: Callable[[int, str], None] | None = None,
          cache: Path | None = None) -> list[CatalogEntry]:
     root = Path(root)
+    forget_object_index(root)
     packages = list(files.iter_packages(root))
     found: dict[str, tuple[dict, Path]] = {}
     gestalt_meshes: set[str] = set()
@@ -157,4 +212,5 @@ def folder_notes(root: Path, found: list[CatalogEntry]) -> list[str]:
     return notes
 
 
-__all__ = ["classify", "folder_notes", "package_contents", "scan"]
+__all__ = ["ObjectIndex", "classify", "folder_notes", "forget_object_index", "object_index", "package_contents",
+           "scan"]
