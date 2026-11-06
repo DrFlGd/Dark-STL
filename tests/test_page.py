@@ -593,3 +593,63 @@ def test_collect_dialog_works_out_its_plan_in_a_job(page, app, weapon_dir):  # n
     page.wait_for_selector("#collect-plan-text", timeout=30000)
     assert not jobs or all(j.state != "running" for j in jobs)
     assert any(j.label.startswith("Working out what to copy") for j in app.service.jobs._jobs.values())
+
+
+def test_export_a_painted_3mf(page, app, tmp_path):
+    """The Export tab's painted 3MF: the suggested palette's swatches, a colour changed by hand, the colours shown
+    on the model, and the file and its palette picture written."""
+    from test_paint import make_two_colour_game
+    from darkstl.export import read_3mf
+
+    game = make_two_colour_game(tmp_path)
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    page.wait_for_selector("#first-run")
+    page.click("#first-add-folder")
+    page.fill("#folder-path", str(game))
+    page.wait_for_selector("text=Recognised as Dark Souls III.")
+    page.click("#add-folder-dialog-ok")
+    page.wait_for_selector('#kind-tiles [data-sub="Weapons"]')
+    page.click('[data-sub="Weapons"]')
+    page.wait_for_selector(".results [data-model]")
+    page.locator(".results [data-model]").first.click()
+    page.wait_for_selector("#model-summary")
+    page.click("#summary-open")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    page.click("#rail-export")
+    page.select_option("#export-format", ".3mf")
+    page.wait_for_selector("#paint-options")
+    page.wait_for_selector("#paint-swatches .paint-swatch", timeout=30000)
+    assert page.locator("#paint-swatches .paint-swatch").count() == 2  # 4 asked for, but the texture has two colours
+    page.fill("#paint-colours-n", "2")
+    page.press("#paint-colours-n", "Tab")
+    page.wait_for_function("document.querySelectorAll('#paint-swatches .paint-swatch').length === 2")
+    titles = [page.get_attribute(f"#paint-swatches .paint-swatch:nth-child({i + 1})", "title") for i in range(2)]
+    assert titles[0].startswith("Filament 1: #DE0202") and titles[1].startswith("Filament 2: #0202DE")
+    # the colours on the model: the 3D view's textures come from the paint preview
+    with page.expect_request(lambda r: "paint_texture" in r.url and "colours" in r.url) as seen:
+        page.check("#paint-preview")
+    assert seen.value.response().ok
+    page.wait_for_selector("#stage-canvas:not([data-loading])")
+    if shots:
+        page.screenshot(path=os.path.join(shots, "export-painted.png"))
+    # a colour changed by hand is used, and can be given back
+    page.evaluate("""() => { const i = document.querySelector('#paint-swatches .paint-swatch input'); i.value = '#00ff00'; i.dispatchEvent(new Event('change', { bubbles: true })); }""")
+    page.wait_for_function("document.querySelector('#paint-swatches .paint-swatch').title.startsWith('Filament 1: #00FF00')")
+    assert not page.is_disabled("#paint-suggest")
+    page.fill("#paint-feature", "1")
+    page.press("#paint-feature", "Tab")
+    page.fill("#export-folder", str(tmp_path / "out"))
+    page.press("#export-folder", "Tab")
+    page.click("#export-run")
+    page.wait_for_selector("#export-done", timeout=60000)
+    page.wait_for_selector("#export-paint-done")
+    assert "Filament slots 1 to 2" in page.text_content("#export-paint-done")
+    verts, faces, strings, palette = read_3mf(tmp_path / "out" / "WP_A_0300.3mf")
+    assert palette == ["#00FF00", "#0202DE"] and (tmp_path / "out" / "WP_A_0300_palette.png").exists()
+    page.click("#paint-suggest")
+    page.wait_for_function("document.querySelector('#paint-swatches .paint-swatch').title.startsWith('Filament 1: #DE0202')")
+    assert page.is_disabled("#paint-suggest")
+    # the Finished model can't be painted
+    page.uncheck("#paint-preview")
+    page.select_option("#export-format", ".stl")
+    page.wait_for_selector("#paint-options", state="detached")

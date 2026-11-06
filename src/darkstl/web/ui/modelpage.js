@@ -23,7 +23,12 @@ import { ConfigureTab } from "./configure.js";
 const ENHANCE = { target_vertices: 1_000_000, method: "subdivide", smooth: true, source: "normal", strength: 1, height_range_mm: 1,
   green: "auto", detail_fraction: 0.0625, max_displacement_mm: 0, integration: "mesh", edge_keeping: 0, deblock: "off",
   upsample: "off", upsample_factor: 0, ai_model: "", deblock_model: "", edge_hints: false, albedo_detail_mm: 0, detail_normals: false, detail_strength: 1 };
-const EXPORT = { format: ".stl", units: "mm", textures: true, folder: "" };
+const EXPORT = { format: ".stl", units: "mm", textures: true, folder: "", paint: null };
+/** The painted 3MF's settings: the palette's size (chosen from the textures) or its colours (chosen by hand). */
+const PAINT = { colours: 4, palette: null, print_height_mm: 150, feature_mm: 0.5, cleanup: "light", preview: false };
+const CLEANUPS = [["none", "None"], ["light", "Light: specks under 4 texels"], ["strong", "Strong: specks under 24 texels"]];
+/** The paint settings as the engine takes them (without the page's own). */
+const paintArgs = (p) => ({ colours: p.colours, palette: p.palette, print_height_mm: p.print_height_mm, feature_mm: p.feature_mm, cleanup: p.cleanup });
 const VIEW = { shading: "textured", edges: false };
 const JOINT = { kind: "pegs", clearance_mm: 0.2, count: 0, diameter_mm: 5, depth_mm: 6, magnet_diameter_mm: 6, magnet_height_mm: 3, flip: false, print_dowels: true };
 const CUT = { from: "enhanced", sheet_mm: 1.2, wall_mm: 1.6, joint: JOINT, lay_flat: true };
@@ -94,7 +99,7 @@ export function ModelPage({ route }) {
   const placeKey = entry ? JSON.stringify([entry.game, entry.category, entry.group]) : null;
   useEffect(() => {
     ui.set({ modelPlace: entry ? { game: entry.game, category: entry.category, group: entry.group } : null });
-    return () => ui.set({ modelPlace: null });
+    return () => ui.set({ modelPlace: null, paintPreview: null });
   }, [placeKey]);
   const back = () => (history.length > 1 ? history.back() : (location.hash = entry ? routeHash(placeRoute(entry.game, entry.category)) : "#/"));
   const bar = { id: "mp-head", back: { id: "mp-back", run: back } };
@@ -286,13 +291,19 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
       kept.current.clear();
     };
   }, []);
-  // each material's colour texture, for the textured view
+  // each material's colour texture, for the textured view; in the paint colours when the Export tab asks
+  const paintPreview = useStore(ui, (s) => s.paintPreview);
+  const paint = paintPreview?.sid === m.sid ? JSON.stringify(paintPreview.settings) : "";
   const textures = useMemo(() => {
     const have = new Set(m.textures.map((t) => t.key));
     const out = {};
-    m.materials.forEach((mat, i) => { if (mat.albedo && have.has(mat.albedo)) out[i] = binUrl("texture", { sid: m.sid, key: mat.albedo, max: 2048 }); });
+    m.materials.forEach((mat, i) => {
+      if (!mat.albedo || !have.has(mat.albedo)) return;
+      out[i] = paint ? binUrl("paint_texture", { sid: m.sid, key: mat.albedo, max: 2048, settings: paint, ...args.url })
+        : binUrl("texture", { sid: m.sid, key: mat.albedo, max: 2048 });
+    });
     return out;
-  }, [m.sid]);
+  }, [m.sid, paint, paint ? args.key : ""]);
   const key = JSON.stringify([which, which === "enhanced" ? result?.id || result?.rev : which === "pieces" ? cutting.pieces?.id : which === "finished" ? finished?.id : args.key]);
   useEffect(() => {
     let live = true;
@@ -333,7 +344,7 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
       onBusy?.(false);
     })().catch((e) => { if (live) { setState({ loading: false, error: msg(e), size: null, key }); onBusy?.(false); } });
     return () => { live = false; };
-  }, [key, view.shading]);
+  }, [key, view.shading, paint ? JSON.stringify(textures) : ""]);
   // the Cut tab's planes, shown while it is open (not over the pieces they made)
   const { cuts, cutSel, setCuts, setCutSel, explode } = cutting;
   const live = useRef(null);
@@ -1049,12 +1060,19 @@ function ExportTab({ m, args, result, finished, which: shownWhich, pose, call, p
   const many = which === "pieces";
   const formats = info().formats || [];
   const textured = o.format === ".obj" || o.format === ".glb";
+  const painted = o.format === ".3mf";
+  const paint = { ...PAINT, ...(o.paint || {}) };
+  const setPaint = (patch) => set({ paint: { ...paint, ...patch } });
+  // the painted 3MF's colours on the model in the 3D view, while asked for and while the format is 3MF
+  const preview = painted && paint.preview && which !== "finished" && which !== "pieces";
+  const previewKey = preview ? JSON.stringify([m.sid, paintArgs(paint)]) : "";
+  useEffect(() => { ui.set({ paintPreview: preview ? { sid: m.sid, settings: paintArgs(paint) } : null }); }, [previewKey]);
   const browse = async () => { const p = await pickFolder("Export to", folder || fallback); if (p) { setFolder(p); set({ folder: p }); } };
   const go = async () => {
     setBusy(true); setError(null); setDone(null);
     try {
       const { job } = await call("export", { sid: m.sid, which, ...args.json, format: o.format, units: o.units, textures: o.textures, folder: folder || null, name: name.trim() || auto,
-        lay_flat: cutOpts.lay_flat });
+        lay_flat: cutOpts.lay_flat, paint: painted ? paintArgs(paint) : undefined });
       const r = await followJob(job, many ? `Exporting ${plural(pieces.pieces.length, "piece")}` : `Exporting ${name.trim() || auto}${o.format}`);
       setDone(r);
     } catch (e) { if (e.stopped) toast("Stopped exporting"); else setError(msg(e)); }
@@ -1074,6 +1092,7 @@ function ExportTab({ m, args, result, finished, which: shownWhich, pose, call, p
     ${many ? html`<label class="check-row" title="Each piece turned so its biggest flat cut face (without pegs or a tongue on it) lies on the bed; dowels stand on end">
       <input type="checkbox" id="export-lay-flat" checked=${cutOpts.lay_flat} onChange=${(e) => setPref({ cutOpts: { ...cutOpts, lay_flat: e.target.checked } })} />
       <span>Lay each piece on a cut face<small class="muted">Off: the pieces keep their place in the model.</small></span></label>`
+      : painted ? html`<${PaintOptions} m=${m} args=${args} paint=${paint} setPaint=${setPaint} which=${which} />`
       : html`<label class="check-row"><input type="checkbox" id="export-textures" checked=${o.textures && textured && which !== "finished"} disabled=${!textured || which === "finished"} onChange=${(e) => set({ textures: e.target.checked })} />
       <span>Include the colour textures${textured ? "" : " (OBJ and GLB only)"}</span></label>`}
     <label class="field-block"><span>Name</span><input type="text" id="export-name" value=${name} placeholder=${auto} onInput=${(e) => setName(e.target.value)} /></label>
@@ -1084,7 +1103,50 @@ function ExportTab({ m, args, result, finished, which: shownWhich, pose, call, p
     ${error ? html`<p class="warn-note" role="alert" id="export-error">${error}</p>` : null}
     ${done ? html`<div class="export-done" id="export-done" role="status"><p><b>Saved</b> ${done.files ? `${plural(done.files.length, "file")} in ${done.path.split(/[\\/]/).pop()}` : done.path.split(/[\\/]/).pop()} <span class="muted">· ${bytesText(done.bytes)}</span></p>
       <p class="note-path muted">${done.path}</p>
+      ${done.paint ? html`<div class="paint-done" id="export-paint-done"><div class="paint-swatches">${done.paint.colours.map((c, i) => html`<span key=${i} class="paint-swatch" style=${`background:${c}`} title=${`Filament ${i + 1}: ${c}, ${Math.round(done.paint.coverage[i] * 100)}% of the surface`}>${i + 1}</span>`)}</div>
+        <p class="muted">Filament slots 1 to ${done.paint.colours.length}, in this order (also in <b>${done.paint.palette_file.split(/[\\/]/).pop()}</b> beside it). ${plural(done.paint.split_faces, "triangle")} painted in more than one colour${done.paint.notes.length ? `. ${done.paint.notes.join(" ")}` : "."}</p></div>` : null}
       <div class="insp-actions"><button type="button" class="ghost" onClick=${() => showInFolder(done.path)}>${Icon.folder(14)} Show in folder</button></div></div>` : null}
-    <p class="muted export-note">STL and PLY are written Z-up, as slicers expect; OBJ and GLB Y-up. Game models often aren't watertight: export the Finished model (Finish tab) or the pieces to print, or check them in your slicer.</p>
+    <p class="muted export-note">${painted ? "The painted 3MF opens in Bambu Studio, OrcaSlicer and PrusaSlicer with the colours on it: set each filament slot to the palette's colour. " : "STL and PLY are written Z-up, as slicers expect; OBJ and GLB Y-up. "}Game models often aren't watertight: ${painted ? "check the model in your slicer (the Finished model can't be painted, as it has no textures)" : "export the Finished model (Finish tab) or the pieces to print, or check them in your slicer"}.</p>
+  </div>`;
+}
+
+
+/** The painted 3MF's colours: how many (chosen from the textures) or which (each swatch can be changed), how
+ *  fine the paint goes at the print size, and the clean-up of specks; shown on the model when asked. */
+function PaintOptions({ m, args, paint, setPaint, which }) {
+  const [suggested, setSuggested] = useState(null); // { colours, coverage } from the engine for paint.colours
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const canPreview = which !== "finished" && which !== "pieces";
+  useEffect(() => {
+    let live = true;
+    setBusy(true); setError(null);
+    api("paint_palette", { sid: m.sid, ...args.json, colours: paint.colours })
+      .then((r) => { if (live) { setSuggested(r); setBusy(false); } }, (e) => { if (live) { setSuggested(null); setError(msg(e)); setBusy(false); } });
+    return () => { live = false; };
+  }, [m.sid, args.key, paint.colours]);
+  const shown = paint.palette || suggested?.colours || [];
+  const change = (i, colour) => { const next = shown.slice(); next[i] = colour.toUpperCase(); setPaint({ palette: next }); };
+  const count = (n) => { n = Math.min(12, Math.max(2, Math.round(Number(n) || 4))); setPaint({ colours: n, palette: null }); };
+  return html`<div class="paint-options" id="paint-options">
+    <label class="field-block"><span>Colours</span><div class="field-row">
+      <input type="range" id="paint-colours" min="2" max="12" step="1" value=${paint.colours} onInput=${(e) => count(e.target.value)} />
+      <input type="number" id="paint-colours-n" class="num-short" min="2" max="12" step="1" value=${paint.colours} onChange=${(e) => count(e.target.value)} /></div>
+      <small class="muted">Filaments the print uses: the textures' colours are reduced to this many.</small></label>
+    <div class="field-block"><span>Palette ${paint.palette ? html`<small class="muted">(changed by hand)</small>` : null}</span>
+      <div class="paint-swatches" id="paint-swatches">${shown.map((c, i) => html`<label key=${i} class="paint-swatch" style=${`background:${c}`} title=${`Filament ${i + 1}: ${c}${suggested?.coverage?.[i] != null && !paint.palette ? `, ${Math.round(suggested.coverage[i] * 100)}% of the surface` : ""}. Click to change it.`}>
+        <span>${i + 1}</span><input type="color" value=${c} onChange=${(e) => change(i, e.target.value)} /></label>`)}
+        ${busy && !shown.length ? html`<span class="muted">Choosing the colours…</span>` : null}</div>
+      ${error ? html`<small class="warn-note" role="alert" id="paint-error">${error}</small>` : null}
+      <div class="insp-actions"><button type="button" class="ghost compact" id="paint-suggest" disabled=${!paint.palette} onClick=${() => setPaint({ palette: null })}>Back to the suggested colours</button></div></div>
+    <label class="check-row"><input type="checkbox" id="paint-preview" checked=${paint.preview && canPreview} disabled=${!canPreview} onChange=${(e) => setPaint({ preview: e.target.checked })} />
+      <span>Show the colours on the model<small class="muted">The 3D view's textured shading in these colours, as the print will be.</small></span></label>
+    <div class="field-row">
+      <label class="field-block"><span>Print height (mm)</span><input type="number" id="paint-height" min="1" step="1" value=${paint.print_height_mm} onChange=${(e) => setPaint({ print_height_mm: Math.max(1, Number(e.target.value) || 150) })} /></label>
+      <label class="field-block"><span>Smallest feature (mm)</span><input type="number" id="paint-feature" min="0.05" step="0.05" value=${paint.feature_mm} onChange=${(e) => setPaint({ feature_mm: Math.max(0.05, Number(e.target.value) || 0.5) })} /></label></div>
+    <small class="muted">Triangles are split where colours meet, down to the smallest feature at that print height: the colour borders don't follow the mesh's triangles. Finer takes longer and makes a bigger file.</small>
+    <label class="field-block"><span>Clean-up</span><select id="paint-cleanup" value=${paint.cleanup} onChange=${(e) => setPaint({ cleanup: e.target.value })}>
+      ${CLEANUPS.map(([k, l]) => html`<option key=${k} value=${k}>${l}</option>`)}</select>
+      <small class="muted">Specks in the reduced textures that would be single dots of filament are given the colour around them.</small></label>
   </div>`;
 }

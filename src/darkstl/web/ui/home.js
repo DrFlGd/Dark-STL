@@ -74,7 +74,7 @@ function HowItWorks() {
     <ol class="how-list">
       <li><b>Pick a model</b> in a game's library and open it to see it with its textures.</li>
       <li><b>Generate</b> evens out its vertices to the count you choose, then raises the surface detail its textures carry.</li>
-      <li><b>Export</b> it as STL for your slicer, or OBJ, PLY or GLB.</li>
+      <li><b>Export</b> it as STL for your slicer, as a painted 3MF for a multi-colour printer, or OBJ, PLY or GLB.</li>
     </ol>
   </section>`;
 }

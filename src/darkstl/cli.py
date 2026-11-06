@@ -205,7 +205,15 @@ def _export_options(args, model, mesh):
 
     opts = ExportOptions(scale=args.scale, ascii_stl=getattr(args, "ascii", False))
     opts.material_names = [m.name for m in model.materials]
-    if Path(args.output).suffix.lower() in (".obj", ".glb"):
+    ext = Path(args.output).suffix.lower()
+    if ext == ".3mf":
+        from .paint import PaintSettings
+
+        palette = [c.strip() for c in (args.palette or "").split(",") if c.strip()] or None
+        opts.paint = PaintSettings(colours=args.colours, palette=palette, print_height_mm=args.print_height,
+                                   feature_mm=args.feature, cleanup=args.cleanup)
+        opts.progress = _progress
+    if ext in (".obj", ".glb", ".3mf"):
         for m in np.unique(mesh.face_material):
             m = int(m)
             key = model.materials[m].albedo if m < len(model.materials) else None
@@ -215,6 +223,19 @@ def _export_options(args, model, mesh):
                 except Exception as exc:  # noqa: BLE001
                     print(f"warning: could not decode {key}: {exc}", file=sys.stderr)
     return opts
+
+
+def _report_paint(opts) -> None:
+    """What a painted 3MF was painted with: the filament slots' colours and how much they cover."""
+    p = opts.painting
+    if p is None:
+        return
+    sys.stderr.write("\n")
+    st = p.stats()
+    slots = ", ".join(f"{i + 1}: {c} ({cov * 100:.0f}%)" for i, (c, cov) in enumerate(zip(st["colours"], st["coverage"])))
+    print(f"Painted with {len(st['colours'])} filaments: {slots}; {st['split_faces']:,} triangles in more than one colour")
+    for note in st["notes"]:
+        print(f"note: {note}")
 
 
 def _write_pieces(args, mesh) -> int:
@@ -279,8 +300,10 @@ def cmd_export(args) -> int:
         return 1
     if args.cut:
         return _write_pieces(args, mesh)
-    path = export_mesh(mesh, args.output, _export_options(args, model, mesh))
+    opts = _export_options(args, model, mesh)
+    path = export_mesh(mesh, args.output, opts)
     print(f"Wrote {path} ({mesh.n_vertices:,} vertices, {mesh.n_faces:,} triangles)")
+    _report_paint(opts)
     return 0
 
 
@@ -322,7 +345,9 @@ def cmd_enhance(args) -> int:
         return 1
     if args.cut:
         return _write_pieces(args, out_mesh)
-    path = export_mesh(out_mesh, args.output, _export_options(args, model, out_mesh))
+    opts = _export_options(args, model, out_mesh)
+    path = export_mesh(out_mesh, args.output, opts)
+    _report_paint(opts)
     st = result.stats()
     if out_mesh is not result.displaced:
         st = {**st, "vertices": out_mesh.n_vertices, "faces": out_mesh.n_faces}
@@ -383,7 +408,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def model_args(sp):
         sp.add_argument("file", help="model file: .partsbnd/.chrbnd/... archive, .flver or .obj")
-        sp.add_argument("-o", "--output", required=True, help="output file (.stl .obj .ply .glb)")
+        sp.add_argument("-o", "--output", required=True, help="output file (.stl .obj .ply .glb, or .3mf painted)")
         sp.add_argument("--variant", "--inner", dest="variant",
                         help="which model to use from a file that holds several (see 'info')")
         sp.add_argument("--parts", "--meshes", dest="parts", help="comma-separated part indices to include (see 'info')")
@@ -397,6 +422,16 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--scale", type=float, default=1000.0, help="unit scale (default 1000: metres -> mm)")
         sp.add_argument("--ascii", action="store_true", help="ASCII STL")
         sp.add_argument("--textures", action="append", help="extra folder to search for textures")
+        sp.add_argument("--colours", "--colors", dest="colours", type=int, default=4,
+                        help="painted 3MF: filament colours the textures are reduced to, 2-16 (default 4)")
+        sp.add_argument("--palette", metavar="#RRGGBB,...",
+                        help="painted 3MF: the filament colours themselves, in slot order (instead of --colours)")
+        sp.add_argument("--print-height", type=float, default=150.0, metavar="MM",
+                        help="painted 3MF: the model's height when printed, for --feature (default 150)")
+        sp.add_argument("--feature", type=float, default=0.5, metavar="MM",
+                        help="painted 3MF: smallest colour feature kept at that print height (default 0.5)")
+        sp.add_argument("--cleanup", choices=["none", "light", "strong"], default="light",
+                        help="painted 3MF: specks removed from the reduced textures (default light)")
         sp.add_argument("--cut", action="append", metavar="AXIS=MM[:JOINT]",
                         help="cut into pieces across an axis at that many mm (or AXIS=50%%), with a joint: flat, pegs, "
                              "dowels, magnets or key (default pegs); repeat for more cuts. Each piece is written as "
