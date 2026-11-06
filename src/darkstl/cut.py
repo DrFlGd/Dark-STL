@@ -137,6 +137,7 @@ class CutResult:
 class Solid:
     manifold: object  # manifold3d.Manifold, millimetres
     notes: list[str] = field(default_factory=list)
+    parts: int = 1  # the solids joined into it
 
 
 # ------------------------------------------------------------------ making it solid
@@ -169,6 +170,25 @@ def _components(n_vertices: int, faces: np.ndarray) -> np.ndarray:
     g = coo_matrix((np.ones(len(a), np.int8), (a, b)), shape=(n_vertices, n_vertices))
     _, labels = connected_components(g, directed=False)
     return labels[faces[:, 0]]
+
+
+def _edge_components(faces: np.ndarray) -> np.ndarray:
+    """The connected part each face belongs to, faces joined only through a shared edge: two surfaces that
+    merely touch at a vertex (an armour plate's corner on a body) stay apart."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    n = len(faces)
+    if not n:
+        return np.zeros(0, np.int64)
+    e = np.sort(np.stack([faces, np.roll(faces, -1, axis=1)], axis=2).reshape(-1, 2), axis=1)
+    _, edge = np.unique(e, axis=0, return_inverse=True)
+    edge = edge.reshape(-1)
+    face = np.repeat(np.arange(n), 3)
+    m = int(edge.max()) + 1
+    g = coo_matrix((np.ones(len(face), np.int8), (face, n + edge)), shape=(n + m, n + m))
+    _, labels = connected_components(g, directed=False)
+    return labels[:n]
 
 
 def _signed_volume(v: np.ndarray, f: np.ndarray) -> float:
@@ -262,7 +282,9 @@ def _voxel_solid(v: np.ndarray, f: np.ndarray, sheet: float):
     grid = np.zeros(shape, bool)
     tri = v[f]
     areas = 0.5 * np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
-    per = np.clip(np.ceil(areas / (h * h) * 4), 1, 400).astype(int)
+    longest = np.linalg.norm(tri - np.roll(tri, 1, axis=1), axis=2).max(1)
+    # enough points to cover each triangle, and its length too when it's a sliver narrower than a voxel
+    per = np.clip(np.ceil(np.maximum(areas / (h * h) * 4, longest / h * 2)), 1, 200_000).astype(int)
     rng = np.random.default_rng(0)
     rep = np.repeat(np.arange(len(f)), per)
     r1, r2 = rng.random(len(rep)), rng.random(len(rep))
@@ -308,69 +330,103 @@ def _voxel_solid(v: np.ndarray, f: np.ndarray, sheet: float):
     return solid
 
 
+def _part_solid(pv: np.ndarray, pf: np.ndarray, sheet_mm: float):
+    """One connected part as a solid, and how: ("closed" | "filled" | "thickened", solid), or (None, None)
+    when it isn't a clean surface (left to the voxels)."""
+    he, same, reverse = _edge_counts(pf)
+    if not ((same == 1).all() and (reverse <= 1).all()):
+        return None, None
+    boundary = reverse == 0
+    if not boundary.any():
+        if _signed_volume(pv, pf) < 0:
+            pf = pf[:, ::-1]
+        solid = _to_manifold(pv, pf)
+        return ("closed", solid) if solid is not None else (None, None)
+    loops = _boundary_loops(he, boundary)
+    area = float(TriMesh(pv, pf).surface_area())
+    if loops is not None:
+        fv, ff, fill_area = _fill_loops(pv, pf, loops)
+        vol = _signed_volume(fv, ff)
+        # small openings are closed; a big one means an open surface (a cape), thickened instead
+        if fill_area < 0.3 * area and abs(vol) > fill_area * sheet_mm * 0.5:
+            if vol < 0:
+                ff = ff[:, ::-1]
+            solid = _to_manifold(fv, ff)
+            if solid is not None:
+                return "filled", solid
+    tv, tf = _thicken(pv, pf, he, boundary, sheet_mm)
+    solid = _to_manifold(tv, tf)
+    return ("thickened", solid) if solid is not None else (None, None)
+
+
+def _parts(v: np.ndarray, f: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
+    """The connected parts of a surface (by shared edges), each with its own vertices."""
+    labels = _edge_components(f)
+    order = np.argsort(labels, kind="stable")
+    cuts = np.flatnonzero(np.diff(labels[order])) + 1
+    out = []
+    for sel in np.split(order, cuts):
+        used, inv = np.unique(f[sel], return_inverse=True)
+        out.append((v[used], inv.reshape(-1, 3)))
+    return out
+
+
 def make_solid(mesh: TriMesh, sheet_mm: float = 1.2, progress: ProgressFn | None = None) -> Solid:
     """The model as one closed solid, in millimetres, ready to cut. See the module's notes."""
     m3 = _m()
     if mesh.n_faces == 0:
         raise ValueError("There's nothing to cut: no parts are switched on.")
-    welded = weld(TriMesh(mesh.vertices * 1000.0, mesh.faces), 1e-4)
-    v, f = welded.vertices, welded.faces
+    welded = weld(TriMesh(mesh.vertices * 1000.0, mesh.faces, face_group=mesh.face_group), 1e-4)
+    v, f, g = welded.vertices, welded.faces, welded.face_group
     # the same triangle twice (two-sided cloth is often one side and its mirror) is kept once
     _, first = np.unique(np.sort(f, axis=1), axis=0, return_index=True)
-    f = f[np.sort(first)]
-    labels = _components(len(v), f)
+    keep = np.sort(first)
+    f, g = f[keep], g[keep]
+    labels = _edge_components(f)
     order = np.argsort(labels, kind="stable")
     cuts = np.flatnonzero(np.diff(labels[order])) + 1
     groups = np.split(order, cuts)
-    solids, closed, filled, thickened, rebuilt, dropped = [], 0, 0, 0, 0, 0
+    solids = []
+    count = {"closed": 0, "filled": 0, "thickened": 0, "rebuilt": 0, "dropped": 0}
     total = len(groups)
     for gi, sel in enumerate(groups):
         if progress and (gi % 16 == 0):
             progress(gi / max(total, 1), f"Making the model solid: part {gi + 1} of {total}")
         used, inv = np.unique(f[sel], return_inverse=True)
         pv, pf = v[used], inv.reshape(-1, 3)
-        he, same, reverse = _edge_counts(pf)
-        oriented = bool((same == 1).all() and (reverse <= 1).all())
-        solid = None
-        if oriented:
-            boundary = reverse == 0
-            if not boundary.any():
-                if _signed_volume(pv, pf) < 0:
-                    pf = pf[:, ::-1]
-                solid = _to_manifold(pv, pf)
-                if solid is not None:
-                    closed += 1
-            else:
-                loops = _boundary_loops(he, boundary)
-                area = float(TriMesh(pv, pf).surface_area())
-                if loops is not None:
-                    fv, ff, fill_area = _fill_loops(pv, pf, loops)
-                    vol = _signed_volume(fv, ff)
-                    # small openings are closed; a big one means an open surface (a cape), thickened instead
-                    if fill_area < 0.3 * area and abs(vol) > fill_area * sheet_mm * 0.5:
-                        if vol < 0:
-                            ff = ff[:, ::-1]
-                        solid = _to_manifold(fv, ff)
-                        if solid is not None:
-                            filled += 1
-                if solid is None:
-                    tv, tf = _thicken(pv, pf, he, boundary, sheet_mm)
-                    solid = _to_manifold(tv, tf)
-                    if solid is not None:
-                        thickened += 1
-        if solid is None:
+        how, solid = _part_solid(pv, pf, sheet_mm)
+        made = [(how, solid)] if solid is not None else []
+        if solid is None and len(np.unique(g[sel])) > 1:
+            # sub-meshes of the game model that only touch at a few welded points (an armour plate resting on a
+            # body) make one tangled part; each on its own is often clean, and keeps its detail
+            made = []
+            for k in np.unique(g[sel]):
+                sub = sel[g[sel] == k]
+                used_k, inv_k = np.unique(f[sub], return_inverse=True)
+                for qv, qf in _parts(v[used_k], inv_k.reshape(-1, 3)):
+                    how_k, solid_k = _part_solid(qv, qf, sheet_mm)
+                    if solid_k is None:
+                        solid_k = _voxel_solid(qv, qf, sheet_mm)
+                        how_k = "rebuilt" if solid_k is not None else "dropped"
+                    if solid_k is None:
+                        count["dropped"] += 1
+                        continue
+                    made.append((how_k, solid_k))
+        if not made:
             solid = _voxel_solid(pv, pf, sheet_mm)
-            if solid is not None:
-                rebuilt += 1
-            else:
-                dropped += 1
+            if solid is None:
+                count["dropped"] += 1
                 continue
-        solids.append(solid)
+            made = [("rebuilt", solid)]
+        for how_k, solid_k in made:
+            count[how_k] += 1
+            solids.append(solid_k)
     if not solids:
         raise ValueError("None of the model's parts could be made solid.")
     if progress:
         progress(0.95, "Joining the parts into one solid")
     whole = m3.Manifold.batch_boolean(solids, m3.OpType.Add) if len(solids) > 1 else solids[0]
+    filled, thickened, rebuilt, dropped = count["filled"], count["thickened"], count["rebuilt"], count["dropped"]
     notes = []
     if filled:
         notes.append(f"{_n(filled, 'part')} had openings, closed flat.")
@@ -382,7 +438,7 @@ def make_solid(mesh: TriMesh, sheet_mm: float = 1.2, progress: ProgressFn | None
         notes.append(f"{_n(dropped, 'part')} couldn't be made solid and {'was' if dropped == 1 else 'were'} left out.")
     if len(solids) > 1:
         notes.append(f"{len(solids)} parts joined into one solid.")
-    return Solid(whole, notes)
+    return Solid(whole, notes, len(solids))
 
 
 def _n(count: int, word: str) -> str:

@@ -380,6 +380,50 @@ def test_cut_a_model_into_pieces_with_joints_and_export_them(page, app, tmp_path
     assert page.locator("#cut-list li").count() == 2
 
 
+def test_make_a_model_watertight_then_export_and_cut_it(page, app, tmp_path):
+    pytest.importorskip("manifold3d")
+    from test_cut import figure_obj
+
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    opened = app.service.call("model_open", {"path": str(figure_obj(tmp_path))})
+    page.goto(f"{app.url}#/model/{quote(opened['id'], safe='')}")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    assert page.get_attribute('#show-which [data-value="finished"]', "disabled") is not None
+    page.click("#rail-finish")
+    page.wait_for_selector("#finish-tab")
+    assert page.get_attribute('#finish-from button:has-text("Enhanced")', "disabled") is not None
+    assert page.is_checked("#finish-hollows") and not page.is_checked("#finish-gaps")
+    page.check("#finish-gaps")
+    page.wait_for_selector("#finish-gap-mm")
+    page.uncheck("#finish-gaps")
+    page.click("#finish-run")
+    page.wait_for_selector("#finish-result", timeout=60000)
+    page.wait_for_selector("text=Made watertight")
+    page.wait_for_selector('#show-which [data-value="finished"][aria-pressed="true"]')
+    page.wait_for_selector("#stage-canvas:not([data-loading])")
+    assert "3 parts joined into one" in page.text_content("#finish-result")
+    assert page.text_content("#finish-stats").count("1") >= 1
+    if shots:
+        page.screenshot(path=os.path.join(shots, "finish-tab.png"))
+    # other settings: shown as made with other ones until made again
+    page.check("#finish-loose")
+    page.wait_for_selector("#finish-stale")
+    page.uncheck("#finish-loose")
+    page.wait_for_selector("#finish-stale", state="detached")
+    # Export and Cut can use it
+    page.click("#rail-export")
+    page.wait_for_selector('#export-which button[aria-pressed="true"]:has-text("Finished")')
+    assert page.get_attribute("#export-name", "placeholder") == "figure_watertight"
+    page.fill("#export-folder", str(tmp_path / "out"))
+    page.press("#export-folder", "Tab")
+    page.click("#export-run")
+    page.wait_for_selector("#export-done", timeout=60000)
+    assert (tmp_path / "out" / "figure_watertight.stl").exists()
+    page.click("#rail-cut")
+    page.wait_for_selector("#cut-tab")
+    assert page.get_attribute('#cut-from button:has-text("Finished")', "disabled") is None
+
+
 PLANE_CORNER = """() => {
   const v = window.__viewer;
   const g = v.cutGroup.children[0];
