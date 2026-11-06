@@ -446,3 +446,322 @@ def build_archive(files: dict[str, bytes], main_sizes: dict[str, int] | None = N
     data += index
     struct.pack_into("<4sIQIQIQ", data, 0, b"RDAR", 12, index_pos, len(index), 0, 0, len(data))
     return bytes(data)
+
+
+# ---------------------------------------------------------------------------
+# Packages (the component lists packed inside .app and .ent files)
+
+
+class PackageWriter:
+    """Writes a package buffer: ``Obj`` chunks with the package's own value encodings (chunk indices for handles,
+    import-pool indices for resource references, 16-bit length-prefixed strings)."""
+
+    def __init__(self, imports_as_hash: bool = False, version: int = 3):
+        self.imports_as_hash = imports_as_hash
+        self.version = version
+        self.imports: list[str] = []
+        self.names: list[str] = []
+        self.chunks: list[Obj] = []
+
+    def name(self, s: str) -> int:
+        if s not in self.names:
+            self.names.append(s)
+        return self.names.index(s)
+
+    def import_index(self, path: str) -> int:
+        if path not in self.imports:
+            self.imports.append(path)
+        return self.imports.index(path)
+
+    def add_chunk(self, obj: Obj) -> int:
+        self.chunks.append(obj)
+        return len(self.chunks) - 1  # handles are 0-based chunk indices
+
+    def _value(self, type_name: str, value: Any) -> bytes:
+        if type_name.startswith("["):
+            _n, rest = type_name[1:].split("]", 1)
+            return struct.pack("<i", len(value)) + b"".join(self._value(rest, v) for v in value)
+        head, _, rest = type_name.partition(":")
+        if head in ("array", "static"):
+            inner = rest.partition(",")[2] if head == "static" else rest
+            return struct.pack("<i", len(value)) + b"".join(self._value(inner, v) for v in value)
+        if head in ("handle", "whandle"):
+            return struct.pack("<i", -1 if value is None else int(value))
+        if head in ("rRef", "raRef"):
+            return struct.pack("<h", self.import_index(value) if value else -1)
+        fmt = {"Bool": "B", "Int8": "b", "Uint8": "B", "Int16": "h", "Uint16": "H", "Int32": "i", "Uint32": "I",
+               "Int64": "q", "Uint64": "Q", "Float": "f", "Double": "d"}.get(type_name)
+        if fmt:
+            return struct.pack("<" + fmt, value)
+        if type_name == "CName":
+            return struct.pack("<H", self.name(value))
+        if type_name == "String":
+            raw = value.encode("utf-8")
+            return struct.pack("<H", len(raw)) + raw
+        if type_name.startswith("enum:"):
+            return struct.pack("<H", self.name(value))
+        if isinstance(value, Obj):
+            return self._class(value)
+        raise ValueError(f"PackageWriter cannot write {type_name}")
+
+    def _class(self, obj: Obj) -> bytes:
+        table = bytearray(struct.pack("<H", len(obj.props)))
+        body = bytearray()
+        head = 2 + 8 * len(obj.props)
+        for p in obj.props:
+            type_name = p.type.removeprefix("enum:")
+            data = self._value(p.type, p.value)
+            table += struct.pack("<HHI", self.name(p.name), self.name(type_name), head + len(body))
+            body += data
+        return bytes(table + body)
+
+    def build(self) -> bytes:
+        for obj in self.chunks:
+            self.name(obj.cls)
+        blobs = [self._class(obj) for obj in self.chunks]
+        import_data = bytearray()
+        import_descs = []
+        for path in self.imports:
+            raw = struct.pack("<Q", fnv1a64(normalize_path(path))) if self.imports_as_hash else path.encode("utf-8")
+            import_descs.append((len(import_data), len(raw)))
+            import_data += raw
+        name_data = bytearray()
+        name_offsets = []
+        for n in self.names:
+            name_offsets.append(len(name_data))
+            name_data += n.encode("utf-8") + b"\0"
+        ref_desc = 0
+        ref_data = ref_desc + 4 * len(self.imports)
+        name_desc = ref_data + len(import_data)
+        name_data_off = name_desc + 4 * len(self.names)
+        chunk_desc = name_data_off + len(name_data)
+        chunk_data = chunk_desc + 8 * len(self.chunks)
+        out = bytearray(struct.pack("<BBHI", self.version, 0, 7, len(self.chunks)))
+        out += struct.pack("<6I", ref_desc, ref_data, name_desc, name_data_off, chunk_desc, chunk_data)
+        out += struct.pack("<hH", -1, 0)  # CRUID index, no CRUIDs
+        base = len(out)
+        for off, size in import_descs:
+            out += struct.pack("<I", (ref_data + off) | (size << 23))
+        out += import_data
+        for off in name_offsets:
+            out += struct.pack("<I", name_data_off + off)
+        out += name_data
+        pos = chunk_data
+        for obj, blob in zip(self.chunks, blobs):
+            out += struct.pack("<II", self.name(obj.cls), pos)
+            pos += len(blob)
+        assert len(out) == base + chunk_data
+        for blob in blobs:
+            out += blob
+        return bytes(out)
+
+
+def fixed_point(v: float) -> Obj:
+    return Obj("FixedPoint").add("Bits", "Int32", round(v * 131072.0))
+
+
+def world_transform(position=(0.0, 0.0, 0.0), rotation=(0.0, 0.0, 0.0, 1.0)) -> Obj:
+    pos = Obj("WorldPosition")
+    for axis, v in zip("xyz", position):
+        pos.add(axis, "FixedPoint", fixed_point(v))
+    rot = Obj("Quaternion")
+    for axis, v in zip("ijkr", rotation):
+        rot.add(axis, "Float", v)
+    return Obj("WorldTransform").add("Position", "WorldPosition", pos).add("Orientation", "Quaternion", rot)
+
+
+def mesh_component(name: str, mesh: str, appearance: str = "default", position=(0.0, 0.0, 0.0),
+                   cls: str = "entMeshComponent", chunk_mask: int = 0xFFFFFFFFFFFFFFFF) -> Obj:
+    c = Obj(cls).add("name", "CName", name).add("mesh", "rRef:CMesh", mesh)
+    c.add("meshAppearance", "CName", appearance).add("chunkMask", "Uint64", chunk_mask)
+    c.add("localTransform", "WorldTransform", world_transform(position))
+    return c
+
+
+def slot_component(name: str, slots: dict[str, tuple]) -> Obj:
+    """An ``entSlotComponent``: slot name -> (bone name, position)."""
+    entries = []
+    for slot, (bone, position) in slots.items():
+        s = Obj("entSlot").add("slotName", "CName", slot).add("boneName", "CName", bone)
+        pos = Obj("Vector3")
+        for axis, v in zip("XYZ", position):
+            pos.add(axis, "Float", v)
+        rot = Obj("Quaternion")
+        for axis, v in zip("ijkr", (0.0, 0.0, 0.0, 1.0)):
+            rot.add(axis, "Float", v)
+        s.add("relativePosition", "Vector3", pos).add("relativeRotation", "Quaternion", rot)
+        entries.append(s)
+    return Obj("entSlotComponent").add("name", "CName", name).add("slots", "array:entSlot", entries)
+
+
+def build_package(components: list[Obj], imports_as_hash: bool, bindings: dict[int, tuple[str, str]] | None = None) \
+        -> bytes:
+    """A package of ``components``; ``bindings`` gives a component index its (bind name, slot name)."""
+    w = PackageWriter(imports_as_hash)
+    for c in components:
+        w.add_chunk(c)
+    for index, (bind, slot) in (bindings or {}).items():
+        b = Obj("entHardTransformBinding").add("bindName", "CName", bind).add("slotName", "CName", slot)
+        components[index].add("parentTransform", "handle:entITransformBinding", w.add_chunk(b))
+    return w.build()
+
+
+def build_app(appearances: dict[str, list[Obj]], base_entity: str | None = None,
+              bindings: dict[str, dict[int, tuple[str, str]]] | None = None) -> bytes:
+    """An ``.app``: appearance name -> its components (the meshes they name are listed as the file's imports,
+    as the game writes them)."""
+    w = Cr2wWriter()
+    root = Obj("appearanceAppearanceResource")
+    if base_entity:
+        root.add("baseEntity", "rRef:entEntityTemplate", base_entity)
+    handles = []
+    for name, comps in appearances.items():
+        for c in comps:
+            for p in c.props:
+                if p.name == "mesh":
+                    w.import_index(p.value, "CMesh")
+        data = build_package(comps, True, (bindings or {}).get(name))
+        a = Obj("appearanceAppearanceDefinition").add("name", "CName", name)
+        a.add("compiledData", "DataBuffer", data)
+        handles.append(w.add_chunk(a))
+    root.add("appearances", "array:handle:appearanceAppearanceDefinition", handles)
+    w.chunks.insert(0, root)
+    # the root must be chunk 1: renumber the appearance handles
+    root.props[-1].value = [h + 1 for h in handles]
+    return w.build()
+
+
+def build_ent(components: list[Obj], appearances: list[tuple[str, str, str]] = (), meshes: list[str] = ()) -> bytes:
+    """An ``.ent`` with packed ``components`` (slot components, usually), its appearance list as
+    (name, .app path, appearance name), and ``meshes`` it names outright."""
+    w = Cr2wWriter()
+    root = Obj("entEntityTemplate")
+    if meshes:
+        root.add("meshes", "array:rRef:CMesh", list(meshes))
+    if components:
+        root.add("compiledData", "DataBuffer", build_package(components, False))
+    apps = []
+    for name, app, app_name in appearances:
+        a = Obj("entTemplateAppearance").add("name", "CName", name)
+        a.add("appearanceResource", "rRef:appearanceAppearanceResource", app).add("appearanceName", "CName", app_name)
+        apps.append(a)
+    root.add("appearances", "array:entTemplateAppearance", apps)
+    w.add_chunk(root)
+    return w.build()
+
+
+# ---------------------------------------------------------------------------
+# Multilayer masks and setups
+
+
+def encode_bc4(gray: np.ndarray) -> bytes:
+    """BC4 blocks of a (H, W) uint8 image (H and W multiples of 4), each block's range in 8 steps."""
+    h, w = gray.shape
+    blocks = gray.reshape(h // 4, 4, w // 4, 4).transpose(0, 2, 1, 3).reshape(-1, 16).astype(np.int32)
+    hi = blocks.max(axis=1)
+    lo = blocks.min(axis=1)
+    hi = np.where(hi == lo, np.minimum(lo + 1, 255), hi)
+    lo = np.where(hi == lo, hi - 1, lo)
+    steps = np.stack([hi, lo] + [((7 - i) * hi + i * lo) // 7 for i in range(1, 7)], axis=1)  # index 0 = r0, 1 = r1
+    idx = np.abs(blocks[:, :, None] - steps[:, None, :]).argmin(axis=2)
+    out = bytearray()
+    for r0, r1, ids in zip(hi, lo, idx):
+        bits = 0
+        for i, v in enumerate(ids):
+            bits |= int(v) << (3 * i)
+        out += struct.pack("<BBQ", int(r0), int(r1), bits)[:8]
+    return bytes(out)
+
+
+def build_mlmask(layers: list[np.ndarray], tile_size: int = 6) -> bytes:
+    """A ``.mlmask`` holding ``layers`` (each a (H, W) uint8 coverage map of the same size) as tiles of one BC4
+    atlas (tiles padded to a multiple of 4, so BC4 blocks never straddle two tiles), with a tile table for the
+    full-size map and an empty one for the small map."""
+    h, w = layers[0].shape
+    ts = tile_size
+    tiles_x, tiles_y = -(-w // ts), -(-h // ts)
+    slot = ts + 2  # padded tile in the atlas
+    n_tiles = tiles_x * tiles_y * len(layers)
+    per_row = max(1, int(np.ceil(np.sqrt(n_tiles))))
+    rows = -(-n_tiles // per_row)
+    atlas_w = -(-(per_row * slot) // 4) * 4
+    atlas_h = -(-(rows * slot) // 4) * 4
+    atlas = np.zeros((atlas_h, atlas_w), np.uint8)
+    params: list[int] = []
+    decls: list[int] = []
+    next_slot = 0
+    for ty in range(tiles_y):
+        for tx in range(tiles_x):
+            bits = 0
+            offset = len(decls)
+            for i, lay in enumerate(layers):
+                tile = lay[ty * ts:(ty + 1) * ts, tx * ts:(tx + 1) * ts]
+                if not tile.any():
+                    continue
+                bits |= 1 << i
+                dx, dy = next_slot % per_row, next_slot // per_row
+                next_slot += 1
+                padded = np.pad(tile, ((1, 1 + ts - tile.shape[0]), (1, 1 + ts - tile.shape[1])), mode="edge")
+                atlas[dy * slot:(dy + 1) * slot, dx * slot:(dx + 1) * slot] = padded
+                decls.append(dx | (dy << 10))
+            params += [offset, bits]
+    params += [0, 0] * (tiles_x * tiles_y)  # the small map: no tiles
+    table = np.array(params, np.uint32)
+    table[0::2] += len(table)  # decl offsets count from the start of the tiles table
+    tiles_data = table.tobytes() + np.array(decls, np.uint32).tobytes()
+    cw = Cr2wWriter()
+    header = Obj("rendRenderMultilayerMaskBlobHeader").add("version", "Uint32", 3)
+    for k, v in (("atlasWidth", atlas_w), ("atlasHeight", atlas_h), ("numLayers", len(layers)), ("maskWidth", w),
+                 ("maskHeight", h), ("maskWidthLow", w), ("maskHeightLow", h), ("maskTileSize", ts)):
+        header.add(k, "Uint32", v)
+    blob = Obj("rendRenderMultilayerMaskBlobPC").add("header", "rendRenderMultilayerMaskBlobHeader", header)
+    blob.add("atlasData", "serializationDeferredDataBuffer", cw.add_buffer(encode_bc4(atlas)))
+    blob.add("tilesData", "serializationDeferredDataBuffer", cw.add_buffer(tiles_data))
+    root = Obj("Multilayer_Mask")
+    cw.add_chunk(root)
+    res = Obj("rendRenderMultilayerMaskResource").add("renderResourceBlobPC", "handle:IRenderResourceBlob",
+                                                      cw.add_chunk(blob))
+    root.add("renderResourceBlob", "rendRenderMultilayerMaskResource", res)
+    return cw.build()
+
+
+def build_mltemplate(color: str | None, normal: str | None, tiling: float = 1.0,
+                     color_scales: dict[str, tuple[float, float, float]] | None = None,
+                     normal_strengths: dict[str, float] | None = None, default_color: str = "",
+                     default_strength: str = "") -> bytes:
+    w = Cr2wWriter()
+    root = Obj("Multilayer_LayerTemplate")
+    over = Obj("Multilayer_LayerTemplateOverrides")
+    over.add("colorScale", "array:Multilayer_LayerTemplateOverridesColor",
+             [Obj("Multilayer_LayerTemplateOverridesColor").add("n", "CName", n).add("v", "[3]Float", list(v))
+              for n, v in (color_scales or {}).items()])
+    over.add("normalStrength", "array:Multilayer_LayerTemplateOverridesNormalStrength",
+             [Obj("Multilayer_LayerTemplateOverridesNormalStrength").add("n", "CName", n).add("v", "Float", v)
+              for n, v in (normal_strengths or {}).items()])
+    root.add("overrides", "Multilayer_LayerTemplateOverrides", over)
+    root.add("defaultOverrides", "Multilayer_LayerOverrideSelection",
+             Obj("Multilayer_LayerOverrideSelection").add("colorScale", "CName", default_color)
+             .add("normalStrength", "CName", default_strength))
+    if color:
+        root.add("colorTexture", "rRef:CBitmapTexture", color)
+    if normal:
+        root.add("normalTexture", "rRef:CBitmapTexture", normal)
+    root.add("tilingMultiplier", "Float", tiling)
+    w.add_chunk(root)
+    return w.build()
+
+
+def build_mlsetup(layers: list[dict]) -> bytes:
+    """A ``.mlsetup``: each layer a dict with ``material`` (template path) and optional ``matTile``, ``opacity``,
+    ``colorScale``, ``normalStrength`` (override names)."""
+    w = Cr2wWriter()
+    entries = []
+    for lay in layers:
+        o = Obj("Multilayer_Layer").add("matTile", "Float", lay.get("matTile", 1.0))
+        o.add("opacity", "Float", lay.get("opacity", 1.0))
+        o.add("material", "rRef:Multilayer_LayerTemplate", lay["material"])
+        o.add("colorScale", "CName", lay.get("colorScale", "")).add("normalStrength", "CName",
+                                                                     lay.get("normalStrength", ""))
+        entries.append(o)
+    w.add_chunk(Obj("Multilayer_Setup").add("layers", "array:Multilayer_Layer", entries))
+    return w.build()

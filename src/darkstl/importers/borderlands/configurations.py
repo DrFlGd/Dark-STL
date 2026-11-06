@@ -146,7 +146,7 @@ def _from_part_meshes(configs, game: str, entries: list[CatalogEntry], parts: li
         skins = weapons.skins_for(kind, parts)
         if skins:
             opts = [configs.PartOption(p.name, weapons.option_label(p.name, kind),
-                                       configs.ModelRef(base, f"{SKIN_VARIANT}{p.package}:{p.path}", []))
+                                       configs.ModelRef(base, skin_variant(p), []))
                     for p in skins]
             slots.append(configs.Slot("skin", "Skin", opts, required=True, default=_default_skin(slots, opts),
                                       kind="material"))
@@ -192,7 +192,7 @@ def _configuration(configs, g: weapons.Gestalt, pkg: upk.Package, mesh_export: u
     skins = weapons.skins_for(g.kind, parts)
     if skins:
         opts = [configs.PartOption(p.name, weapons.option_label(p.name, g.kind),
-                                   configs.ModelRef(file, f"{SKIN_VARIANT}{p.package}:{p.path}", []))
+                                   configs.ModelRef(file, skin_variant(p), []))
                 for p in skins]
         slots.append(configs.Slot("skin", "Skin", opts, required=True, default=_default_skin(slots, opts),
                                   kind="material"))
@@ -206,6 +206,12 @@ def _configuration(configs, g: weapons.Gestalt, pkg: upk.Package, mesh_export: u
 
 
 SKIN_VARIANT = "skin:"
+
+
+def skin_variant(p: weapons.WeaponPart) -> str:
+    """``skin:<package stem>:<part path>|<package file>``: the file, as a DLC's packages may sit outside the
+    folder of the gun's own meshes."""
+    return f"{SKIN_VARIANT}{p.package}:{p.path}" + (f"|{p.file}" if p.file else "")
 
 
 def _default_skin(slots: list, skins: list) -> str:
@@ -223,4 +229,4 @@ def gun_label(kind: str) -> str:
     return {"AssaultRifle": "Assault rifle", "SniperRifle": "Sniper rifle"}.get(kind, kind) + " (any parts)"
 
 
-__all__ = ["SKIN_VARIANT", "build_configurations", "gun_label"]
+__all__ = ["SKIN_VARIANT", "build_configurations", "gun_label", "skin_variant"]

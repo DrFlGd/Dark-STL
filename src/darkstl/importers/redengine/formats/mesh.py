@@ -79,6 +79,7 @@ class RedMesh:
     external_materials: list  # Ref of each external entry
     material_entries: list[tuple[str, int, bool]]  # (name, index, is local)
     local_material_files: list = field(default_factory=list, repr=False)
+    bone_matrices: list[np.ndarray] = field(default_factory=list, repr=False)  # inverse bind matrix of each bone
 
     @property
     def lod_levels(self) -> list[int]:
@@ -257,6 +258,14 @@ def read_mesh(f: Cr2wFile) -> RedMesh:
     bones = [str(b) for b in (root.get("boneNames") or [])]
     mesh = RedMesh(f.version, blob_version, chunks, [e[0] for e in entries], appearances, bones, local, external,
                    entries, local_files)
+    for mm in root.get("boneRigMatrices") or []:
+        if not isinstance(mm, Red):
+            continue
+        rows = []
+        for k in ("X", "Y", "Z", "W"):
+            v = mm.get(k)
+            rows.append([float(v.get(a, 0.0)) for a in ("X", "Y", "Z", "W")] if isinstance(v, Red) else [0.0] * 4)
+        mesh.bone_matrices.append(np.array(rows, float).T)  # rows are the engine's row vectors
     mesh.assign_appearance(None)
     return mesh
 

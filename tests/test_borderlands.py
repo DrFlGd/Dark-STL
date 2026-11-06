@@ -307,6 +307,37 @@ def test_gun_skins_paint_the_whole_gun(bl2):
     assert any("Skin: Jakobs 1" in line for line in jakobs.info)
 
 
+def test_skins_from_a_dlc(bl2, tmp_path):
+    """A DLC's packages (``<game>/DLC/<name>/...``) belong to the game: their imports are looked up in the base
+    game's packages, and a skin remembers its package file, wherever the gun's meshes are."""
+    from darkstl import configs
+
+    dlc = bl2 / "DLC" / "Aster" / "WillowGame" / "CookedPCConsole"
+    dlc.mkdir(parents=True)
+    (dlc / "Aster_Startup_SF.upk").write_bytes(skins_package())
+    (bl2 / "WillowGame" / "CookedPCConsole" / "GunSkins.upk").write_bytes(gun_skins_package())
+    assert files.game_root(dlc / "Aster_Startup_SF.upk") == bl2
+    assert files.game_root(bl2 / "WillowGame" / "DLC" / "Iris" / "CookedPCConsole" / "X.upk") == bl2
+    assert files.game_root(bl2 / "DLC" / "Iris" / "CookedPCConsole" / "X.upk") == bl2
+    files._INDEXES.clear()
+    imp = BorderlandsImporter()
+    entries = imp.scan(bl2, files.GAME_BL2)
+    (c,) = imp.configurations(bl2, files.GAME_BL2, entries)
+    skin = next(s for s in c.slots if s.id == "skin")
+    jakobs = next(o for o in skin.options if o.id == "Mat_Jakobs_1")
+    assert jakobs.model.variant.endswith("|" + str(dlc / "Aster_Startup_SF.upk"))
+    gun = configs.assemble(c, {"skin": "Mat_Jakobs_1"}, open_model)  # its material instance is in GunSkins.upk
+    assert {tuple(gun.textures[m.albedo].decode()[0, 0, :3].tolist()) for m in gun.materials} == {(0, 255, 0)}
+    # the gun's meshes in a folder of their own: the skin is still opened from its file
+    elsewhere = tmp_path / "copy" / "WillowGame" / "CookedPCConsole"
+    elsewhere.mkdir(parents=True)
+    startup = elsewhere / "Startup.upk"
+    shutil.copy(bl2 / "WillowGame" / "CookedPCConsole" / "Startup.upk", startup)
+    paint = open_model(jakobs.model.file.replace(str(bl2 / "WillowGame" / "CookedPCConsole" / "Startup.upk"),
+                                                 str(startup)), jakobs.model.variant)
+    assert paint.textures and paint.materials[0].albedo
+
+
 def test_a_skin_cooked_into_some_other_package_is_found(bl2):
     """The skin's material instance is imported from a package that isn't a file of its own; a copy of it was
     cooked (as a forced export) into some other package, and its texture into a third."""

@@ -36,7 +36,7 @@ from .depot import ARCHIVE_DIRS, DEPOT_ROOTS, member_path
 from .formats import archive as arc
 from .formats import cr2w
 
-VERSION = 1
+VERSION = 2  # 2: weapon appearance files listed too
 GAME = "Cyberpunk 2077"
 _MESH = re.compile(r"\.mesh$", re.IGNORECASE)
 _MARKERS = ("bin/x64/Cyberpunk2077.exe", "archive/pc/content", "r6/config", "REDprelauncher.exe")
@@ -127,13 +127,14 @@ def _read_cache(file: Path | None, path: Path) -> dict | None:
     return data
 
 
-def _write_cache(file: Path, path: Path, meshes: list[str], names: dict[str, str], complete: bool) -> None:
+def _write_cache(file: Path, path: Path, meshes: list[str], names: dict[str, str], complete: bool,
+                 apps: list[str] | None = None) -> None:
     try:
         st = path.stat()
         file.parent.mkdir(parents=True, exist_ok=True)
         tmp = file.with_suffix(f".{threading.get_ident()}.tmp")
         tmp.write_text(json.dumps({"version": VERSION, "size": st.st_size, "mtime": st.st_mtime_ns,
-                                   "meshes": meshes, "names": names, "complete": complete}), "utf-8")
+                                   "meshes": meshes, "names": names, "complete": complete, "apps": apps or []}), "utf-8")
         os.replace(tmp, file)
     except OSError:
         pass
@@ -152,6 +153,7 @@ def index_archive(path: Path, cache: Path | None = None, progress: Callable[[int
         if cached.get("complete", True):
             return ar, meshes
     meshes_set: set[int] = set()
+    apps_set: set[int] = set()
     names: dict[int, str] = dict(ar.names)
     total = len(ar.entries)
     last = time.monotonic()
@@ -177,8 +179,11 @@ def index_archive(path: Path, cache: Path | None = None, progress: Callable[[int
             continue
         if f.root_class == "CMesh":
             meshes_set.add(e.hash)
+        weapon_app = f.root_class == "appearanceAppearanceResource"
         for imp in f.imports:
             p = arc.normalize_path(imp.path)
+            if weapon_app and "\\weapons\\" in p and p.endswith((".mesh", ".ent")):
+                apps_set.add(e.hash)
             if p.endswith(_NAMED_REFS):
                 h = arc.fnv1a64(p)
                 if h in ar.entries:
@@ -187,8 +192,23 @@ def index_archive(path: Path, cache: Path | None = None, progress: Callable[[int
     meshes = sorted(meshes_set)
     if cache_file is not None and complete:
         _write_cache(cache_file, path, [f"{h:016x}" for h in meshes], {f"{h:016x}": n for h, n in names.items()},
-                     complete)
+                     complete, [f"{h:016x}" for h in sorted(apps_set)])
+    _APPS[str(path)] = sorted(apps_set)
     return ar, meshes
+
+
+_APPS: dict[str, list[int]] = {}  # archive path -> weapon appearance files found by the last index without a cache
+
+
+def weapon_apps(path: Path, cache: Path | None) -> list[int]:
+    """The weapon appearance files (``.app`` naming meshes under ``weapons``) in an archive, by hash."""
+    cached = _read_cache(_cache_file(cache, path), path)
+    if cached is None or "apps" not in cached:
+        index_archive(path, cache)
+        cached = _read_cache(_cache_file(cache, path), path)
+    if cached is not None:
+        return [int(h, 16) for h in cached.get("apps", [])]
+    return _APPS.get(str(path), [])
 
 
 def restore_names(paths: list[Path], cache: Path | None) -> None:
@@ -286,4 +306,5 @@ def folder_notes(root: Path, found: list[CatalogEntry]) -> list[str]:
     return notes
 
 
-__all__ = ["GAME", "classify", "detect_game", "folder_notes", "index_archive", "iter_files", "learn_names", "scan"]
+__all__ = ["GAME", "classify", "detect_game", "folder_notes", "index_archive", "iter_files", "learn_names", "scan",
+           "weapon_apps"]
