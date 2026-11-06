@@ -285,6 +285,72 @@ def smooth_slopes(p: np.ndarray, q: np.ndarray, sigma: float = 0.7) -> tuple[np.
     return (ndimage.gaussian_filter(p, sigma, mode="wrap"), ndimage.gaussian_filter(q, sigma, mode="wrap"))
 
 
+def edge_flow(p: np.ndarray, q: np.ndarray, sigma: float = 0.7, rho: float = 2.0):
+    """The direction edges run in (``tx``, ``ty``) and how much each texel sits on a clear, straight-ish
+    edge (0..1), from the slopes' structure tensor. ``rho`` (texels) is the area the direction is judged
+    over: wide enough that a staircase reads as the line it approximates."""
+    gp = [ndimage.gaussian_filter(p, sigma, order=o, mode="wrap") for o in ((0, 1), (1, 0))]
+    gq = [ndimage.gaussian_filter(q, sigma, order=o, mode="wrap") for o in ((0, 1), (1, 0))]
+    jxx = ndimage.gaussian_filter(gp[0] * gp[0] + gq[0] * gq[0], rho, mode="wrap")
+    jyy = ndimage.gaussian_filter(gp[1] * gp[1] + gq[1] * gq[1], rho, mode="wrap")
+    jxy = ndimage.gaussian_filter(gp[0] * gp[1] + gq[0] * gq[1], rho, mode="wrap")
+    trace = jxx + jyy
+    coherence = np.sqrt((jxx - jyy) ** 2 + 4 * jxy**2) / np.maximum(trace, 1e-12)
+    theta = 0.5 * np.arctan2(2 * jxy, jxx - jyy)  # across the edge
+    mag = np.sqrt(trace)
+    ref = float(np.percentile(mag, 90)) + 1e-9
+    # edges along the texel grid have no steps to take out (and stripes running that way keep their grain);
+    # the steps come with edges at an angle, in full from 20 degrees off the grid
+    oblique = np.clip(np.abs(np.sin(2 * theta)) / np.sin(np.radians(40)), 0, 1)
+    weight = np.clip((coherence - 0.3) / 0.5, 0, 1) * np.clip(mag / ref, 0, 1) * oblique
+    return (-np.sin(theta)).astype(np.float32), np.cos(theta).astype(np.float32), weight.astype(np.float32)
+
+
+def smooth_jagged_edges(p: np.ndarray, q: np.ndarray, length: float = 2.0,
+                        strength: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
+    """Take the stair-steps out of edges a normal map was baked or sampled with too few texels for.
+
+    Each texel is averaged with the texels up to ``length`` texels away along the edge it lies on,
+    following the edge as it curves (line integral convolution), so the edge stays as sharp across
+    as before but its steps blend into the line they approximate. Only clear edges are touched:
+    fine grain and noise have no single direction and are left as they are. An upscaler can't do
+    this itself: it learnt to keep the steps it is shown, and at any factor they just get bigger.
+    """
+    if strength <= 0 or length <= 0:
+        return p, q
+    h, w = p.shape
+    tx, ty, wt = edge_flow(p, q)
+    step = 0.5
+    n = int(np.ceil(length / step))
+    sigma = length / 2
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    acc_p, acc_q = p.astype(np.float32), q.astype(np.float32)
+    # cubic reads: linear ones between texels would also blur across the edge, the one way it must stay sharp
+    cp, cq = (ndimage.spline_filter(a, 3, np.float32, mode="grid-wrap") for a in (acc_p, acc_q))
+    total = 1.0
+    for sign in (1.0, -1.0):
+        x, y = xx, yy
+        dx, dy = tx * sign, ty * sign
+        for k in range(1, n + 1):
+            cx = ndimage.map_coordinates(tx, [y, x], order=1, mode="grid-wrap")
+            cy = ndimage.map_coordinates(ty, [y, x], order=1, mode="grid-wrap")
+            flip = np.where(cx * dx + cy * dy < 0, -1.0, 1.0).astype(np.float32)  # a line field: keep going the same way
+            dx, dy = cx * flip, cy * flip
+            x, y = x + step * dx, y + step * dy
+            g = float(np.exp(-0.5 * (k * step / sigma) ** 2))
+            acc_p = acc_p + g * ndimage.map_coordinates(cp, [y, x], order=3, mode="grid-wrap", prefilter=False)
+            acc_q = acc_q + g * ndimage.map_coordinates(cq, [y, x], order=3, mode="grid-wrap", prefilter=False)
+            total += g
+    dp, dq = acc_p / total - p, acc_q / total - q
+    # A stair-step moves a texel by a good part of the edge's height; grain along the edge moves it by about
+    # its own small size. Changes no bigger than the texture's grain are left out, so the grain stays.
+    grain = float(np.median(np.hypot(p - ndimage.gaussian_filter(p, 1.0, mode="wrap"),
+                                     q - ndimage.gaussian_filter(q, 1.0, mode="wrap")))) * 1.5 + 1e-6
+    size = np.hypot(dp, dq)
+    a = np.clip(wt * strength, 0, 1) * np.clip((size - grain) / grain, 0, 1)
+    return (p + a * dp).astype(np.float32), (q + a * dq).astype(np.float32)
+
+
 def luminance(rgba: np.ndarray) -> np.ndarray:
     f = to_float(rgba)
     if f.ndim == 2 or f.shape[2] < 3:
