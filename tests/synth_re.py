@@ -344,7 +344,8 @@ def build_mdf(materials: list[tuple[str, str, list[tuple[str, str]]]], version: 
     if version >= 51:
         entry_size = 108
     tex_entry = 24 if version < 13 else 32
-    out = bytearray(struct.pack("<IHHQ", 0x0046444D, version, len(materials), 0))
+    # the header's own version field is 1 in the games' files; the layout version is the file extension
+    out = bytearray(struct.pack("<IHHQ", 0x0046444D, 1, len(materials), 0))
     entries_pos = len(out)
     out += b"\0" * (entry_size * len(materials))
     tex_table_pos = len(out)

@@ -171,7 +171,7 @@ class REEngineImporter(Importer):
             return [f"RE Engine texture version {tex.version}: {tex.describe()}"
                     + (f", {tex.image_count} images" if tex.image_count > 1 else "")]
         if mdffmt.is_mdf(data):
-            mdf = mdffmt.read_mdf(data)
+            mdf = mdffmt.read_mdf(data, profiles.version_of(name))
             lines = [f"RE Engine materials version {mdf.version}, {len(mdf.materials)} materials"]
             for m in mdf.materials:
                 lines.append(f"material {m.name}  [{m.shader.replace(chr(92), '/').rsplit('/', 1)[-1]}]")

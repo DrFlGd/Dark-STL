@@ -509,7 +509,7 @@ def find_mdf(path: Path, material_names: list[str]) -> Path | None:
     others = [p for n, p in sorted(listing.items()) if MDF_FILE.search(n)]
     for p in others:
         try:
-            names = {m.name.lower() for m in mdffmt.read_mdf(read_bytes(p)).materials}
+            names = {m.name.lower() for m in mdffmt.read_mdf(read_bytes(p), version_of(p.name)).materials}
         except FormatError:
             continue
         if wanted and wanted <= names:
@@ -582,7 +582,7 @@ def load_model(path: os.PathLike | str, texture_dirs: tuple[str, ...] = ()) -> M
         asset.notes.append(f"No materials file (.mdf2) was found for {asset.name}, so its textures are unknown.")
     else:
         try:
-            asset.mdf = mdffmt.read_mdf(read_bytes(mdf_path))
+            asset.mdf = mdffmt.read_mdf(read_bytes(mdf_path), version_of(mdf_path.name))
             asset.mdf_path = mdf_path
         except FormatError as exc:
             asset.notes.append(f"The materials file {mdf_path.name} could not be read: {exc}")
