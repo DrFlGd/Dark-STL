@@ -5,8 +5,10 @@ its shader (an ``.mmtr`` path), a list of texture bindings (a slot type such as 
 or ``NRMR``, and the texture's path below ``natives/<platform>/``, without the version in the
 extension) and a list of float properties. Only the names and texture bindings are read here.
 
-The header version is the number in the file's extension (10 for RE2, 32 for RE4...); it moves
-a few fields around in each material entry.
+The layout follows the version in the file's extension (10 for RE2, 19 for Village, 32 for
+RE4...), which moves a few fields around in each material entry. The header carries a version
+field of its own, but it is not that number (real files say 1 there), so callers pass the one from
+the file name; the header's is only a fallback.
 """
 
 from __future__ import annotations
@@ -44,12 +46,15 @@ def is_mdf(data: bytes) -> bool:
     return len(data) >= 8 and int.from_bytes(data[:4], "little") == MAGIC
 
 
-def read_mdf(data: bytes) -> MdfFile:
+def read_mdf(data: bytes, version: int | None = None) -> MdfFile:
+    """The materials in an mdf2 file; ``version`` is the number in the file's extension."""
     r = Reader(data)
     if not is_mdf(data):
         raise FormatError("Not an RE Engine material file")
     r.u32()
-    version = r.u16()
+    header_version = r.u16()
+    if version is None:
+        version = header_version
     count = r.u16()
     r.u64()
     materials = []

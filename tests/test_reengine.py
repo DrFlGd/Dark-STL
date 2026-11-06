@@ -12,6 +12,7 @@ from darkstl.errors import FormatError
 from darkstl.importers import importer_for, open_model
 from darkstl.importers.reengine import REEngineImporter, files
 from darkstl.importers.reengine.catalog import classify
+from darkstl.importers.reengine.formats import mdf as mdffmt
 from darkstl.importers.reengine.formats import mesh as meshfmt
 from darkstl.importers.reengine.formats import pak as pakfmt
 from darkstl.importers.reengine.formats import tex as texfmt
@@ -162,6 +163,18 @@ def test_tex_mips_padded_rows_and_versions():
     assert dds.parse_dds(dds_bytes).mipmaps == 3
     with pytest.raises(FormatError, match="GDeflate"):
         texfmt.read_tex(S.build_tex(4, 4, 0x47, [S.bc1_flat(4, 4, RED)], 241106027))
+
+
+def test_mdf_layout_follows_the_file_extension_not_the_header():
+    """Village's it02_022_shotgun_03.mdf2.19 has 1 in its header's version field; the layout is the 19."""
+    bindings = [("BaseMetalMap", "Item/it02/it02_022_albm.tex"), ("NormalRoughnessMap", "Item/it02/it02_022_nrmr.tex")]
+    for version in (10, 13, 19, 21, 31, 32, 51):
+        data = S.build_mdf([("it02_022_mat", "Shader/it.mmtr", bindings)], version)
+        assert int.from_bytes(data[4:6], "little") == 1
+        mdf = mdffmt.read_mdf(data, version)
+        assert [(t.type, t.path) for t in mdf.materials[0].textures] == bindings, version
+    with pytest.raises(FormatError):
+        mdffmt.read_mdf(S.build_mdf([("m", "s.mmtr", bindings)], 19))  # the header alone cannot tell
 
 
 def test_pak_table_names_and_compression(tmp_path):
