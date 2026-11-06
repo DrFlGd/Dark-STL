@@ -122,8 +122,8 @@ function FirstRun({ error }) {
         offers to unpack the models (characters, weapons and armour, objects, map pieces) into its own library; the game's folder isn't changed.
         A folder unpacked with UXM Selective Unpacker works too. For Bloodborne, choose the folder of files extracted from the game.
         For Cyberpunk 2077, choose its install folder as it is: the models are read from its archives (the first scan reads through them once), or choose a folder of files exported with WolvenKit.
-        Resident Evil 2, 3, 4, 7 and Village (RE Engine) are read from the files a pak tool (REtool, ree-pak) extracts, or straight from
-        the game's folder when its file list (a <code>.list</code> file from the modding community) is copied in beside the <code>.pak</code> archives.</p>
+        For Resident Evil 2, 3, 4, 7, Village and Devil May Cry 5 (RE Engine), choose the install folder as it is: the models are read straight from
+        its <code>.pak</code> archives, named through the file lists that come with Dark STL (Ekey's). A folder a pak tool (REtool, ree-pak) extracted works too.</p>
       <p><b>Or any folder of extracted files</b>, such as .partsbnd, .chrbnd, .objbnd, .flver, .mesh or .obj files you've pulled out with other tools.</p>
       <p><b>Or models Dark STL collected before</b> (on this computer or another): choose its library folder, or one game's folder in it, with <i>Add collected files</i>. Each game can come from either its own folder or its collected files.</p>
       ${games.length ? html`<p class="muted">Recognised: ${games.join(", ")}. Other folders can be added under a name you choose.</p>` : null}

@@ -4,8 +4,8 @@ Files come in two shapes:
 
 * extracted, below the game's ``natives/<platform>/`` tree (``x64`` for RE2, RE3 and RE7, ``stm``
   from Resident Evil Village on), or in any folder of loose files
-* still inside a ``.pak`` archive, named through a community file list (``*.list``) kept in the
-  game folder; such a file is addressed by a path made of the archive's path and the entry's
+* still inside a ``.pak`` archive, named through the community file lists bundled for the game
+  (``filelists/``, Ekey's) and any ``*.list`` kept in the game folder; such a file is addressed by a path made of the archive's path and the entry's
   name inside it (``re_chunk_000.pak/natives/stm/.../x.mesh.221108797``)
 
 Materials (``.mdf2``) sit beside the mesh and name their textures by path below the platform
@@ -32,7 +32,7 @@ from .formats import mdf as mdffmt
 from .formats import mesh as meshfmt
 from .formats import pak as pakfmt
 from .formats import tex as texfmt
-from .games import MESH_FILE, PAK_FILE, version_of
+from .games import MESH_FILE, PAK_FILE, bundled_lists, version_of
 
 MDF_FILE = re.compile(r"\.mdf2(\.\d+)?$", re.I)
 LIST_FILE = re.compile(r"\.list$", re.I)
@@ -200,10 +200,11 @@ def size_of(path: Path) -> int:
 # Walking a game folder
 
 
-def walk(root: Path, cache: Path | None = None,
-         progress: ScanProgress | None = None) -> tuple[list[ModelPath], list[str]]:
+def walk(root: Path, cache: Path | None = None, progress: ScanProgress | None = None,
+         game: str | None = None) -> tuple[list[ModelPath], list[str]]:
     """Every file under ``root`` as a :class:`ModelPath`, pak entries included (named through the
-    ``*.list`` files in the folder), and notes about archives that could not be listed."""
+    ``*.list`` files in the folder and the lists bundled for ``game``), and notes about archives that
+    could not be listed."""
     root = Path(root)
     files: list[ModelPath] = []
     paks: list[Path] = []
@@ -229,6 +230,7 @@ def walk(root: Path, cache: Path | None = None,
                 progress(n, name)
     notes: list[str] = []
     if paks:
+        lists = lists + bundled_lists(game)  # a .list in the folder adds what a game update brought
         names = _list_names(lists, cache) if lists else {}
         encrypted: list[str] = []
         unnamed: list[str] = []
@@ -256,10 +258,10 @@ def walk(root: Path, cache: Path | None = None,
             notes.append(f"{_join(encrypted)}: the archive's table of contents is encrypted, which Dark STL "
                          "cannot read. Extract the game's files with a pak tool (REtool, ree-pak) and add that folder.")
         if unnamed:
-            what = "no file list was found" if not lists else "the file lists found don't name their entries"
-            notes.append(f"{_join(unnamed)}: pak archives don't store file names and {what}. Put the game's "
-                         "file list (a .list file from the RE Engine modding community) in this folder and rescan, "
-                         "or extract the archives with a pak tool.")
+            notes.append(f"{_join(unnamed)}: pak archives don't store file names, and the file lists that come "
+                         "with Dark STL (and any .list file in this folder) don't name these entries. If the game "
+                         "was updated, put its newest file list (a .list file from Ekey's REE.PAK.Tool) in this "
+                         "folder and rescan, or extract the archives with a pak tool.")
     return files, notes
 
 

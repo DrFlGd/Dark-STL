@@ -351,6 +351,27 @@ def test_a_pak_without_a_file_list_says_so(re2_pak_dir):
     assert entries == [] and len(notes) == 1 and "file list" in notes[0]
 
 
+def test_the_bundled_file_lists_name_a_games_paks(tmp_path):
+    """No .list in the folder: the lists that come with Dark STL (Ekey's, cut to meshes, textures
+    and materials) name the game's pak entries."""
+    import gzip
+
+    from darkstl.importers.reengine import games
+
+    for g in games.GAME_PROFILES:
+        assert games.bundled_lists(g.name), g.name
+    listed = [n for f in games.bundled_lists("Resident Evil 2") for n in gzip.decompress(f.read_bytes()).decode().splitlines()]
+    name = next(n for n in listed if n.lower().endswith(".mesh.1808312334"))
+    assert all(".mesh." in n or ".tex." in n or ".mdf2." in n for n in listed[:2000])
+    root = tmp_path / "RESIDENT EVIL 2  BIOHAZARD RE2"
+    root.mkdir()
+    (root / "re2.exe").write_bytes(b"MZ")
+    mesh, _ = S.build_mesh([S.quad(1.0, 0.0, 0, 0)], ["mat"], S.RE2_MESH)
+    (root / "re_chunk_000.pak").write_bytes(S.build_pak([(name, mesh)]))
+    entries, notes = library.scan_folder(root)
+    assert notes == [] and [e.path.name for e in entries] == [name.rsplit("/", 1)[-1]]
+
+
 def test_an_encrypted_pak_says_so(tmp_path):
     import struct
 

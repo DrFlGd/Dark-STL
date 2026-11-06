@@ -61,7 +61,7 @@ class REEngineImporter(Importer):
         return profiles.detect_game(folder)
 
     def scan(self, folder: Path, game: str, progress: ScanProgress | None = None) -> list[CatalogEntry]:
-        paths, notes = files.walk(Path(folder), self.cache, progress)
+        paths, notes = files.walk(Path(folder), self.cache, progress, game)
         self._notes = {str(folder): notes}
         files.build_index(Path(folder), paths, self.cache / "index" if self.cache else None)
         return catalog.scan(Path(folder), game, paths, self.key)
