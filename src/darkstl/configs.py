@@ -675,7 +675,8 @@ def assemble(config: Configuration, choices: dict | None, load: Loader) -> Sourc
                 sel = None
             own = {o.key for o in c.model.options}
             flags = {k: v for k, v in options.flags.items() if k in own}
-            mesh = c.model.build_mesh(MeshOptions(sel, flags, options.pose if i == 0 else None))
+            pose = options.pose if i == 0 or _poses(c.model, options.pose) else None
+            mesh = c.model.build_mesh(MeshOptions(sel, flags, pose))
             mesh = transform_mesh(mesh, c.matrix)
             if i:
                 mesh = mesh.copy()
@@ -691,7 +692,10 @@ def assemble(config: Configuration, choices: dict | None, load: Loader) -> Sourc
         return out
 
     if base.animations is not None and config.slots:
-        notes.append("A pose moves the base model; the parts fitted to it stay where they are.")
+        posed = [c for c in comps[1:] if c.model.animations is not None and _same_animations(base, c.model)]
+        if len(posed) < len(comps) - 1:
+            notes.append("A pose moves the base model" + (" and the parts that share its animations" if posed else "")
+                         + "; the other parts fitted to it stay where they are.")
     for c in comps[1:]:
         notes += [f"{c.label}: {n}" for n in c.model.notes]
     model = SourceModel(
@@ -702,6 +706,24 @@ def assemble(config: Configuration, choices: dict | None, load: Loader) -> Sourc
     )
     model.configuration = configuration_json(config, chosen)
     return model
+
+
+def _poses(model: SourceModel, pose: tuple[str, int] | None) -> bool:
+    """Whether ``model`` has the animation ``pose`` names: a character's face and hair meshes share the
+    body's animations, so one pose moves them all."""
+    if pose is None or model.animations is None:
+        return False
+    try:
+        return pose[0] in model.animations
+    except Exception:  # noqa: BLE001 - an unreadable archive leaves the part unposed
+        return False
+
+
+def _same_animations(base: SourceModel, other: SourceModel) -> bool:
+    try:
+        return bool(set(base.animations.names) & set(other.animations.names))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def configuration_json(config: Configuration, chosen: dict[str, str]) -> dict:

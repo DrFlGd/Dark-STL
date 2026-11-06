@@ -79,10 +79,12 @@ class REEngineImporter(Importer):
             files.register_index(state)
 
     def configurations(self, folder: Path, game: str, entries: list[CatalogEntry]) -> list:
-        """Weapons kept as a body and separate parts in one folder, guessed from their names."""
+        """Weapons kept as a body and separate parts in one folder, and characters kept as one mesh per
+        body part (body, face, hair...), guessed from their names and folders."""
         from ...configs import from_folders
+        from .characters import characters_from_folders
 
-        return from_folders(entries, game)
+        return from_folders(entries, game) + characters_from_folders(entries, game)
 
     def can_open(self, path: Path) -> bool:
         return files.is_mesh_file(Path(path))
@@ -107,8 +109,16 @@ class REEngineImporter(Importer):
         game = mesh.game or profiles.detect_game(Path(path).parent)
         skinned = mesh.bones and any(s.joints is not None for s in subs)
         motion_files = files.find_motion_lists(Path(path)) if skinned else []
-        anims = animation.REAnimations(mesh.bones, motion_files, self.cache / "motions" if self.cache else None) \
-            if motion_files else None
+        anims = None
+        if motion_files:
+            used = {int(b) for s in subs if s.joints is not None
+                    for b in np.unique(s.joints[s.weights > 0]) if b >= 0}
+            anims = animation.REAnimations(mesh.bones, motion_files, self.cache / "motions" if self.cache else None,
+                                           used_bones=used)
+            rigid = anims.rigid_description()
+            if rigid:
+                notes.append(rigid)
+                anims.note = rigid
 
         def build(options: MeshOptions) -> TriMesh:
             chosen = [(i, s) for i, s in enumerate(subs) if options.parts is None or i in options.parts]
