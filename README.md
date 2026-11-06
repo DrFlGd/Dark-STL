@@ -29,8 +29,8 @@ other games come next (Phase 1 of the plan).
 Importing is modular: each game family has its own importer, and everything after import
 (the explorer, the three steps, export) is shared. FromSoftware files (Dark Souls, Bloodborne,
 Dark Souls III, Sekiro, Elden Ring), Cyberpunk 2077 files, Capcom RE Engine files (Resident Evil
-2, 3, 4, 7 and Village, Devil May Cry 5), Borderlands packages (Borderlands, Borderlands 2, The
-Pre-Sequel) and Wavefront OBJ are supported today.
+2, 3, 4, 7 and Village, Devil May Cry 5), Borderlands (Borderlands, Borderlands 2, The
+Pre-Sequel, Borderlands 3, Tiny Tina's Wonderlands, Borderlands 4) and Wavefront OBJ are supported today.
 
 ## Install
 
@@ -107,6 +107,15 @@ neither.
   Weapons with each part as a part of the model, and each weapon type is also a
   configurable model (body, grip, barrel, sight, stock, elemental, accessory) built from the
   game's own part definitions in the `GD_Weap_*` packages.
+
+- **Borderlands 3, Tiny Tina's Wonderlands (Unreal Engine 4), Borderlands 4 (Unreal Engine 5):**
+  add the game's install folder as it is. Models are read from the `.pak` files (BL3, Wonderlands)
+  or the IoStore `.utoc`/`.ucas` containers (BL4) in `OakGame\Content\Paks`. Encrypted files need
+  the game's AES key (Borderlands 3's is included; paste others in *Settings > Unreal games* or
+  put them in `unreal-keys.txt` in the game folder). Borderlands 4 also needs a `.usmap` type
+  mappings file for the installed version of the game, added the same way, because it cooks
+  its objects without property names. Guns are configurable from their part meshes, the slots
+  guessed from the part names.
 
 ## Using the app
 
