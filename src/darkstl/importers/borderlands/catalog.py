@@ -80,30 +80,56 @@ def package_contents(path: Path, cache: Path | None = None) -> list[dict]:
 
 class ObjectIndex:
     """Where the materials and textures of a game folder are, by their original path: cooked packages
-    carry copies of what they use, so an object a package only imports may sit in any other package."""
+    carry copies of what they use, so an object a package only imports may sit in any other package.
+
+    An object is found by its original path (``Common_GunMaterials.Materials.Mati_X``), else by its path in
+    the package that holds a copy (a copy whose outer isn't flagged as another package's), else by its name
+    and class, the copy whose path ends the most like the one wanted winning."""
 
     def __init__(self, root: Path, cache: Path | None):
         self.where: dict[str, tuple[str, str, str]] = {}  # canonical path -> (package file, export path, class)
+        self.by_path: dict[str, tuple[str, str, str]] = {}  # path inside the package that holds it -> same
+        self.by_name: dict[tuple[str, str], list[tuple[str, str]]] = {}  # (name, class) -> [(package, path)]
+        self.packages = 0  # how many packages were read
         for path in files.iter_packages(root):
             try:
                 objects = package_contents(path, cache)
             except (FormatError, OSError, ValueError):
                 continue
+            self.packages += 1
             home = path.stem.lower()
             for o in objects:
                 if o["class"] not in LOOKUP_CLASSES:
                     continue
+                entry = (str(path), o["path"], o["class"])
                 key = o["canonical"].lower()
                 prev = self.where.get(key)
                 # the package the object belongs to wins over copies of it
                 if prev is None or (key.split(".", 1)[0] == home and Path(prev[0]).stem.lower() != home):
-                    self.where[key] = (str(path), o["path"], o["class"])
+                    self.where[key] = entry
+                self.by_path.setdefault(o["path"].lower(), entry)
+                same = self.by_name.setdefault((o["name"].lower(), o["class"]), [])
+                if len(same) < 64 and not any(p == o["path"] for _f, p in same):
+                    same.append((str(path), o["path"]))
 
     def find(self, path: str, class_name: str | None = None) -> tuple[Path, str] | None:
-        hit = self.where.get(path.lower())
-        if hit is None or (class_name and hit[2] != class_name):
+        low = path.lower()
+        for table in (self.where, self.by_path):
+            hit = table.get(low)
+            if hit is not None and (not class_name or hit[2] == class_name):
+                return Path(hit[0]), hit[1]
+        if not class_name:
             return None
-        return Path(hit[0]), hit[1]
+        want = low.split(".")
+        best, best_score = None, 0
+        for file, p in self.by_name.get((want[-1], class_name), []):
+            have = p.lower().split(".")
+            score = 0
+            while score < min(len(want), len(have)) and want[-1 - score] == have[-1 - score]:
+                score += 1
+            if score > best_score:
+                best, best_score = (Path(file), p), score
+        return best
 
 
 _OBJECT_INDEXES: dict[str, ObjectIndex] = {}

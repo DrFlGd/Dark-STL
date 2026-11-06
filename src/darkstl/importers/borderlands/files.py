@@ -256,6 +256,13 @@ def use_cache(cache: Path | None) -> None:
     _CONTENTS_CACHE[0] = cache
 
 
+def searched(pkg: upk.Package) -> str:
+    """What a failed lookup from ``pkg`` searched, for notes: ``"1,234 packages under <folder>"``."""
+    from .catalog import object_index
+    root = game_root(pkg.path)
+    return f"{object_index(root, _CONTENTS_CACHE[0]).packages:,} packages under {root}"
+
+
 def _elsewhere(pkg: upk.Package, path: str, cls: str | None) -> tuple[upk.Package, upk.Export] | None:
     """A copy of the object cooked into any other package of the game folder."""
     from .catalog import LOOKUP_CLASSES, object_index
@@ -286,4 +293,4 @@ def canonical_path(pkg: upk.Package, e: upk.Export) -> str:
 
 __all__ = ["GAME_BL1", "GAME_BL2", "GAME_BL3", "GAME_BL4", "GAME_TPS", "GAME_WL", "MODEL_CLASSES", "PackageIndex",
            "UE3_GAMES", "canonical_path", "detect_game", "game_root", "index_for", "is_member", "iter_packages",
-           "member_path", "resolve", "split_member", "use_cache"]
+           "member_path", "resolve", "searched", "split_member", "use_cache"]

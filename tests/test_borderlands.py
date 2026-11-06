@@ -383,6 +383,51 @@ def test_a_skin_cooked_into_some_other_package_is_found(bl2):
     assert all(any("Dahl_Emerald_Dif" in d for d in mat.details) for mat in gun.materials)
 
 
+def test_copies_without_a_forced_export_flag_are_found(bl2):
+    """Real cooked packages may keep another package's objects under an outer that isn't flagged as that
+    package; and a texture may be kept under other groups than its path says: found by name and class."""
+    from darkstl import configs
+    from darkstl.importers.borderlands import catalog
+
+    cooked = bl2 / "WillowGame" / "CookedPCConsole"
+    b = S.PackageBuilder()
+    top = b.add_export("Package", "GD_Orchid_RaidWeapons", b"", 0)
+    group = b.add_export("Package", "ManufacturerMaterials", b"", top)
+    orchid = b.add_export("Package", "Orchid_GunMaterials", b"", 0, export_flags=0x01)
+    mats = b.add_export("Package", "Pistol", b"", b.add_export("Package", "Materials", b"", orchid))
+    common = b.add_import("Core", "Package", 0, "Common_GunMaterials")
+    cmats = b.add_import("Core", "Package", common, "Materials")
+    parent = b.add_import("Engine", "MaterialInstanceConstant", cmats, "Mati_DahlEpicAR")
+    env = b.add_import("Core", "Package", common, "Env")
+    glossy = b.add_import("Engine", "Texture2D", env, "GlossyC")
+    mic = b.add_export("MaterialInstanceConstant", "Mati_DahlCommonAR_Seraphim",
+                       S.mic_data(b, parent, [("P_SimpleReflect", glossy)]), mats)
+    b.add_export("WeaponPartDefinition", "Mat_Dahl_1_Seraphim",
+                 b.props(b.p_enum("PartType", "EWeaponPartType", "WP_Material"), b.p_obj("Material", mic)), group)
+    dlc = bl2 / "DLC" / "Orchid" / "WillowGame" / "CookedPCConsole"
+    dlc.mkdir(parents=True)
+    (dlc / "Orchid_Startup_SF.upk").write_bytes(b.build("lzo"))
+
+    b = S.PackageBuilder()  # the parent cooked into a level under an outer without the forced export flag
+    outer = b.add_export("Package", "Common_GunMaterials", b"", 0)
+    group = b.add_export("Package", "Materials", b"", outer)
+    textures = b.add_export("Package", "Textures", b"", outer)  # not where the parent's import says
+    dif = b.add_export("Texture2D", "Dahl_Epic_Dif", S.texture_data(b, 8, 8, S.bc1_solid(8, 8, GREEN)), textures)
+    b.add_export("Texture2D", "GlossyC", S.texture_data(b, 8, 8, S.bc1_solid(8, 8, BLUE)), textures)
+    master = b.add_export("Material", "Master_Gun", S.material_data(b, []), group)
+    b.add_export("MaterialInstanceConstant", "Mati_DahlEpicAR", S.mic_data(b, master, [("p_Diffuse", dif)]), group)
+    (cooked / "Dam_P.upk").write_bytes(b.build("lzo"))
+
+    files._INDEXES.clear()
+    catalog.forget_object_index()
+    imp = BorderlandsImporter()
+    entries = imp.scan(bl2, files.GAME_BL2)
+    (c,) = imp.configurations(bl2, files.GAME_BL2, entries)
+    gun = configs.assemble(c, {"skin": "Mat_Dahl_1_Seraphim"}, open_model)
+    assert not any("not found" in d for m in gun.materials for d in m.details), gun.materials[0].details
+    assert {tuple(gun.textures[m.albedo].decode()[0, 0, :3].tolist()) for m in gun.materials} == {(0, 255, 0)}
+
+
 def test_texture_formats_and_bad_data(tmp_path):
     b = S.PackageBuilder()
     raw = bytes([10, 20, 30, 255]) * 16

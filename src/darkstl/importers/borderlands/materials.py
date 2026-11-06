@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 
 from ...errors import FormatError
-from .files import resolve
+from .files import resolve, searched
 from .formats import upk
 from .formats.props import ArrayValue, ObjectRef, object_props
 from .formats.texture import Texture2D, read_texture
@@ -131,7 +131,7 @@ def resolve_material(ref: ObjectRef) -> ResolvedMaterial:
                 break
             nxt = resolve(parent)
             if nxt is None:
-                out.details.append(f"parent {parent.path} not found")
+                out.details.append(f"parent {parent.path} not found (looked in {searched(parent.pkg)})")
                 break
             pkg, e = nxt
         elif cls == "Material":
@@ -145,7 +145,7 @@ def resolve_material(ref: ObjectRef) -> ResolvedMaterial:
             continue
         tex = _texture(ref_t)
         if tex is None:
-            out.details.append(f"{name}: {ref_t.path} not found")
+            out.details.append(f"{name}: {ref_t.path} not found (looked in {searched(ref_t.pkg)})")
             continue
         if role == OTHER:
             role = role_from_texture(tex)
