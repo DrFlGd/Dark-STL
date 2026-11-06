@@ -31,12 +31,18 @@ UE3_GAMES = (GAME_BL1, GAME_BL2, GAME_TPS)
 
 # executables and folders that say which game a folder is
 _MARKERS = [
+    (GAME_BL4, ("OakGame/Binaries/Win64/Borderlands4.exe", "Borderlands4.exe")),
+    (GAME_WL, ("OakGame/Binaries/Win64/Wonderlands.exe", "Wonderlands.exe")),
+    (GAME_BL3, ("OakGame/Binaries/Win64/Borderlands3.exe", "Borderlands3.exe")),
     (GAME_TPS, ("Binaries/Win32/BorderlandsPreSequel.exe", "BorderlandsPreSequel.exe")),
     (GAME_BL2, ("Binaries/Win32/Borderlands2.exe", "Borderlands2.exe")),
     (GAME_BL1, ("Binaries/Borderlands.exe", "Binaries/Win64/BorderlandsGOTY.exe", "Borderlands.exe",
                 "BorderlandsGOTY.exe")),
 ]
 _HINTS = [
+    (GAME_BL4, re.compile(r"borderlands ?4|\bbl4\b", re.I)),
+    (GAME_WL, re.compile(r"wonderlands|\bttwl?\b", re.I)),
+    (GAME_BL3, re.compile(r"borderlands ?3|\bbl3\b", re.I)),
     (GAME_TPS, re.compile(r"pre[-_ ]?sequel|\btps\b", re.I)),
     (GAME_BL2, re.compile(r"borderlands ?2|\bbl2\b", re.I)),
     (GAME_BL1, re.compile(r"borderlands(?! ?[234])|\bbl1\b", re.I)),
@@ -80,12 +86,62 @@ def detect_game(folder: Path) -> str | None:
             if any((candidate / m).exists() for m in markers):
                 return game
     text = str(folder)
-    has_packages = _has_packages(folder)
+    unreal4 = is_unreal4_folder(folder)
+    has_packages = not unreal4 and _has_packages(folder)
     for game, rx in _HINTS:
-        if rx.search(text) and (has_packages or (folder / "WillowGame").is_dir()):
+        if game in UE4_GAMES and not unreal4:
+            continue
+        if rx.search(text) and (has_packages or unreal4 or (folder / "WillowGame").is_dir()):
             return game
     if has_packages:
         return _game_from_packages(folder)
+    if unreal4:
+        return _game_from_paks(folder)
+    return None
+
+
+UE4_GAMES = (GAME_BL3, GAME_WL, GAME_BL4)
+
+
+def is_unreal4_folder(folder: Path) -> bool:
+    """Whether a folder holds an Unreal 4/5 game (paks, IoStore containers) or files extracted from one."""
+    folder = Path(folder)
+    for d in (folder, folder / "OakGame", folder.parent):
+        if (d / "Content" / "Paks").is_dir() or (d / "OakGame" / "Content" / "Paks").is_dir():
+            return True
+    from .ue4 import pak as pakfile
+
+    try:
+        for dirpath, dirs, names in os.walk(folder):
+            if any(n.lower().endswith((".utoc", ".uasset")) for n in names):
+                return True
+            paks = [n for n in names if n.lower().endswith(".pak")]
+            if any(pakfile.is_pak_file(Path(dirpath) / n) for n in paks[:3]):
+                return True
+            if dirpath.count(os.sep) - str(folder).count(os.sep) > 4:
+                dirs.clear()
+    except OSError:
+        pass
+    return False
+
+
+def _game_from_paks(folder: Path) -> str | None:
+    """Borderlands 4 ships IoStore containers; Wonderlands' paks are a newer version than Borderlands 3's."""
+    from .ue4 import pak as pakfile
+
+    for dirpath, _dirs, names in os.walk(folder):
+        if any(n.lower().endswith(".utoc") for n in names) and "oak" in str(folder).lower() + dirpath.lower():
+            return GAME_BL4
+        for n in sorted(names):
+            if n.lower().endswith(".pak"):
+                try:
+                    with open(Path(dirpath) / n, "rb") as f:
+                        version = pakfile._read_footer(f, (Path(dirpath) / n).stat().st_size)[0]
+                except (OSError, FormatError):
+                    continue
+                if "oak" in (str(folder) + dirpath).lower():
+                    return GAME_WL if version >= 10 else GAME_BL3
+                return None
     return None
 
 

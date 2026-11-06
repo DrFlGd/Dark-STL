@@ -25,8 +25,8 @@ from ...collect import RelatedFile
 from ...errors import FormatError
 from ...model import CatalogEntry, Material, MeshOptions, Part, SourceModel, Texture
 from ..base import Importer, ScanProgress
-from . import catalog, files, materials, weapons
-from .files import GAME_BL1, GAME_BL2, GAME_TPS
+from . import catalog, files, materials, unreal4, weapons
+from .files import GAME_BL1, GAME_BL2, GAME_BL3, GAME_BL4, GAME_TPS, GAME_WL
 from .formats import upk
 from .formats.props import ObjectRef
 from .formats.skeletal import read_skeletal_mesh
@@ -34,7 +34,7 @@ from .formats.static import read_static_mesh
 from .formats.texture import Texture2D
 from .mesh import build_trimesh
 
-GAMES = (GAME_BL1, GAME_BL2, GAME_TPS)
+GAMES = (GAME_BL1, GAME_BL2, GAME_TPS, GAME_BL3, GAME_WL, GAME_BL4)
 
 
 def _texture(tex: Texture2D, dirs: list[Path]) -> Texture:
@@ -75,23 +75,33 @@ def _materials(refs: list[ObjectRef], dirs: list[Path]) -> tuple[list[Material],
 class BorderlandsImporter(Importer):
     key = "borderlands"
     name = "Borderlands (Unreal Engine)"
-    file_filter = "Borderlands packages (*.upk *.u)"
+    file_filter = "Borderlands packages (*.upk *.u *.uasset)"
     games = GAMES
 
     def detect_game(self, folder: Path) -> str | None:
         return files.detect_game(folder)
 
     def scan(self, folder: Path, game: str, progress: ScanProgress | None = None) -> list[CatalogEntry]:
+        if game in unreal4.UE4_GAMES or (game not in files.UE3_GAMES and files.is_unreal4_folder(folder)):
+            from .ue4 import catalog4
+            return catalog4.scan(folder, game, progress)
         return catalog.scan(folder, game, progress, self.cache)
 
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
+        ours = [e for e in found if e.importer == self.key]
+        game = ours[0].game if ours else files.detect_game(folder)
+        if game in unreal4.UE4_GAMES or (not ours and files.is_unreal4_folder(folder)):
+            from .ue4 import catalog4
+            return catalog4.folder_notes(folder, game, ours)
         return catalog.folder_notes(folder, found)
 
     def can_open(self, path: Path) -> bool:
-        return files.is_member(path)
+        return files.is_member(path) or unreal4.can_open(path)
 
     def load(self, path: Path, variant: str | None = None, texture_dirs: tuple[str, ...] = ()) -> SourceModel:
         path = Path(path)
+        if unreal4.is_asset_path(path):
+            return unreal4.load(self.key, path, [Path(d) for d in texture_dirs])
         pkg, e, cls = _open(path)
         dirs = [Path(d) for d in texture_dirs]
         game = files.detect_game(files.game_root(pkg.path)) or None
@@ -173,6 +183,8 @@ class BorderlandsImporter(Importer):
 
     def describe(self, path: Path) -> list[str] | None:
         path = Path(path)
+        if unreal4.is_asset_path(path):
+            return unreal4.describe(path)
         if not upk.is_package_file(path):
             return None
         pkg = upk.open_package(path)
@@ -190,6 +202,8 @@ class BorderlandsImporter(Importer):
     def related_files(self, path: Path, textures: bool = True, animations: bool = True,
                       lod: bool = False) -> list[RelatedFile]:
         path = Path(path)
+        if unreal4.is_asset_path(path):
+            return unreal4.related_files(path, textures)
         if not files.is_member(path):
             return [RelatedFile(path, "model")]
         package, _p, _c = files.split_member(path)
@@ -203,6 +217,9 @@ class BorderlandsImporter(Importer):
 
     def configurations(self, folder: Path, game: str, entries: list[CatalogEntry]) -> list:
         """Each gun type as a configuration of its gestalt mesh's parts (Borderlands 2, The Pre-Sequel)."""
+        if game in unreal4.UE4_GAMES:
+            from .ue4.guns import gun_configurations
+            return gun_configurations(entries, game)
         from .configurations import build_configurations
 
         return build_configurations(Path(folder), game, entries, self.cache)
