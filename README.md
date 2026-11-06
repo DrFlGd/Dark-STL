@@ -178,7 +178,8 @@ darkstl            # or darkstl-gui; darkstl gui --browser opens it in your brow
    swatch), and each triangle is painted finer than the mesh, down to the smallest feature you
    name at the print size, the way the slicers' own brush paint is stored. *Show the colours on
    the model* previews it, and a picture of the palette is written beside the file to set the
-   filament slots by.
+   filament slots by. The Finished model and cut pieces are painted too, from the textured model
+   they were made from (cut faces, joints and filled gaps take filament 1).
 
 ![A game's library](docs/images/library.png)
 

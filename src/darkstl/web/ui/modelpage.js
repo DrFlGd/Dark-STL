@@ -1129,8 +1129,9 @@ function ExportTab({ m, args, result, finished, which: shownWhich, pose, call, p
       ${UNITS.map(([k, l]) => html`<option key=${k} value=${k}>${l}</option>`)}</select></label>
     ${many ? html`<label class="check-row" title="Each piece turned so its biggest flat cut face (without pegs or a tongue on it) lies on the bed; dowels stand on end">
       <input type="checkbox" id="export-lay-flat" checked=${cutOpts.lay_flat} onChange=${(e) => setPref({ cutOpts: { ...cutOpts, lay_flat: e.target.checked } })} />
-      <span>Lay each piece on a cut face<small class="muted">Off: the pieces keep their place in the model.</small></span></label>`
-      : painted ? html`<${PaintOptions} m=${m} args=${args} paint=${paint} setPaint=${setPaint} which=${which} />`
+      <span>Lay each piece on a cut face<small class="muted">Off: the pieces keep their place in the model.</small></span></label>` : null}
+    ${painted ? html`<${PaintOptions} m=${m} args=${args} paint=${paint} setPaint=${setPaint} which=${which} />`
+      : many ? null
       : html`<label class="check-row"><input type="checkbox" id="export-textures" checked=${o.textures && textured && which !== "finished"} disabled=${!textured || which === "finished"} onChange=${(e) => set({ textures: e.target.checked })} />
       <span>Include the colour textures${textured ? "" : " (OBJ and GLB only)"}</span></label>`}
     <label class="field-block"><span>Name</span><input type="text" id="export-name" value=${name} placeholder=${auto} onInput=${(e) => setName(e.target.value)} /></label>
@@ -1144,7 +1145,7 @@ function ExportTab({ m, args, result, finished, which: shownWhich, pose, call, p
       ${done.paint ? html`<div class="paint-done" id="export-paint-done"><div class="paint-swatches">${done.paint.colours.map((c, i) => html`<span key=${i} class="paint-swatch" style=${`background:${c}`} title=${`Filament ${i + 1}: ${c}, ${Math.round(done.paint.coverage[i] * 100)}% of the surface`}>${i + 1}</span>`)}</div>
         <p class="muted">Filament slots 1 to ${done.paint.colours.length}, in this order (also in <b>${done.paint.palette_file.split(/[\\/]/).pop()}</b> beside it). ${plural(done.paint.split_faces, "triangle")} painted in more than one colour${done.paint.notes.length ? `. ${done.paint.notes.join(" ")}` : "."}</p></div>` : null}
       <div class="insp-actions"><button type="button" class="ghost" onClick=${() => showInFolder(done.path)}>${Icon.folder(14)} Show in folder</button></div></div>` : null}
-    <p class="muted export-note">${painted ? "The painted 3MF opens in Bambu Studio, OrcaSlicer and PrusaSlicer with the colours on it: set each filament slot to the palette's colour. " : "STL and PLY are written Z-up, as slicers expect; OBJ and GLB Y-up. "}Game models often aren't watertight: ${painted ? "check the model in your slicer (the Finished model can't be painted, as it has no textures)" : "export the Finished model (Finish tab) or the pieces to print, or check them in your slicer"}.</p>
+    <p class="muted export-note">${painted ? "The painted 3MF opens in Bambu Studio, OrcaSlicer and PrusaSlicer with the colours on it: set each filament slot to the palette's colour. " : "STL and PLY are written Z-up, as slicers expect; OBJ and GLB Y-up. "}Game models often aren't watertight: ${painted ? "check the model in your slicer, or paint the Finished model or the pieces" : "export the Finished model (Finish tab) or the pieces to print, or check them in your slicer"}.</p>
   </div>`;
 }
 
@@ -1178,7 +1179,8 @@ function PaintOptions({ m, args, paint, setPaint, which }) {
       ${error ? html`<small class="warn-note" role="alert" id="paint-error">${error}</small>` : null}
       <div class="insp-actions"><button type="button" class="ghost compact" id="paint-suggest" disabled=${!paint.palette} onClick=${() => setPaint({ palette: null })}>Back to the suggested colours</button></div></div>
     <label class="check-row"><input type="checkbox" id="paint-preview" checked=${paint.preview && canPreview} disabled=${!canPreview} onChange=${(e) => setPaint({ preview: e.target.checked })} />
-      <span>Show the colours on the model<small class="muted">The 3D view's textured shading in these colours, as the print will be.</small></span></label>
+      <span>Show the colours on the model<small class="muted">${canPreview ? "The 3D view's textured shading in these colours, as the print will be." : "Shown on the Enhanced or Original model."}</small></span></label>
+    ${canPreview ? null : html`<small class="muted" id="paint-from-note">${which === "pieces" ? "The pieces have" : "The Finished model has"} no textures of its own, so ${which === "pieces" ? "they are" : "it is"} painted from the textured model ${which === "pieces" ? "they were" : "it was"} made from: each part of the surface takes the colour of the textured surface at that place. Cut faces, joints and filled gaps take filament 1.</small>`}
     <div class="field-row">
       <label class="field-block"><span>Print height (mm)</span><input type="number" id="paint-height" min="1" step="1" value=${paint.print_height_mm} onChange=${(e) => setPaint({ print_height_mm: Math.max(1, Number(e.target.value) || 150) })} /></label>
       <label class="field-block"><span>Smallest feature (mm)</span><input type="number" id="paint-feature" min="0.05" step="0.05" value=${paint.feature_mm} onChange=${(e) => setPaint({ feature_mm: Math.max(0.05, Number(e.target.value) || 0.5) })} /></label></div>

@@ -43,7 +43,8 @@ from .geometry.mesh import TriMesh
 ProgressFn = Callable[[float, str], None]
 
 __all__ = ["PaintSettings", "Painting", "suggest_palette", "quantize", "cleanup", "paint_mesh", "encode_tree",
-           "decode_string", "leaf_colours", "parse_colour", "hex_colour", "MAX_COLOURS"]
+           "decode_string", "leaf_colours", "parse_colour", "hex_colour", "MAX_COLOURS", "SurfaceColours",
+           "surface_colours", "transfer_paint"]
 
 MAX_COLOURS = 16  # filament slots the slicers accept in paint (OrcaSlicer stops at 16)
 LATTICE = (1, 2, 3, 4, 6, 8, 11, 16)  # sample lattices per piece: n * n points
@@ -449,12 +450,8 @@ def paint_mesh(mesh: TriMesh, textures: dict[int, np.ndarray], settings: PaintSe
     else:
         palette, coverage = suggest_palette(mesh, textures, settings.colours, progress)
     k = len(palette)
-    # the smallest piece worth splitting, in metres: the feature size scaled from the print to the model
-    lo, hi = mesh.bounds()
-    height = float(max(hi[2] - lo[2], 1e-9))
-    feature = float(settings.feature_mm) / max(float(settings.print_height_mm), 1e-6) * height
+    feature = _feature(mesh, settings)
     strings = [""] * mesh.n_faces
-    leaf_str = _leaf_strings(k)
     held = np.zeros(k)
     split_faces = leaves = 0
     deepest = 0
@@ -466,48 +463,20 @@ def paint_mesh(mesh: TriMesh, textures: dict[int, np.ndarray], settings: PaintSe
         index = cleanup(quantize(img, palette), k, settings.cleanup)
         h, w = index.shape
         root_uv = mesh.corner_uvs[sel].astype(np.float32)
-        root_xyz = verts[sel].astype(np.float32)
-        # nodes of the level being worked on: root face (within sel), barycentric corners in the root face and
-        # the share of the root face's area each covers
-        root = np.arange(len(sel))
-        bary = np.broadcast_to(np.eye(3, dtype=np.float32), (len(sel), 3, 3)).copy()
-        share = np.ones(len(sel))
-        levels: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []  # (state, digit, first child, children)
-        for depth in range(settings.max_depth + 1):
+
+        def sample(root, bary, _xyz, index=index, root_uv=root_uv, w=w, h=h):
             uv = np.matmul(bary, root_uv[root])
             n = _lattice_for(_texel_area(uv, w, h))
             dominant, wrong, _total = _sample(index, uv, n)
-            xyz = np.matmul(bary, root_xyz[root])
-            # side k runs from corner k to corner k + 1; only the sides longer than the feature size are split
-            long = np.linalg.norm(np.roll(xyz, -1, axis=1) - xyz, axis=2) >= feature
-            split = (wrong > 0) & (n > 1) & long.any(1) & (depth < settings.max_depth)
-            leaf = ~split
-            held += np.bincount(dominant[leaf], weights=areas[sel][root[leaf]] * share[leaf], minlength=k)[:k]
-            which = np.flatnonzero(split)
-            digit, first, count, kids, kid_share = _split_long(bary[which], long[which])
-            first_all = np.full(len(root), -1, np.int64)
-            count_all = np.zeros(len(root), np.int8)
-            digit_all = np.zeros(len(root), np.int8)
-            first_all[which], count_all[which], digit_all[which] = first, count, digit
-            levels.append((dominant.astype(np.int16), digit_all, first_all, count_all))
-            if not len(which):
-                break
-            deepest = max(deepest, depth + 1)
-            parent = np.repeat(which, count)
-            root, bary, share = root[parent], kids, share[parent] * kid_share
-        # strings, bottom up: a leaf's slot, or its children's strings (in order) then the split's own digit
-        below: list[str] | None = None
-        for state, digit, first, count in reversed(levels):
-            own = [leaf_str[int(s) + 1] for s in state]
-            if below is not None:
-                for j in np.flatnonzero(first >= 0):
-                    f = int(first[j])
-                    own[j] = "".join(below[f:f + int(count[j])]) + _DIGITS[int(digit[j])]
-            below = own
-        for j, s in zip(sel.tolist(), below):
+            return dominant, wrong, n > 1
+
+        got = _paint_faces(verts[sel].astype(np.float32), areas[sel], sample, feature, settings.max_depth, k)
+        for j, s in zip(sel.tolist(), got.strings):
             strings[j] = s
-        split_faces += int((levels[0][2] >= 0).sum())
-        leaves += sum(int((lv[2] < 0).sum()) for lv in levels)
+        held += got.held
+        split_faces += got.split_faces
+        leaves += got.leaves
+        deepest = max(deepest, got.depth)
     unpainted = mesh.n_faces - sum(len(s) for s in faces.values())
     if unpainted:
         notes.append(f"{unpainted:,} triangles have no colour texture; they take the first filament.")
@@ -518,6 +487,78 @@ def paint_mesh(mesh: TriMesh, textures: dict[int, np.ndarray], settings: PaintSe
         coverage = held / max(held.sum(), 1e-12)
     _maybe(progress, 0.95, "Painted")
     return Painting(strings, palette, coverage, split_faces, leaves, deepest, unpainted, notes)
+
+
+@dataclass
+class _Painted:
+    strings: list[str]
+    held: np.ndarray  # area painted in each colour
+    split_faces: int
+    leaves: int
+    depth: int
+
+
+def _feature(mesh: TriMesh, settings: PaintSettings) -> float:
+    """The smallest piece worth splitting, in the model's units: the feature size scaled from the print to
+    the model (whose height is printed at the print height)."""
+    return float(settings.feature_mm) / max(float(settings.print_height_mm), 1e-6) * _height(mesh)
+
+
+def _height(mesh: TriMesh) -> float:
+    """The model's height (Z), which the print height scales; a model with next to no height (a flat plate)
+    is taken by its longest side instead."""
+    lo, hi = mesh.bounds()
+    size = np.asarray(hi, float) - np.asarray(lo, float)
+    return float(max(size[2] if size[2] >= 0.01 * size.max() else size.max(), 1e-9))
+
+
+def _paint_faces(root_xyz: np.ndarray, areas: np.ndarray, sample, feature: float, max_depth: int,
+                 k: int) -> _Painted:
+    """The slicer strings for triangles (N, 3, 3), split where ``sample`` finds more than one colour.
+
+    ``sample(root, bary, xyz)`` is given the pieces of a level (each piece's triangle, its corners as
+    barycentrics of that triangle, and as points) and returns each piece's main palette index, how many of
+    its samples disagree with it, and whether it is big enough to tell colours apart in."""
+    leaf_str = _leaf_strings(k)
+    held = np.zeros(k)
+    # nodes of the level being worked on: root face, barycentric corners in the root face and the share of
+    # the root face's area each covers
+    count0 = len(root_xyz)
+    root = np.arange(count0)
+    bary = np.broadcast_to(np.eye(3, dtype=np.float32), (count0, 3, 3)).copy()
+    share = np.ones(count0)
+    deepest = 0
+    levels: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []  # (state, digit, first child, children)
+    for depth in range(max_depth + 1):
+        xyz = np.matmul(bary, root_xyz[root])
+        dominant, wrong, big = sample(root, bary, xyz)
+        # side k runs from corner k to corner k + 1; only the sides longer than the feature size are split
+        long = np.linalg.norm(np.roll(xyz, -1, axis=1) - xyz, axis=2) >= feature
+        split = (wrong > 0) & big & long.any(1) & (depth < max_depth)
+        leaf = ~split
+        held += np.bincount(dominant[leaf], weights=areas[root[leaf]] * share[leaf], minlength=k)[:k]
+        which = np.flatnonzero(split)
+        digit, first, count, kids, kid_share = _split_long(bary[which], long[which])
+        first_all = np.full(len(root), -1, np.int64)
+        count_all = np.zeros(len(root), np.int8)
+        digit_all = np.zeros(len(root), np.int8)
+        first_all[which], count_all[which], digit_all[which] = first, count, digit
+        levels.append((dominant.astype(np.int16), digit_all, first_all, count_all))
+        if not len(which):
+            break
+        deepest = max(deepest, depth + 1)
+        parent = np.repeat(which, count)
+        root, bary, share = root[parent], kids, share[parent] * kid_share
+    # strings, bottom up: a leaf's slot, or its children's strings (in order) then the split's own digit
+    below: list[str] = []
+    for state, digit, first, count in reversed(levels):
+        own = [leaf_str[int(s) + 1] for s in state]
+        for j in np.flatnonzero(first >= 0):
+            f = int(first[j])
+            own[j] = "".join(below[f:f + int(count[j])]) + _DIGITS[int(digit[j])]
+        below = own
+    return _Painted(below, held, int((levels[0][2] >= 0).sum()) if levels else 0,
+                    sum(int((lv[2] < 0).sum()) for lv in levels), deepest)
 
 
 _DIGITS = "0123456789ABCDEF"
@@ -576,6 +617,174 @@ def _split_long(bary: np.ndarray, long: np.ndarray):
 _ONE = ((("a", "b", "bc"), 0.5), (("bc", "c", "a"), 0.5))
 _TWO = ((("a", "ab", "ca"), 0.25), (("ab", "b", "ca"), 0.25), (("b", "c", "ca"), 0.5))
 _THREE = ((("a", "ab", "ca"), 0.25), (("ab", "b", "bc"), 0.25), (("bc", "c", "ca"), 0.25), (("ab", "bc", "ca"), 0.25))
+
+
+# ---------------------------------------------------------------------------
+# painting a model made from a textured one (the Finished model, cut pieces)
+
+SOURCE_POINTS = 6_000_000  # points read off the textured surface at most
+FACING = 0.3  # a surface point only colours a target whose normal is within about 70 degrees of its own (or its reverse)
+
+
+@dataclass
+class SurfaceColours:
+    """A textured model's surface reduced to the palette, as coloured points, for painting meshes made from it
+    that have no textures of their own (the model made watertight, the pieces it was cut into)."""
+
+    palette: np.ndarray  # (K, 3) uint8
+    coverage: np.ndarray | None  # (K,) when the palette was suggested
+    points: np.ndarray  # (M, 3) on the textured surface
+    normals: np.ndarray  # (M, 3) of the triangle each lies on
+    labels: np.ndarray  # (M,) palette index
+    spacing: float  # between neighbouring points
+    feature: float  # the smallest piece worth splitting, in the model's units
+    reach: float  # how far from the textured surface a target still takes its colours
+    tree: object = None  # scipy cKDTree over the points
+
+    def label_at(self, pts: np.ndarray, normals: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """The palette index of the textured surface nearest each point (N, 3) that lies along the normal given
+        for it (N, 3), facing either way, and whether one was found within reach; others take index 0, the first
+        filament (a cut face or a filled gap, inside the model)."""
+        out = np.zeros(len(pts), np.int16)
+        found = np.zeros(len(pts), bool)
+        m = len(self.points)
+        for start in range(0, len(pts), 500_000):
+            p = pts[start:start + 500_000]
+            nrm = normals[start:start + 500_000]
+            _d, idx = self.tree.query(p, k=8, distance_upper_bound=self.reach, workers=-1)
+            ok = idx < m
+            safe = np.where(ok, idx, 0)
+            # either way round: a game's thin cloth is one open sheet seen from both sides, and made solid it has a
+            # back that faces away from it but should be the same colour; a cut face, square to the surface, isn't
+            ok &= np.abs(np.einsum("nkd,nd->nk", self.normals[safe], nrm)) > FACING
+            first = ok.argmax(1)
+            hit = ok[np.arange(len(p)), first]
+            out[start:start + len(p)] = np.where(hit, self.labels[safe[np.arange(len(p)), first]], 0)
+            found[start:start + len(p)] = hit
+        return out, found
+
+
+def surface_colours(source: TriMesh, textures: dict[int, np.ndarray], settings: PaintSettings | None = None,
+                    progress: ProgressFn | None = None) -> SurfaceColours:
+    """Read the colours of a textured model's surface for :func:`transfer_paint`: the palette (given, or
+    suggested from the textures), then points spread over the surface about half a feature apart, each with
+    the palette colour of the cleaned, quantised texture under it."""
+    from scipy.spatial import cKDTree
+
+    settings = settings or PaintSettings()
+    faces = _textured_faces(source, textures)
+    if not faces:
+        raise ValueError("This model has no colour textures to paint from.")
+    if settings.palette:
+        palette = np.array([parse_colour(c) for c in settings.palette][:MAX_COLOURS], np.uint8)
+        coverage = None
+    else:
+        palette, coverage = suggest_palette(source, textures, settings.colours, progress)
+    k = len(palette)
+    feature = _feature(source, settings)
+    verts = source.vertices[source.faces].astype(np.float64)
+    longest = np.linalg.norm(np.roll(verts, -1, axis=1) - verts, axis=2).max(1)
+    spacing = feature / 2
+    want = np.ceil(longest / spacing)
+    total = float((np.clip(want, 1, 64) ** 2).sum())
+    if total > SOURCE_POINTS:
+        spacing *= np.sqrt(total / SOURCE_POINTS)
+    n = np.clip(np.ceil(longest / spacing), 1, 64).astype(np.int64)
+    normals = source.face_normals()
+    pts_all, nrm_all, lab_all = [], [], []
+    for i, (mat, sel) in enumerate(faces.items()):
+        _maybe(progress, 0.25 + 0.15 * i / len(faces), "Reading the model's colours")
+        img = _shrink(_rgb(textures[mat]))
+        index = cleanup(quantize(img, palette), k, settings.cleanup)
+        uv = source.corner_uvs[sel].astype(np.float32)
+        for size in np.unique(n[sel]).tolist():
+            part = sel[n[sel] == size]
+            local = np.flatnonzero(n[sel] == size)
+            bary = _lattice_cached(size)
+            step = max(1, 2_000_000 // (size * size))
+            for start in range(0, len(part), step):
+                f = part[start:start + step]
+                pts_all.append(np.matmul(bary[None], verts[f].astype(np.float32)).reshape(-1, 3))
+                nrm_all.append(np.repeat(normals[f], size * size, axis=0).astype(np.float32))
+                lab_all.append(_lookup(index, np.matmul(bary[None], uv[local[start:start + step]])).reshape(-1))
+    textured = np.zeros(source.n_faces, bool)
+    for sel in faces.values():
+        textured[sel] = True
+    plain = np.flatnonzero(~textured)
+    if len(plain):  # triangles without a colour texture are the first filament, as on the textured model
+        pts_all.append(verts[plain].mean(1).astype(np.float32))
+        nrm_all.append(normals[plain].astype(np.float32))
+        lab_all.append(np.zeros(len(plain), np.int16))
+    points = np.concatenate(pts_all)
+    height = _height(source)
+    _maybe(progress, 0.42, "Indexing the model's colours")
+    return SurfaceColours(palette, coverage, points, np.concatenate(nrm_all), np.concatenate(lab_all).astype(np.int16),
+                          float(spacing), feature, max(3 * feature, 4 * float(spacing), 0.005 * height),
+                          cKDTree(points))
+
+
+def transfer_paint(target: TriMesh, colours: SurfaceColours, settings: PaintSettings | None = None,
+                   progress: ProgressFn | None = None) -> Painting:
+    """Paint a mesh without textures (the model made watertight, or a piece cut from it) from the textured
+    model it was made from: each piece of each triangle takes the colour of the textured surface nearest it
+    that faces the same way, split where those colours change, as :func:`paint_mesh` splits over a texture.
+    Surface with nothing textured near it (cut faces, filled gaps, joints) takes the first filament."""
+    settings = settings or PaintSettings()
+    k = len(colours.palette)
+    spacing = colours.spacing
+    normals = target.face_normals().astype(np.float32)
+    far = [0.0, 0.0]  # area with no textured surface near it, of all
+
+    def sample(root, bary, xyz):
+        longest = np.linalg.norm(np.roll(xyz, -1, axis=1) - xyz, axis=2).max(1)
+        n = np.clip(np.ceil(longest / spacing), 1, LATTICE[-1]).astype(np.int64)
+        n = np.asarray(LATTICE)[np.searchsorted(LATTICE, n)]  # the lattice size at or above it
+        dominant = np.zeros(len(root), np.int16)
+        wrong = np.zeros(len(root), np.int32)
+        for size in np.unique(n).tolist():
+            sel = np.flatnonzero(n == size)
+            lattice = _LATTICES[size]
+            step = max(1, 1_000_000 // (size * size))
+            for start in range(0, len(sel), step):
+                part = sel[start:start + step]
+                pts = np.matmul(lattice[None], xyz[part].astype(np.float32)).reshape(-1, 3)
+                nrm = np.repeat(normals[root[part]], size * size, axis=0)
+                labels, found = colours.label_at(pts, nrm)
+                vals = labels.reshape(len(part), size * size).astype(np.int64)
+                d, w = _vote(vals, k)
+                dominant[part], wrong[part] = d, w
+                if sample.first:  # the share of the surface (by area) with no textured surface near it
+                    t = xyz[part]
+                    area = 0.5 * np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1)
+                    missed = (~found).reshape(len(part), size * size).mean(1)
+                    far[0] += float((missed * area).sum())
+                    far[1] += float(area.sum())
+        sample.first = False
+        return dominant, wrong, longest > spacing
+
+    sample.first = True
+    verts = target.vertices[target.faces].astype(np.float32)
+    _maybe(progress, 0.45, "Painting")
+    got = _paint_faces(verts, target.face_areas(), sample, colours.feature, settings.max_depth, k)
+    notes: list[str] = []
+    if far[1] and far[0] / far[1] > 0.02:
+        notes.append(f"{far[0] / far[1]:.0%} of the surface lies away from the textured model (cut faces, joints, "
+                     "filled gaps) and takes the first filament.")
+    if got.leaves > MANY_LEAVES:
+        notes.append(f"The paint has {got.leaves / 1e6:.1f} million pieces, which can make the slicer slow: a larger "
+                     "smallest feature, fewer colours or a stronger clean-up would mean fewer.")
+    coverage = colours.coverage if colours.coverage is not None else got.held / max(got.held.sum(), 1e-12)
+    _maybe(progress, 0.95, "Painted")
+    return Painting(got.strings, colours.palette, coverage, got.split_faces, got.leaves, got.depth, 0, notes)
+
+
+def _vote(vals: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
+    """For rows of palette indices (M, S): the index most of each row has, and how many differ from it."""
+    m, s = vals.shape
+    keys = (np.arange(m, dtype=np.int64)[:, None] * k + vals).reshape(-1)
+    counts = np.bincount(keys, minlength=m * k).reshape(m, k)
+    best = counts.argmax(1)
+    return best.astype(np.int16), (s - counts[np.arange(m), best]).astype(np.int32)
 
 
 # ---------------------------------------------------------------------------

@@ -38,6 +38,8 @@ class ExportOptions:
     material_names: list[str] = field(default_factory=list)
     paint: Any = None  # paint.PaintSettings for 3MF (None: the defaults); the Painting made is put in `painting`
     painting: Any = None
+    paint_from: Any = None  # paint.SurfaceColours: paint a mesh without textures from the model it was made from
+    palette_png: bool = True  # write `<name>_palette.png` beside a 3MF
     progress: Callable[[float, str], None] | None = None
 
 
@@ -287,7 +289,8 @@ def write_glb(mesh: TriMesh, path: Path, options: ExportOptions) -> None:
 
 def write_3mf(mesh: TriMesh, path: Path, options: ExportOptions) -> None:
     """A 3MF painted from the model's colour textures for multi-colour printing (see :mod:`darkstl.paint`):
-    the mesh as one object, each triangle carrying its paint as Bambu Studio / OrcaSlicer (``paint_color``)
+    the mesh as one object (painted from ``options.paint_from`` when it has no textures of its own), each
+    triangle carrying its paint as Bambu Studio / OrcaSlicer (``paint_color``)
     and PrusaSlicer (``slic3rpe:mmu_segmentation``) store it. Filament slot n is the palette's nth colour,
     which is listed in the file's metadata and drawn in a PNG beside it (``<name>_palette.png``)."""
     import zipfile
@@ -295,10 +298,13 @@ def write_3mf(mesh: TriMesh, path: Path, options: ExportOptions) -> None:
 
     from . import paint as painting_mod
 
-    if not options.textures:
-        raise ValueError("This model has no colour textures to paint from (the Finished model and cut pieces have none).")
     settings = options.paint or painting_mod.PaintSettings()
-    painting = painting_mod.paint_mesh(mesh, options.textures, settings, options.progress)
+    if options.paint_from is not None:
+        painting = painting_mod.transfer_paint(mesh, options.paint_from, settings, options.progress)
+    elif not options.textures:
+        raise ValueError("This model has no colour textures to paint from.")
+    else:
+        painting = painting_mod.paint_mesh(mesh, options.textures, settings, options.progress)
     options.painting = painting
     if options.progress:
         options.progress(0.96, "Writing")
@@ -369,7 +375,8 @@ def write_3mf(mesh: TriMesh, path: Path, options: ExportOptions) -> None:
         z.writestr("_rels/.rels", rels)
         z.writestr("3D/3dmodel.model", model_xml)
         z.writestr("Metadata/Slic3r_PE_model.config", prusa_config)
-    write_palette_png(painting.palette, painting.coverage, path.with_name(f"{path.stem}_palette.png"))
+    if options.palette_png:
+        write_palette_png(painting.palette, painting.coverage, path.with_name(f"{path.stem}_palette.png"))
 
 
 def write_palette_png(palette: np.ndarray, coverage: np.ndarray | None, path: Path) -> None:

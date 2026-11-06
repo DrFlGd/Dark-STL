@@ -29,7 +29,7 @@ from .. import __version__
 from .. import collect
 from .. import configs
 from ..errors import FormatError
-from ..export import FORMATS, ExportOptions, export_mesh
+from ..export import FORMATS, ExportOptions, export_mesh, write_palette_png
 from ..geometry.mesh import TriMesh
 from ..library import Library, Snapshot, detect_game, folder_relation, known_games
 from ..model import CatalogEntry, MeshOptions, SourceModel, path_id
@@ -1525,8 +1525,6 @@ class Service:
         session = self._session(args)
         which = args.get("which", "enhanced")
         if which == "pieces":
-            if str(args.get("format") or "").lower() == ".3mf":
-                raise AppError("Cut pieces have no textures to paint from: export the Enhanced or Original model.")
             return self._export_pieces(session, args)
         if which == "enhanced":
             if session.result is None:
@@ -1548,16 +1546,18 @@ class Service:
         base = _safe_name(str(args.get("name") or Path(session.model.variant or session.model.name).stem))
         model = session.model
         paint = paint_settings(args.get("paint") or {}) if ext == ".3mf" else None
-        if ext == ".3mf" and which == "finished":
-            raise AppError("The Finished model has no textures to paint from: export the Enhanced or Original model.")
+        finished = session.finished if which == "finished" else None
 
         def run(job: Job):
             opts = ExportOptions(scale=scale, material_names=[m.name for m in model.materials], paint=paint,
                                  progress=job.report)
-            if (args.get("textures", True) and ext in (".obj", ".glb")) or ext == ".3mf":
+            if ext == ".3mf" and finished is not None:
+                # no textures of its own: painted from the textured model it was made from
+                opts.paint_from = self._surface_colours(model, finished.source, paint, job)
+            elif (args.get("textures", True) and ext in (".obj", ".glb")) or ext == ".3mf":
                 opts.textures = _albedo(model, mesh)
-            if ext == ".3mf" and not opts.textures:
-                raise AppError("This model has no colour textures to paint from.")
+                if ext == ".3mf" and not opts.textures:
+                    raise AppError("This model has no colour textures to paint from.")
             job.report(0.2, "Writing")
             path = export_mesh(mesh, _free_name(folder / f"{base}{ext}"), opts)
             out = {"path": str(path), "bytes": path.stat().st_size}
@@ -1676,6 +1676,8 @@ class Service:
         if not settings.cuts:
             raise AppError("Add a cut first.")
         mesh, source = self._cut_source(session, args)
+        # the textured model the pieces can be painted from: the one cut, or the one the Finished model was made from
+        textured = session.finished.source if source[0] == "finished" else mesh
         file = _file_id(session.model.path)
         skey = (session.sid, file, source, settings.sheet_mm)
         key = (*skey, json.dumps(data, sort_keys=True, default=str))
@@ -1696,6 +1698,7 @@ class Service:
                             self.solids.popitem(last=False)
                 start = 0.6 if solid is None else 0.0
                 result = cutting.cut_solid(made, settings, lambda f, m: job.report(start + (1 - start) * f, m))
+                result.source = textured
                 job.check()
                 with self.lock:
                     self.cuts[key] = result
@@ -1736,6 +1739,7 @@ class Service:
                     result = finish.make_watertight(mesh, settings, lambda f, m: job.report(f, m))
                 except ValueError as e:
                     raise AppError(str(e)) from None
+                result.source = mesh
                 job.check()
                 with self.lock:
                     self.finished[key] = result
@@ -1762,8 +1766,23 @@ class Service:
         session = self._session(args)
         return self._cut_json(session) if session.cut is not None else {"id": "", "pieces": []}
 
+    def _surface_colours(self, model: SourceModel, source: TriMesh | None, paint, job: Job, span: float = 0.45):
+        """The colours of the textured model a Finished model or cut pieces were made from, to paint them."""
+        from .. import paint as painting
+
+        if source is None:
+            raise AppError("Make the model again (Finish or Cut tab) to paint it.")
+        textures = _albedo(model, source)
+        if not textures:
+            raise AppError("This model has no colour textures to paint from.")
+        try:
+            return painting.surface_colours(source, textures, paint, lambda f, m: job.report(span * f, m))
+        except ValueError as exc:
+            raise AppError(str(exc)) from None
+
     def _export_pieces(self, session: Session, args: dict) -> dict:
         from .. import cut as cutting
+        from .. import paint as painting
 
         if session.cut is None:
             raise AppError("Cut the model first (Cut tab).")
@@ -1775,20 +1794,43 @@ class Service:
         base = _safe_name(str(args.get("name") or Path(session.model.variant or session.model.name).stem))
         lay_flat = bool(args.get("lay_flat", True))
         pieces = list(session.cut.pieces)
+        cut = session.cut
+        model = session.model
+        paint = paint_settings(args.get("paint") or {}) if ext == ".3mf" else None
 
         def run(job: Job):
             folder = _free_name(parent / f"{base}_pieces")
             folder.mkdir(parents=True, exist_ok=True)
             paths, total = [], 0
+            colours = None
+            out: dict = {}
+            if ext == ".3mf":
+                # every piece painted from the textured model the cut model came from, with the one palette
+                colours = self._surface_colours(model, cut.source, paint, job, 0.3)
+                write_palette_png(colours.palette, colours.coverage, folder / f"{base}_palette.png")
+            start = 0.3 if colours is not None else 0.0
+            leaves = split = 0
+            notes: list[str] = []
             for i, piece in enumerate(pieces):
-                job.report(i / len(pieces), f"Writing {piece.name}")
+                job.report(start + (1 - start) * i / len(pieces), f"Writing {piece.name}")
                 job.check()
                 mesh = cutting.print_pose(piece) if lay_flat else piece.mesh
                 slug = piece.name.lower().replace(" ", "")
-                path = export_mesh(mesh, folder / f"{base}_{slug}{ext}", ExportOptions(scale=scale))
+                opts = ExportOptions(scale=scale, paint=paint, paint_from=colours, palette_png=False)
+                path = export_mesh(mesh, folder / f"{base}_{slug}{ext}", opts)
+                if opts.painting is not None:
+                    leaves += opts.painting.leaves
+                    split += opts.painting.split_faces
                 paths.append(str(path))
                 total += path.stat().st_size
-            return {"path": str(folder), "files": paths, "bytes": total}
+            if colours is not None:
+                coverage = colours.coverage if colours.coverage is not None else np.full(len(colours.palette), 1 / len(colours.palette))
+                if leaves > painting.MANY_LEAVES:
+                    notes.append(f"The paint has {leaves / 1e6:.1f} million pieces in all, which can make the slicer slow.")
+                out["paint"] = {"colours": [painting.hex_colour(c) for c in colours.palette],
+                                "coverage": [round(float(c), 4) for c in coverage], "split_faces": split, "leaves": leaves,
+                                "notes": notes, "palette_file": str(folder / f"{base}_palette.png")}
+            return {"path": str(folder), "files": paths, "bytes": total, **out}
 
         return {"job": self.jobs.start(f"Exporting {len(pieces)} pieces of {base}", run, stoppable=True).id}
 
