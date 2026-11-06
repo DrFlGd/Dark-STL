@@ -8,10 +8,17 @@ since every fragment is modelled in place on the shared skeleton, no
 attachment points are needed. Parts that draw the same fragments are listed
 once. When the part definitions aren't in the folder (only ``Startup.upk``
 was added), options come from the fragment names instead.
+
+The gestalt mesh's own materials carry no textures worth having: a gun is
+painted with the skin of its Material part. Each weapon type's skins become a
+"Skin" slot of kind ``material``; an option opens the gestalt mesh with the
+variant ``skin:<package stem>:<part path>``, which gives the skin's material
+and no geometry.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from ...errors import FormatError
@@ -88,6 +95,8 @@ def _configuration(configs, g: weapons.Gestalt, pkg: upk.Package, mesh_export: u
     by_slot: dict[str, list[tuple[str, str, list[int]]]] = {}  # slot -> (id, label, fragments)
     seen: dict[str, set] = {}
     for p in sorted(parts, key=lambda p: p.path.lower()):
+        if p.slot == weapons.SKIN:
+            continue
         frags = [index[n.lower()] for n in p.fragments if n.lower() in index]
         if not frags or len(frags) != len(p.fragments):
             continue
@@ -109,17 +118,38 @@ def _configuration(configs, g: weapons.Gestalt, pkg: upk.Package, mesh_export: u
         opts = [configs.PartOption(oid, olabel, configs.ModelRef(file, None, sorted(frags)))
                 for oid, olabel, frags in options]
         slots.append(configs.Slot(sid, label, opts, required=required))
+    skins = weapons.skins_for(g.kind, parts)
+    if skins:
+        opts = [configs.PartOption(p.name, weapons.option_label(p.name, g.kind),
+                                   configs.ModelRef(file, f"{SKIN_VARIANT}{p.package}:{p.path}", []))
+                for p in skins]
+        slots.append(configs.Slot("skin", "Skin", opts, required=True, default=_default_skin(slots, opts),
+                                  kind="material"))
     if not slots:
         return None
     kind = g.kind
     return configs.Configuration(
-        id=f"gestalt-{kind.lower()}", label=_label(kind), game=game, base=configs.ModelRef(file, None, []),
+        id=f"gestalt-{kind.lower()}", label=gun_label(kind), game=game, base=configs.ModelRef(file, None, []),
         slots=slots, category="Weapons", group=_GROUPS.get(kind.lower(), "Weapon parts"),
         source=f"{pkg.path.name}: {g.export.path}", guessed=guessed)
 
 
-def _label(kind: str) -> str:
+SKIN_VARIANT = "skin:"
+
+
+def _default_skin(slots: list, skins: list) -> str:
+    """The skin of the default body's maker (``Pistol_Body_Jakobs`` -> ``Mat_Jakobs_1``), else the first."""
+    body = next((s for s in slots if s.id == "body"), None)
+    if body is not None and body.options:
+        words = {w for w in re.split(r"[_.\s]+", body.options[0].id.lower()) if len(w) > 3} - {"body", "pistol"}
+        for o in skins:
+            if words & set(re.split(r"[_.\s]+", o.id.lower())):
+                return o.id
+    return skins[0].id
+
+
+def gun_label(kind: str) -> str:
     return {"AssaultRifle": "Assault rifle", "SniperRifle": "Sniper rifle"}.get(kind, kind) + " (any parts)"
 
 
-__all__ = ["build_configurations"]
+__all__ = ["SKIN_VARIANT", "build_configurations", "gun_label"]

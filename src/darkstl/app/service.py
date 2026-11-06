@@ -1046,8 +1046,15 @@ class Service:
         out.update({"sid": sid, "id": model_id, "entry": entry_json(entry) if entry else None,
                     "enhanced": self._result_json(session) if session.result is not None else None,
                     "cut": self._cut_json(session) if session.cut is not None else None,
-                    "finished": self._finished_json(session) if session.finished is not None else None})
+                    "finished": self._finished_json(session) if session.finished is not None else None,
+                    "configurable_as": self._configurable_as(path) if config is None else []})
         return out
+
+    def _configurable_as(self, path: Path) -> list[dict]:
+        """The configurable models this model is the base of (a gun's shared mesh -> the gun to configure)."""
+        with self.lock:
+            found = [e for e in self.library.configurations if e.config is not None and Path(e.path) == Path(path)]
+        return [{"id": e.id, "label": e.label, "slots": len(e.config.slots)} for e in found]
 
     def _part_model(self, path: str, variant: str | None) -> SourceModel:
         """A model a configuration is made of, kept open for the next choice of parts."""

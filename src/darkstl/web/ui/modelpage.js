@@ -239,7 +239,8 @@ function Workspace({ m, variant, switching }) {
         cutting=${cutting} showCuts=${cutOpen} onBounds=${setBounds} />
     </section>
     <${Inspector} page="model" crowded=${crowded} label="Panels" tabs=${[
-      ...(m.configuration ? [{ id: "configure", label: "Configure", icon: "layers", body: html`<${ConfigureTab} m=${m} switching=${switching} />` }] : []),
+      ...(m.configuration ? [{ id: "configure", label: "Configure", icon: "layers", body: html`<${ConfigureTab} m=${m} switching=${switching} />` }]
+        : m.configurable_as?.length ? [{ id: "configure", label: "Configure", icon: "layers", body: html`<${ConfigureLinks} m=${m} />` }] : []),
       { id: "model", label: "Model", icon: "box", body: html`<${ModelTab} m=${m} off=${off} setOff=${setOff} flags=${flags} setFlags=${setFlags} stats=${stats} />` },
       { id: "textures", label: "Textures", icon: "image", body: html`<${TexturesTab} ...${shared} over=${over} upscale=${upscale} />` },
       ...(m.animated ? [{ id: "pose", label: "Pose", icon: "play", body: html`<${PoseTab} m=${m} pose=${pose} setPose=${setPose} busy=${busy} call=${call} />` }] : []),
@@ -251,6 +252,15 @@ function Workspace({ m, variant, switching }) {
       { id: "export", label: "Export", icon: "download", body: html`<${ExportTab} m=${m} args=${args} result=${result} finished=${finished} which=${which} pose=${pose} call=${call} pieces=${pieces} />` },
     ]} />
   </div>`;
+}
+
+/** The Configure tab of a model that configurable models are built on: open one to choose its parts. */
+function ConfigureLinks({ m }) {
+  return html`<div class="tab-pad" id="config-links"><section class="insp-section"><h3>Build one model</h3>
+    <p class="muted">This model holds the parts of ${m.configurable_as.length > 1 ? "these configurable models" : "a configurable model"}. Open it to choose its parts, and its skin where the game has them.</p>
+    ${m.configurable_as.map((c) => html`<p key=${c.id}><button type="button" class="primary compact config-link" data-config=${c.id}
+      onClick=${() => { location.hash = routeHash(`model:${c.id}`); }}>${Icon.layers(15)} ${c.label}</button></p>`)}
+  </section></div>`;
 }
 
 /** The 3D view: the model with its textures, clay or wireframe, its size, and the views. */

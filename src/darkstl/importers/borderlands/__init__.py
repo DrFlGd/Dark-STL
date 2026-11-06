@@ -25,10 +25,11 @@ from ...collect import RelatedFile
 from ...errors import FormatError
 from ...model import CatalogEntry, Material, MeshOptions, Part, SourceModel, Texture
 from ..base import Importer, ScanProgress
-from . import catalog, files, materials, unreal4, weapons
+from . import catalog, configurations, files, materials, unreal4, weapons
+from .configurations import SKIN_VARIANT
 from .files import GAME_BL1, GAME_BL2, GAME_BL3, GAME_BL4, GAME_TPS, GAME_WL
 from .formats import upk
-from .formats.props import ObjectRef
+from .formats.props import ObjectRef, object_props
 from .formats.skeletal import read_skeletal_mesh
 from .formats.static import read_static_mesh
 from .formats.texture import Texture2D
@@ -105,6 +106,8 @@ class BorderlandsImporter(Importer):
         pkg, e, cls = _open(path)
         dirs = [Path(d) for d in texture_dirs]
         game = files.detect_game(files.game_root(pkg.path)) or None
+        if variant and variant.startswith(SKIN_VARIANT):
+            return self._load_skin(path, pkg, variant[len(SKIN_VARIANT):], dirs, game)
         if cls == "SkeletalMesh":
             return self._load_skeletal(path, pkg, e, dirs, game)
         return self._load_static(path, pkg, e, dirs, game)
@@ -128,7 +131,11 @@ class BorderlandsImporter(Importer):
             for f in gestalt.fragments:
                 pieces.append((f.name, section_material(f.first_index), f.first_index, f.triangles))
             notes.append(f"This is the shared {gestalt.kind} mesh: every part of every manufacturer is in it. "
-                         "Pick parts in the parts list, or build a gun in the configuration menu.")
+                         f"To build one gun, with its skin's textures, open {configurations.gun_label(gestalt.kind)} "
+                         "in Weapons; or pick parts in the parts list here.")
+            if not textures:
+                notes.append("The mesh's own materials have no textures: the game paints each gun with its skin, "
+                             "which the configurable gun lets you choose.")
         else:
             for i, s in enumerate(m.sections):
                 pieces.append((f"Section {i}" + (f" ({mats[s.material].name})" if s.material < len(mats) else ""),
@@ -157,6 +164,34 @@ class BorderlandsImporter(Importer):
             info.append(f"gestalt definition {gestalt.export.path}: {len(gestalt.fragments)} fragments")
         return SourceModel(name=m.name, path=path, importer=self.key, build=build, game=game, parts=parts,
                            materials=mats, textures=textures, info=info, notes=notes)
+
+    def _load_skin(self, path, pkg, spec: str, dirs, game) -> SourceModel:
+        """A gun skin: the material of a Material part (``<package stem>:<part path>``), no geometry."""
+        stem, _, part_path = spec.partition(":")
+        where = files.index_for(pkg.path).find(stem)
+        if where is None:
+            raise FormatError(f"{stem}.upk, which holds the skin {part_path}, wasn't found")
+        ppkg = upk.open_package(where)
+        e = ppkg.find_export(part_path, "WeaponPartDefinition")
+        if e is None:
+            raise FormatError(f"{part_path} isn't in {where.name} any more")
+        part = weapons.read_part(ppkg, e)
+        ref = None
+        if part is not None and part.slot == weapons.SKIN:
+            ref = object_props(ppkg, ppkg.export_data(e)).get("Material")
+        if not isinstance(ref, ObjectRef) or not ref:
+            raise FormatError(f"{part_path} names no material")
+        mats, textures, notes = _materials([ref], dirs)
+        if not textures:
+            notes.append(f"No textures were found for the skin {ref.path}" + (f" ({'; '.join(mats[0].details)})"
+                                                                              if mats and mats[0].details else ""))
+
+        def build(options: MeshOptions):
+            return build_trimesh(np.zeros((0, 3)), None, None, [])
+
+        return SourceModel(name=e.name, path=path, importer=self.key, build=build, game=game, parts=[],
+                           materials=mats, textures=textures, info=[f"skin {part_path} in {where.name}: {ref.path}"],
+                           notes=notes)
 
     def _load_static(self, path, pkg, e, dirs, game) -> SourceModel:
         m = read_static_mesh(pkg, e)
