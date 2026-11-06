@@ -26,7 +26,7 @@ from ...collect import RelatedFile
 from ...errors import FormatError
 from ...model import CatalogEntry, Material, MeshOptions, Part, SourceModel, Texture
 from ..base import Importer, ScanProgress
-from . import catalog, configurations, files, materials, unreal4, weapons
+from . import catalog, configurations, files, gunpaint, materials, unreal4, weapons
 from .configurations import SKIN_VARIANT
 from .files import GAME_BL1, GAME_BL2, GAME_BL3, GAME_BL4, GAME_TPS, GAME_WL
 from .formats import upk
@@ -189,7 +189,21 @@ class BorderlandsImporter(Importer):
         if not isinstance(ref, ObjectRef) or not ref:
             raise FormatError(f"{part_path} names no material")
         mats, textures, notes = _materials([ref], dirs)
-        if not textures:
+        paint_for, info = None, [f"skin {part_path} in {where.name}: {ref.path}"]
+        try:
+            paint = gunpaint.read_paint(ref)
+        except FormatError as exc:
+            paint = None
+            notes.append(f"The skin's paint couldn't be read ({exc})")
+        if paint is not None and mats:  # a Master_Gun paint: its colour is mixed for each part it goes on
+            paint_for = gunpaint.painter(paint, dirs, self.cache)
+            m0 = mats[0]
+            used = {m0.normal}  # the detail atlas and masks are the paint's inputs, not maps to show as they are
+            textures = {k: t for k, t in textures.items() if k in used}
+            mats[0] = Material(m0.name, None, m0.normal, None, guessed=m0.guessed, details=m0.details + paint.details,
+                               normal_green=m0.normal_green)
+            info.append("colour mixed from the skin's paint for each part (" + ", ".join(paint.details) + ")")
+        elif not textures:
             notes.append(f"No textures were found for the skin {ref.path}" + (f" ({'; '.join(mats[0].details)})"
                                                                               if mats and mats[0].details else ""))
 
@@ -197,8 +211,7 @@ class BorderlandsImporter(Importer):
             return build_trimesh(np.zeros((0, 3)), None, None, [])
 
         return SourceModel(name=e.name, path=path, importer=self.key, build=build, game=game, parts=[],
-                           materials=mats, textures=textures, info=[f"skin {part_path} in {where.name}: {ref.path}"],
-                           notes=notes)
+                           materials=mats, textures=textures, info=info, notes=notes, paint_for=paint_for)
 
     def _load_static(self, path, pkg, e, dirs, game) -> SourceModel:
         m = read_static_mesh(pkg, e)
