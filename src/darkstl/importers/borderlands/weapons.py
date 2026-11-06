@@ -151,6 +151,7 @@ class WeaponPart:
     fragments: list[str]
     package: str = ""  # the stem of the package it was read from
     material: str = ""  # a skin's material instance (its object path)
+    file: str = ""  # the package file it was read from
 
 
 SKIN = "skin"
@@ -214,7 +215,7 @@ def read_part(pkg: upk.Package, export: upk.Export) -> WeaponPart | None:
     if slot == "material" or (slot is None and isinstance(material, ObjectRef) and material):
         if not isinstance(material, ObjectRef) or not material:
             return None
-        return WeaponPart(export.path, export.name, SKIN, [], pkg.path.stem, material.path)
+        return WeaponPart(export.path, export.name, SKIN, [], pkg.path.stem, material.path, str(pkg.path))
     if slot is None:
         return None
     names = []
@@ -222,7 +223,7 @@ def read_part(pkg: upk.Package, export: upk.Export) -> WeaponPart | None:
         for n in [props.get("GestaltModeSkeletalMeshName"), *props.all("AdditionalGestaltModeSkeletalMeshNames")]:
             if n and str(n) != "None" and str(n) not in names:
                 names.append(str(n))
-    return WeaponPart(export.path, export.name, slot, names, pkg.path.stem)
+    return WeaponPart(export.path, export.name, slot, names, pkg.path.stem, file=str(pkg.path))
 
 
 def fragments_by_slot(g: Gestalt) -> dict[str, list[tuple[str, list[int]]]]:
