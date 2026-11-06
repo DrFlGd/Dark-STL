@@ -78,6 +78,12 @@ class RedEngineImporter(Importer):
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
         return catalog.folder_notes(folder, found)
 
+    def configurations(self, folder: Path, game: str, entries: list[CatalogEntry]) -> list:
+        """Weapons kept as a body and separate parts in one folder, guessed from their names."""
+        from ...configs import from_folders
+
+        return from_folders(entries, game)
+
     def can_open(self, path: Path) -> bool:
         return bool(_MODEL.search(path.name)) or depot.is_archive_member(path)
 

@@ -468,3 +468,70 @@ def test_many_long_groups_stay_two_rows_of_chips(page, tmp_path):
     page.wait_for_selector("#mp-name")
     assert page.evaluate("document.querySelector('#mp-head').scrollWidth <= document.querySelector('#mp-head').clientWidth + 1")
     assert page.locator("#mp-name").bounding_box()["width"] > 60
+
+
+def test_configure_a_weapon_from_its_parts(page, app, tmp_path):
+    """A configurable model is listed with its slots, opens on its Configure tab, puts itself together
+    again when a part is chosen, and its configuration can be edited and kept."""
+    import json
+    import time
+
+    from test_configs import cube_obj
+
+    root = tmp_path / "game"
+    w = root / "weapons" / "rifle"
+    cube_obj(w / "rifle_body.obj", 0.2)
+    cube_obj(w / "rifle_mag_std.obj", 0.05, (0, 0, -0.15))
+    cube_obj(w / "rifle_mag_drum.obj", 0.08, (0, 0, -0.16))
+    cube_obj(w / "rifle_scope.obj", 0.04, (0, 0.12, 0))
+    (root / "guns.darkstl-configs.json").write_text(json.dumps({"format": "darkstl-configurations", "game": "Test game",
+        "configurations": [{"id": "rifle", "label": "Test rifle", "base": "weapons/rifle/rifle_body.obj", "slots": [
+            {"id": "mag", "label": "Magazine", "required": True, "options": [
+                {"id": "std", "label": "Standard", "model": "rifle_mag_std"}, {"id": "drum", "label": "Drum", "model": "rifle_mag_drum"}]},
+            {"id": "sight", "label": "Sight", "options": [{"id": "scope", "label": "Scope", "model": "rifle_scope"}]}],
+            "presets": {"Heavy": {"mag": "drum", "sight": "scope"}}}]}))
+    s = app.service
+    job = s.call("folder_add", {"path": str(root), "game": "Test game"})["job"]
+    end = time.time() + 30
+    while s.call("job", {"id": job})["state"] == "running" and time.time() < end:
+        time.sleep(0.05)
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    page.goto(f"{app.url}#/browse/{quote('Test game')}/Weapons")
+    page.wait_for_selector(".card:has-text('Configurable: 2 slots, 3 parts')")
+    page.dblclick(".card:has-text('Test rifle')")
+    page.wait_for_selector("#configure-tab")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    assert page.input_value("#slot-mag") == "std" and page.input_value("#slot-sight") == ""
+    tris = lambda: page.text_content("#stage-size")  # noqa: E731
+    assert "24 triangles" in tris()
+    page.select_option("#preset-select", "Heavy")
+    page.wait_for_function("document.querySelector('#slot-sight').value === 'scope'")
+    page.wait_for_function("document.querySelector('#stage-size').textContent.includes('36 triangles')", timeout=30000)
+    assert page.input_value("#slot-mag") == "drum"
+    if shots:
+        page.wait_for_timeout(500)
+        page.screenshot(path=str(Path(shots) / "configure-tab.png"))
+    # the parts show on the Model tab, each of which can be left out
+    page.click("#rail-model")
+    assert page.locator(".part-row").count() == 3 and "Sight: Scope" in page.text_content("#parts")
+    # edit: rename it, lift the scope 10 mm, save; it's kept and put together again
+    page.click("#rail-configure")
+    page.click("#config-edit")
+    page.fill("#config-label", "My rifle")
+    page.fill('[data-slot="sight"] [aria-label="Move Z (mm)"]', "10")
+    page.press('[data-slot="sight"] [aria-label="Move Z (mm)"]', "Tab")
+    # and add a part from the library to a new slot
+    page.click("#config-add-slot")
+    page.click('[data-slot="slot3"] .add-part')
+    page.fill(".part-search", "rifle_scope")
+    page.click(".part-result[data-file='rifle_scope.obj']")
+    page.click('[data-slot="slot3"] button:has-text("Done")')
+    if shots:
+        page.screenshot(path=str(Path(shots) / "configure-edit.png"))
+    page.click("#config-save")
+    page.wait_for_selector("#configure-tab h3:has-text('My rifle')")
+    page.wait_for_selector("#slot-slot3")
+    saved = json.loads((Path(os.environ["DARKSTL_HOME"]) / "configurations" / "Test game.json").read_text())
+    (c,) = saved["configurations"]
+    assert c["label"] == "My rifle" and c["slots"][1]["options"][0]["attach"]["offset"] == [0, 0, 0.01]
+    assert c["slots"][2]["options"][0]["model"] == {"file": "weapons/rifle/rifle_scope.obj"}

@@ -40,12 +40,15 @@ function modelMenu(m) {
   ];
 }
 
+/** What a configurable model's card says instead of its file: how many slots and parts it has. */
+const configText = (m) => `Configurable: ${plural(m.configurable.slots, "slot")}, ${plural(m.configurable.options, "part")}`;
+
 function Card({ m, selected, where, onPick }) {
   return html`<div class="card" role="option" tabindex="0" data-model=${m.id} aria-selected=${selected ? "true" : "false"}
       onClick=${() => onPick(m)} onDblClick=${() => openModel(m)} onContextMenu=${(e) => { onPick(m); openMenu(e, modelMenu(m)); }}>
     <${Thumb} id=${m.id} category=${m.category} />
     <span class="card-name" title=${m.label}>${m.label}</span>
-    <span class="card-meta"><span class="card-file" title=${m.name}>${m.stem}</span>${where ? html`<span class="card-location" title=${where}>${where}</span>` : null}</span>
+    <span class="card-meta"><span class="card-file" title=${m.name}>${m.configurable ? configText(m) : m.stem}</span>${where ? html`<span class="card-location" title=${where}>${where}</span>` : null}</span>
   </div>`;
 }
 
@@ -53,7 +56,7 @@ function Row({ m, selected, where, onPick }) {
   return html`<div class="row" role="option" tabindex="0" data-model=${m.id} aria-selected=${selected ? "true" : "false"}
       onClick=${() => onPick(m)} onDblClick=${() => openModel(m)} onContextMenu=${(e) => { onPick(m); openMenu(e, modelMenu(m)); }}>
     <${Thumb} id=${m.id} category=${m.category} cls="thumb-sm" />
-    <span class="row-name">${m.label}</span>
+    <span class="row-name">${m.label}${m.configurable ? html` <small class="muted config-tag">${configText(m)}</small>` : null}</span>
     <span class="row-author" title=${m.name}>${m.name}</span>
     <span class="row-cat">${where}</span>
   </div>`;
@@ -157,6 +160,7 @@ function ModelSummary({ m }) {
     <dl class="insp-dl">
       <dt>File</dt><dd>${m.name}</dd>
       <dt>Kind</dt><dd>${m.category}${m.group ? ` › ${m.group}` : ""}</dd>
+      ${m.configurable ? html`<dt>Parts</dt><dd id="summary-config">${configText(m).replace("Configurable: ", "")} to choose from${m.configurable.guessed ? " (matched by file names)" : ""}</dd>` : null}
       <dt>Game</dt><dd>${m.game}</dd>
       <dt>Folder</dt><dd class="note-path">${m.file.slice(0, m.file.length - m.name.length - 1)}</dd>
       ${m.lod ? html`<dt>Detail</dt><dd>Low-detail copy (seen from afar in the game)</dd>` : null}

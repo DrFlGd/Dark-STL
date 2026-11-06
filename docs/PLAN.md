@@ -242,6 +242,24 @@ used, so the side stays straight instead of swelling into a bulge. This is on by
   along their seams as well as possible, and what still differs is faded smoothly into each
   island over a few vertex spacings.
 
+### Configurable models: a base and parts chosen per slot
+
+Weapons in Cyberpunk 2077, the RE Engine games and Borderlands are kept as a body and separate
+part models (magazines, sights, barrels, stocks, muzzles). A *configuration* (`configs.py`) names
+the base model and, per slot, the parts that fit it and where each goes; choosing a part per slot
+(or a preset that chooses them all) gives one assembled `SourceModel`, so the Mesh, Displace, Cut
+and Export steps need nothing new. The library lists each configuration as a model of its own
+(*Configurable: N slots, M parts*), and its page opens on a **Configure** tab.
+
+Relationships come per game from lists, the later winning when two share an id: what an
+importer works out from a folder (its `configurations` hook: Cyberpunk and RE Engine weapons are
+guessed from the part files beside each weapon), lists shipped with the app
+(`importers/<importer>/configurations/*.json`), `*.darkstl-configs.json` files in a game folder,
+and the user's own list, which *Edit…* and *Make configurable…* write. The list format is in
+`docs/configurations.md`. Parts are placed in place (game parts usually are), on a named socket of
+the base or of another chosen part (`SourceModel.sockets`, which importers fill), and/or by a
+matrix, offset, turn and scale.
+
 ### Cutting into pieces (before export)
 
 A model too big for the printer, or with parts that print better apart, is cut on the **Cut** tab
@@ -322,6 +340,7 @@ src/darkstl/
                 displacement
   textures/     DDS decoding, normal map -> height, grayscale height, UV coverage, texel size
   library.py    the library: game folders scanned by every importer, by game, kind and group
+  configs.py    configurable models: configuration lists, finding their files, assembling a choice
   collect.py    copies the files chosen models need into the app's own library folder
   thumbnails.py preview pictures for the library's cards, cached on disk
   pipeline.py   the three steps with their settings
@@ -331,7 +350,8 @@ src/darkstl/
   app/          the desktop app: service.py (the page's commands), server.py (local web
                 server), meshpack.py (meshes for the 3D view), config.py, desktop.py (window)
   web/          the page: Model Library's interface (styles.css, ui/ layout, inspector,
-                menus) with Dark STL's pages: home.js, browser.js, modelpage.js, settings.js
+                menus) with Dark STL's pages: home.js, browser.js, modelpage.js, configure.js,
+                settings.js
 tests/          synthetic game files built byte by byte (no game data in the repo)
 ```
 

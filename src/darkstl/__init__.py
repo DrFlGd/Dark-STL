@@ -1,3 +1,3 @@
 """Dark STL: FromSoftware and RE Engine model explorer, detail enhancer and exporter."""
 
-__version__ = "0.14.1"
+__version__ = "0.17.1"

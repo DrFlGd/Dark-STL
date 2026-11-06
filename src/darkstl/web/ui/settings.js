@@ -94,6 +94,7 @@ function Engine() {
       <div><button type="button" class="ghost" id="library-show" onClick=${() => showInFolder(s.library_dir)}>${Icon.folder(14)} Show in folder</button></div>
     </section>
     <${GameArchives} />
+    <${UnrealGames} s=${s} busy=${busy} save=${save} />
     <section class="ls-section" id="settings-textures">
       <h2>Texture folders</h2>
       <p class="muted">Where to look for textures a model uses but doesn't hold itself: map pieces and some objects share textures kept elsewhere in the game.</p>
@@ -122,6 +123,35 @@ function Engine() {
         try { const r = await api("thumbs_clear"); forgetThumbs(); toast(`Cleared ${plural(r.removed, "preview")}. They're drawn again as they come into view.`); } catch (e) { toast(msg(e)); }
       }}>Draw them again</button></div>
     </section>`;
+}
+
+/** Borderlands 3, Wonderlands and Borderlands 4: the AES keys their packed files need, and the type mappings (.usmap)
+ * Unreal 5 games cooked without property names need. */
+function UnrealGames({ s, busy, save }) {
+  const [keys, setKeys] = useState(s.unreal_keys || "");
+  useEffect(() => setKeys(s.unreal_keys || ""), [s.unreal_keys]);
+  const pickUsmap = async (start) => {
+    try { return (await api("pick_file", { title: "Choose the game's type mappings (.usmap)", patterns: ["Type mappings (*.usmap)", "All files (*.*)"], start })).path; }
+    catch (e) { toast(msg(e)); return null; }
+  };
+  return html`<section class="ls-section" id="settings-unreal">
+    <h2>Unreal games</h2>
+    <p class="muted">Borderlands 3, Tiny Tina's Wonderlands and Borderlands 4 keep their models packed (.pak, or .utoc and .ucas).
+      Encrypted ones need the game's AES key: Borderlands 3's comes with Dark STL; for the others, paste the key (0x followed by 64 hexadecimal digits), one per line.
+      A file named unreal-keys.txt in the game's folder works too. Rescan the game's folder after adding one.</p>
+    <form class="inline-form" onSubmit=${(e) => { e.preventDefault(); save({ unreal_keys: keys }, keys.trim() ? "Saved the keys. Rescan the game's folder to use them." : "Cleared the keys."); }}>
+      <textarea id="unreal-keys" rows="2" spellcheck="false" placeholder="0x…" style="flex: 1; min-width: 0; font-family: var(--mono, monospace); font-size: 12px; resize: vertical" value=${keys} disabled=${busy} onInput=${(e) => setKeys(e.target.value)}></textarea>
+      <button type="submit" class="ghost" disabled=${busy || keys === (s.unreal_keys || "")}>Save</button>
+    </form>
+    <p class="muted">Borderlands 4, like most Unreal 5 games, stores its objects without their property names, so reading them needs the game's type mappings: a .usmap file made for the
+      installed version of the game (dumped from the running game with a tool such as Dumper-7 or UE4SS, or shared by the modding community; it changes with
+      game updates). Add it here, or put it in the game's folder.</p>
+    ${s.usmaps?.length ? html`<ul class="ls-list" id="usmap-list">${s.usmaps.map((n) => html`<li key=${n}><span class="note-path">${n}</span>
+      <button type="button" class="ghost" disabled=${busy} onClick=${() => save({ usmap_remove: n }, "Removed the type mappings.")}>Remove</button></li>`)}</ul>`
+      : html`<p class="muted" id="usmap-none">No type mappings added.</p>`}
+    <${PathRow} id="usmap-add" placeholder="Add a .usmap: paste its path" saveLabel="Add" busy=${busy} browse=${pickUsmap}
+      onSave=${(p) => p && save({ usmap_add: p }, "Added the type mappings. Models open with them from now on.")} />
+  </section>`;
 }
 
 /** Unpacking the games that keep their files in archives, and the file lists it names them with. */

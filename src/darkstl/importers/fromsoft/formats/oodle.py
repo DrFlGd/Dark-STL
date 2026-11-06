@@ -22,7 +22,9 @@ from .binary import FormatError
 _LIBRARY_NAMES = (
     "oo2core_9_win64.dll",
     "oo2core_8_win64.dll",
+    "oo2core_7_win64.dll",
     "oo2core_6_win64.dll",
+    "oo2core_5_win64.dll",
     "oo2ext_7_win64.dll",
     "liboo2corelinux64.so.9",
     "liboo2corelinux64.so",
@@ -30,7 +32,9 @@ _LIBRARY_NAMES = (
     "libkraken.so",
     "libkraken.dylib",
 )
-_SUBDIRS = ("", "bin/x64")  # where a game keeps the library, relative to its folder
+# where a game keeps the library, relative to its folder (Unreal games: beside the executable or in the engine's
+# third-party folder)
+_SUBDIRS = ("", "bin/x64", "Engine/Binaries/ThirdParty/Oodle/Win64", "Engine/Binaries/Win64", "OakGame/Binaries/Win64")
 
 _search_dirs: list[Path] = []  # chosen by the user, searched first
 _hint_dirs: list[Path] = []  # folders above opened game files
