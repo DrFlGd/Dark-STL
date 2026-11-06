@@ -163,13 +163,18 @@ def test_a_lone_mot_file_and_other_files():
 
 def test_motion_files_are_found_by_character_id():
     assert files.character_id("pl0000_body") == "pl0000" and files.character_id("cha000_00") == "cha000"
-    assert files.character_id("ch01_1201_upperbody") == "ch01" and files.character_id("_x") is None
+    assert files.character_id("ch01_1201_upperbody") == "ch01_1201" and files.character_id("_x") is None
+    assert files.character_id("ch03_0200_computeskinning00") == "ch03_0200"
     score = files._id_score
     assert score("pl0000", "natives/x64/animation/player/pl0000/list/a.motlist.85") == 3
     assert score("cha000", "natives/stm/_chainsaw/animation/ch/cha0/motlist/cha0_move.motlist.663") == 2
     assert score("pl1001", "natives/stm/ch8/animation/player/pl1000/motlist/pl1000_x.motlist.524") == 1
     assert score("em0050", "natives/stm/animation/enemy/em0000/em0000.motlist.524") == 0
     assert score("ch01", "natives/stm/_ge/character/ch/animation/ch01_1000/motlist/ch01_1000_x.motlist.486") == 3
+    # Village: the character's own lists before the rest of its series
+    assert score("ch03_0200", "natives/stm/character/ch/prefab/gallery/ch03_0200/ch03_0200.mot.458") == 3
+    assert score("ch03_0200", "natives/stm/character/ch/animation/ch03_0100/motlist/ch03_0100general.motlist.486") == 2
+    assert score("ch03_0200", "natives/stm/character/ch/animation/ch05_0200/motlist/ch05_0200general.motlist.486") == 0
 
 
 def test_an_extracted_character_is_posed_by_its_animations(re2_dir):
@@ -177,7 +182,9 @@ def test_an_extracted_character_is_posed_by_its_animations(re2_dir):
     model = open_model(re2_dir / PL)
     anims = model.animations
     assert anims is not None and len(anims.skeleton) == 2
-    listed = [(a.name, a.frames, a.source) for a in anims.list()]
+    infos = anims.list()
+    assert [(a.moves, a.fixed) for a in infos] == [(1, True), (2, False)]  # "stand" holds one pose of one bone
+    listed = [(a.name, a.frames, a.source) for a in infos]
     assert listed == [("pl0000_move / stand", 1, "x64/sectionroot/animation/player/pl00/list/pl0000_move.motlist.85"),
                       ("pl0000_move / wave", 11, "x64/sectionroot/animation/player/pl00/list/pl0000_move.motlist.85")]
     rest = model.build_mesh()
@@ -257,3 +264,20 @@ def test_the_pose_tab_lists_re_animations(home, re2_dir):  # noqa: F811
     r = s.call("model_animations", {"sid": opened["sid"]})
     assert r["bones"] == 2 and [a["name"] for a in r["animations"]] == ["pl0000_move / stand", "pl0000_move / wave"]
     assert ".motlist" in r["note"]
+
+
+def test_a_mesh_bound_whole_to_a_few_bones_is_called_a_figure():
+    from darkstl.importers.reengine.animation import REAnimations
+    from darkstl.importers.reengine.formats.mesh import Bone
+
+    names = ["root", "Hip", "Spine", "Neck", "Head", "L_Thigh", "L_Shin", "R_Thigh", "R_Shin", "Pocket"]
+    parents = [-1, 0, 1, 2, 3, 1, 5, 1, 7, 1]
+    bones = [Bone(n, p, np.eye(4, dtype=np.float32)) for n, p in zip(names, parents)]
+    figure = REAnimations(bones, [], None, used_bones={1, 9})
+    assert figure.moving_bones == [0, 1, 9]  # the bones used and their ancestors
+    assert "bound whole to 2 of its 10 bones (Hip, Pocket)" in figure.rigid_description()
+    assert figure.note == REAnimations.note  # the importer decides whether the note replaces the usual one
+    skinned = REAnimations(bones, [], None, used_bones=set(range(1, 10)))
+    assert skinned.rigid_description() is None and skinned.moving_bones == list(range(10))
+    unknown = REAnimations(bones, [], None)
+    assert unknown.rigid_description() is None and unknown.moving_bones == list(range(10))

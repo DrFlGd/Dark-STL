@@ -633,17 +633,26 @@ function TextureCompare({ m, args, map, sendSettings }) {
   </div>`;
 }
 
+/** What an animation does to the model, when its format says: how many bones it moves, or that it is one held pose. */
+function reach(a, bones) {
+  if (a.moves == null) return "";
+  if (!a.moves) return " · moves none of this model's bones";
+  const part = bones ? `${a.moves} of ${bones} bones` : plural(a.moves, "bone");
+  return a.fixed ? ` · one pose, ${part}` : ` · moves ${part}`;
+}
+
 /** Pose: hold the model at a frame of one of its animations. The pose shown is what Generate and Export use. */
 function PoseTab({ m, pose, setPose, busy, call }) {
   const [list, setList] = useState(null); // the animations, once asked for
   const [note, setNote] = useState(null); // where the importer found them, when it says
+  const [bones, setBones] = useState(0); // the model's bone count, for "moves N of M bones"
   const [error, setError] = useState(null);
   const [filter, setFilter] = useState("");
   const [playing, setPlaying] = useState(false);
   const [draft, setDraft] = useState(null); // the frame box while it is being typed in
   useEffect(() => {
     let live = true;
-    call("model_animations", { sid: m.sid }).then((r) => { if (live) { setList(r.animations); setNote(r.note || null); } }, (e) => { if (live) setError(msg(e)); });
+    call("model_animations", { sid: m.sid }).then((r) => { if (live) { setList(r.animations); setBones(r.bones || 0); setNote(r.note || null); } }, (e) => { if (live) setError(msg(e)); });
     return () => { live = false; };
   }, [m.sid]);
   const anim = pose && list ? list.find((a) => a.name === pose.anim) : null;
@@ -669,7 +678,7 @@ function PoseTab({ m, pose, setPose, busy, call }) {
     ${list && list.length ? html`<section class="insp-section" id="pose-pick"><h3>Animation</h3>
       <input type="search" id="pose-filter" placeholder=${`Find among ${plural(list.length, "animation")}…`} value=${filter} onInput=${(e) => setFilter(e.target.value)} aria-label="Find an animation" />
       <select id="pose-anim" size="8" value=${pose?.anim || ""} onChange=${(e) => choose(e.target.value)} aria-label="Animation">
-        ${shown.map((a) => html`<option key=${a.name} value=${a.name} disabled=${!a.frames} title=${a.source || ""}>${a.name}${a.frames ? ` · ${plural(a.frames, "frame")}, ${a.duration.toFixed(2)} s` : " · can't be read"}</option>`)}</select>
+        ${shown.map((a) => html`<option key=${a.name} value=${a.name} disabled=${!a.frames} title=${a.source || ""}>${a.name}${a.frames ? ` · ${plural(a.frames, "frame")}, ${a.duration.toFixed(2)} s` : " · can't be read"}${reach(a, bones)}</option>`)}</select>
       <small class="muted">${readable.length < list.length ? `${list.length - readable.length} couldn't be read. ` : ""}${note || `Animations come from the model's anibnd file (${m.name}.anibnd), read from beside the model.`}</small>
     </section>` : null}
     ${anim ? html`<section class="insp-section" id="pose-frame-section"><h3>Frame</h3>

@@ -19,6 +19,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
+from typing import Iterable
+
 import numpy as np
 
 from ...errors import FormatError
@@ -28,7 +30,7 @@ from .formats import motion as motfmt
 from .formats import pak as pakfmt
 from .formats.mesh import Bone
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 
 
 def bone_hashes(names: list[str]) -> np.ndarray:
@@ -78,6 +80,8 @@ class _Entry:
     duration: float
     fps: float
     label: str
+    moves: int = 0  # bones of the model it has clips for
+    fixed: bool = False  # every track one key: a held pose
 
 
 _lock = threading.Lock()
@@ -99,7 +103,8 @@ def _read(path: Path) -> bytes:
 
 
 def _summary(path: Path) -> dict:
-    """{'hashes': bone hashes moved anywhere in the file, 'motions': [[name, offset, frame count, fps], ...]}"""
+    """{'hashes': bone hashes moved anywhere in the file,
+    'motions': [[name, offset, frame count, fps, [its bone hashes], most keys in a track], ...]}"""
     data = _read(path)
     if motfmt.is_motlist(data):
         headers = motfmt.read_motlist(data).motions
@@ -111,10 +116,12 @@ def _summary(path: Path) -> dict:
     motions = []
     for h in headers:
         try:
-            hashes.update(motfmt.clip_hashes(data, h))
+            own = motfmt.clip_hashes(data, h)
+            keys = max(motfmt.clip_key_counts(data, h), default=0)
         except Exception:  # noqa: BLE001 - a broken header hides only that motion
             continue
-        motions.append([h.name, h.offset, h.frame_count, h.fps])
+        hashes.update(own)
+        motions.append([h.name, h.offset, h.frame_count, h.fps, sorted(set(own)), keys])
     return {"hashes": sorted(hashes), "motions": motions}
 
 
@@ -189,7 +196,10 @@ class REAnimations:
     note = ("Animations come from the game's .motlist files filed under this model's character id, "
             "read from the game folder (or its pak archives).")
 
-    def __init__(self, bones: list[Bone], candidates: list[Path], cache: Path | None = None):
+    def __init__(self, bones: list[Bone], candidates: list[Path], cache: Path | None = None,
+                 used_bones: Iterable[int] | None = None):
+        """``used_bones``: the bones the mesh's vertices are weighted to; the count of bones an animation
+        moves is then taken over them and their ancestors, the bones whose motion shows on the mesh."""
         self.bones = bones
         self.names_ = [b.name for b in bones]
         self.parents = np.array([b.parent for b in bones], np.int64)
@@ -197,6 +207,10 @@ class REAnimations:
         self.bind_world = compose_hierarchy(self.local, self.parents)
         self.hashes = bone_hashes(self.names_)
         self._index = {int(h): i for i, h in enumerate(self.hashes)}
+        self.used_bones = sorted(int(b) for b in used_bones) if used_bones is not None else None
+        self.moving_bones = self._with_ancestors(self.used_bones) if self.used_bones is not None \
+            else list(range(len(bones)))
+        self.note = type(self).note
         self.candidates = list(candidates)
         self._cache = _cache_for(cache)
         self._entries: dict[str, _Entry] | None = None
@@ -205,6 +219,26 @@ class REAnimations:
     @property
     def skeleton(self) -> list[str]:
         return self.names_
+
+    def _with_ancestors(self, bones: list[int]) -> list[int]:
+        out: set[int] = set()
+        for b in bones:
+            while 0 <= b < len(self.parents) and b not in out:
+                out.add(b)
+                b = int(self.parents[b])
+        return sorted(out)
+
+    def rigid_description(self) -> str | None:
+        """Why posing can't bend this mesh, when its vertices are bound whole to a few bones (a display
+        figure baked into one piece, or an object fixed to a hand bone); None for an ordinary skinned mesh."""
+        used = self.used_bones
+        if used is None or not used or len(used) > 8 or len(used) > len(self.bones) // 3:
+            return None
+        names = ", ".join(self.names_[b] for b in used[:4]) + (", …" if len(used) > 4 else "")
+        count = "one bone" if len(used) == 1 else f"{len(used)} of its {len(self.bones)} bones"
+        return (f"This mesh is bound whole to {count} ({names}), so animations move it as one piece "
+                "but can't bend its joints. For a figure that poses, use the game's playable copy of the "
+                "character (the meshes under its own character folder), not the gallery display model.")
 
     def _root(self) -> str:
         index = files.index_for(self.candidates[0]) if self.candidates else None
@@ -215,13 +249,14 @@ class REAnimations:
             summaries = self._cache.get(self._root(), self.candidates) if self.candidates else {}
             out: dict[str, _Entry] = {}
             own = set(self._index)
+            shows = {int(self.hashes[b]) for b in self.moving_bones}
             for p in self.candidates:
                 s = summaries.get(str(p))
                 if not s or not own.intersection(s["hashes"]):
                     continue
                 stem = files.file_stem(p.name)
                 where = p.as_posix().split("/natives/", 1)[-1]
-                for i, (name, offset, frame_count, fps) in enumerate(s["motions"]):
+                for i, (name, offset, frame_count, fps, moved, keys) in enumerate(s["motions"]):
                     label = f"{stem} / {name or f'motion {i}'}"
                     key, n = label, 2
                     while key in out:
@@ -229,7 +264,8 @@ class REAnimations:
                     fc = float(frame_count)
                     frames = max(1, int(np.floor(fc + 1e-4)) + 1)
                     rate = float(fps) or 60.0
-                    out[key] = _Entry(key, p, int(offset), frames, fc / rate, rate, where)
+                    out[key] = _Entry(key, p, int(offset), frames, fc / rate, rate, where,
+                                      len(shows.intersection(moved)), int(keys) <= 1)
             self._entries = dict(sorted(out.items(), key=lambda kv: kv[0].lower()))
         return self._entries
 
@@ -258,10 +294,11 @@ class REAnimations:
 
     def info(self, name: str) -> AnimationInfo:
         e = self._entry(name)
-        return AnimationInfo(e.name, e.frames, e.duration, e.fps, e.label)
+        return AnimationInfo(e.name, e.frames, e.duration, e.fps, e.label, e.moves, e.fixed)
 
     def list(self) -> list[AnimationInfo]:
-        return [AnimationInfo(e.name, e.frames, e.duration, e.fps, e.label) for e in self.entries().values()]
+        return [AnimationInfo(e.name, e.frames, e.duration, e.fps, e.label, e.moves, e.fixed)
+                for e in self.entries().values()]
 
     def clamp(self, name: str, frame: int) -> int:
         return min(max(int(frame), 0), self.info(name).frames - 1)
