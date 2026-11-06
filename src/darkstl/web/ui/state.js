@@ -30,6 +30,7 @@ export const ui = createStore({
   enhance: null,           // the Mesh, Textures and Displace tabs' settings, kept between models
   exportOpts: null,        // the Export tab's settings
   paintPreview: null,      // { sid, settings }: show the model in the Export tab's paint colours (painted 3MF)
+  texturePreview: null,    // { sid, key }: the Textures tab's chosen texture draped over every part of the model
   view: null,              // the 3D view's shading and edges
   cutOpts: null,           // the Cut tab's settings: the model cut, sheet and wall thickness, the joint new cuts get
   cutPlans: null,          // per model id: its cuts [{ id, normal, point, joint }] (the last 20 models)
