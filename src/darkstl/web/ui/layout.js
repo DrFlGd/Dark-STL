@@ -28,7 +28,7 @@ export function CommandBar({ id, back, up, title, count, search, tools, primary,
     <${Burger} />
     ${back ? html`<button type="button" class="ghost bar-back" id=${back.id || "bar-back"} title="Back (Alt+←)" aria-label="Back" onClick=${back.run}>‹ Back</button>` : null}
     <div class="bar-place">
-      ${up?.length ? html`<span class="bar-up" id="crumbs-up">${up.map(([name, href], i) => html`<a key=${i} href=${href}>${name}</a><span class="crumb-sep" aria-hidden="true">›</span>`)}</span>` : null}
+      ${up?.length ? html`<span class="bar-up" id="crumbs-up">${up.map(([name, href], i) => html`<a key=${i} href=${href} title=${name}>${name}</a><span class="crumb-sep" aria-hidden="true">›</span>`)}</span>` : null}
       ${typeof title === "string" ? html`<h1>${title}</h1>` : title}
       ${count == null ? null : typeof count === "string" || typeof count === "number" ? html`<span class="page-count">${count}</span>` : count}
     </div>

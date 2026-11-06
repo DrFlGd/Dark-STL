@@ -80,14 +80,36 @@ function KindTile({ game, cat, lod }) {
   </a>`;
 }
 
-/** The groups of the kind shown, as chips: All, then each group. */
+/** The groups of the kind shown, as chips: All, then each group. A kind with
+ * many groups (Cyberpunk's depot folders run to hundreds) keeps them to two
+ * rows, with the group shown moved up front and a button to see the rest in a
+ * short scrolling box; every group is also listed in the panel on the right. */
 function GroupChips({ game, cat, group }) {
+  const box = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [clipped, setClipped] = useState(false);
+  useEffect(() => { setOpen(false); }, [game, cat.name]);
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const check = () => setClipped(el.scrollHeight > el.clientHeight + 1);
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [cat, open]);
   if (cat.groups.length < 2) return null;
   const chip = (name, count, route) => html`<a class=${`chip-btn${group === name ? " on" : ""}`} key=${name ?? ""} href=${routeHash(route)}
-    aria-current=${group === name ? "page" : null} data-group=${name ?? ""}>${name ?? "All"} <span class="muted">${count.toLocaleString()}</span></a>`;
-  return html`<div class="filters group-chips" id="group-chips" aria-label="Groups">
-    ${chip(null, cat.count, placeRoute(game, cat.name))}
-    ${cat.groups.map((g) => chip(g.name, g.count, placeRoute(game, cat.name, g.name)))}
+    aria-current=${group === name ? "page" : null} data-group=${name ?? ""} title=${`${name ?? "All"} (${count.toLocaleString()})`}><span class="chip-name">${name ?? "All"}</span> <span class="muted">${count.toLocaleString()}</span></a>`;
+  // collapsed, the group shown comes straight after All so it is never hidden
+  const shown = !open && group ? [...cat.groups.filter((g) => g.name === group), ...cat.groups.filter((g) => g.name !== group)] : cat.groups;
+  return html`<div class=${`group-chips-wrap${open ? " open" : ""}`}>
+    <div class="filters group-chips" id="group-chips" aria-label="Groups" ref=${box}>
+      ${chip(null, cat.count, placeRoute(game, cat.name))}
+      ${shown.map((g) => chip(g.name, g.count, placeRoute(game, cat.name, g.name)))}
+    </div>
+    ${clipped || open ? html`<button type="button" class="ghost compact group-chips-more" id="group-chips-more" aria-expanded=${open ? "true" : "false"}
+      onClick=${() => setOpen(!open)}>${open ? "Fewer groups" : `All ${cat.groups.length.toLocaleString()} groups`}</button>` : null}
   </div>`;
 }
 
