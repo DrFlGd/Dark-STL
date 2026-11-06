@@ -646,7 +646,7 @@ def assemble(config: Configuration, choices: dict | None, load: Loader) -> Sourc
         if not paint.materials:
             notes.append(f"{s.label}: {opt.label} has no materials")
             continue
-        if not paint.textures:  # painting with it would only take the parts' own textures away
+        if not paint.textures and paint.paint_for is None:  # it would only take the parts' own textures away
             notes.append(f"{s.label}: {opt.label} has no textures, so the parts keep their own")
             notes += [f"{s.label}: {n}" for n in paint.notes]
             continue
@@ -655,14 +655,29 @@ def assemble(config: Configuration, choices: dict | None, load: Loader) -> Sourc
             textures[prefix + k] = t
         targets = comps[:1] if s.kind == "finish" else comps
         for c in targets:  # its first material replaces each model's first, and so on; the rest stay
+            baked = None
+            if paint.paint_for is not None:  # a paint mixed per model: its colour, laid out for this one
+                try:
+                    tex = paint.paint_for(c.model)
+                except FormatError as exc:
+                    tex = None
+                    notes.append(f"{s.label}: {opt.label} couldn't be painted on the {c.label.lower()} ({exc})")
+                if tex is not None:
+                    baked = f"{prefix}{c.slot or 'base'}:colour"
+                    textures[baked] = tex
             for j in range(min(len(c.model.materials), len(paint.materials))):
                 old, new = materials[c.material_base + j], paint.materials[j]
+
+                def key(k, own, j=j):  # a mixed paint keeps the part's own maps where it has none
+                    if k:
+                        return prefix + k
+                    return own if paint.paint_for is not None else None
+
                 materials[c.material_base + j] = Material(
-                    f"{old.name} ({opt.label})", prefix + new.albedo if new.albedo else None,
-                    prefix + new.normal if new.normal else None, prefix + new.height if new.height else None,
+                    f"{old.name} ({opt.label})", baked if baked and j == 0 else key(new.albedo, old.albedo),
+                    key(new.normal, old.normal), key(new.height, old.height),
                     new.normal_scale, new.guessed, new.details, new.normal_green,
-                    prefix + new.specular if new.specular else None,
-                    prefix + new.detail_normal if new.detail_normal else None, new.detail_scale)
+                    key(new.specular, old.specular), key(new.detail_normal, old.detail_normal), new.detail_scale)
         info.append(f"{s.label}: {opt.label}")
         notes += [f"{s.label}: {n}" for n in paint.notes]
     flag_keys = {o.key for o in base.options}

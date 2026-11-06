@@ -74,6 +74,9 @@ def _texture(ref: ObjectRef) -> Texture2D | None:
         return None
 
 
+texture_of = _texture  # the Texture2D an object reference names, or None
+
+
 def _material_textures(pkg: upk.Package, e: upk.Export) -> list[ObjectRef]:
     """A base material's referenced textures (a property before version 656, binary data after)."""
     r = pkg.export_data(e)

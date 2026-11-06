@@ -319,6 +319,8 @@ def test_skins_from_a_dlc(bl2, tmp_path):
     assert files.game_root(dlc / "Aster_Startup_SF.upk") == bl2
     assert files.game_root(bl2 / "WillowGame" / "DLC" / "Iris" / "CookedPCConsole" / "X.upk") == bl2
     assert files.game_root(bl2 / "DLC" / "Iris" / "CookedPCConsole" / "X.upk") == bl2
+    assert files.game_root(bl2 / "DLC" / "Gladiolus" / "Compat" / "Content" / "X.upk") == bl2
+    assert files.game_root(tmp_path / "DLC" / "Loose" / "Content" / "X.upk") == tmp_path / "DLC" / "Loose" / "Content"
     files._INDEXES.clear()
     imp = BorderlandsImporter()
     entries = imp.scan(bl2, files.GAME_BL2)
@@ -547,3 +549,104 @@ def test_every_part_of_a_gun_points_to_it(bl2_parts, tmp_path, monkeypatch):
     thing = next(i for i in items if i["label"] == "AR_Thing")
     assert app.call("model_open", {"id": barrel["id"]})["configurable_as"][0]["id"] == gun["id"]
     assert app.call("model_open", {"id": thing["id"]})["configurable_as"] == []
+
+
+def _bgra(pixels) -> bytes:
+    """(H, W, 3) RGB floats 0..1 -> B8G8R8A8 bytes."""
+    a = np.round(np.asarray(pixels, np.float64) * 255).astype(np.uint8)
+    return np.dstack([a[..., 2], a[..., 1], a[..., 0], np.full(a.shape[:2], 255, np.uint8)]).tobytes()
+
+
+def _masks(w=8, h=8) -> np.ndarray:
+    """A gun paint's masks: the upper half the light/dark map (none), the lower half zone A on the left half
+    (red), zone B on the right (green)."""
+    m = np.zeros((2 * h, w, 3))
+    m[h:, : w // 2, 0] = 1
+    m[h:, w // 2:, 1] = 1
+    return m
+
+
+def paint_skins_package() -> bytes:
+    """A Master_Gun skin: no colour texture, its colours mixed from masks and vector parameters."""
+    b = S.PackageBuilder()
+    top = b.add_export("Package", "GD_Weap_Pistol", b"", 0)
+    group = b.add_export("Package", "ManufacturerMaterials", b"", top)
+    masks = b.add_export("Texture2D", "Masks_Bandit", S.texture_data(b, 8, 16, _bgra(_masks()), "PF_A8R8G8B8"), group)
+    detail = b.add_export("Texture2D", "Pistol_Detail", S.texture_data(b, 8, 8, S.bc1_solid(8, 8, 0xFFFF)), group)
+    master = b.add_export("Material", "Master_Gun", S.material_data(b, []), group)
+    epic = b.add_export("MaterialInstanceConstant", "Mati_BanditEpic", S.mic_data(
+        b, master, [("p_Masks", masks), ("p_Diffuse", detail)], vectors=[("p_BColorMidtone", (0, 0, 1, 1))],
+        static_masks={"p_WeapClassSelect": "G", "p_PatternChannel": "R"}), group)
+    mic = b.add_export("MaterialInstanceConstant", "Mati_Bandit_Ruby", S.mic_data(
+        b, epic, [], vectors=[("p_AColorMidtone", (1, 0, 0, 1)), ("p_DColor", (1, 1, 1, 1))]), group)
+    b.add_export("WeaponPartDefinition", "Mat_Bandit_Ruby",
+                 b.props(b.p_enum("PartType", "EWeaponPartType", "WP_Material"), b.p_obj("Material", mic)), group)
+    return b.build("lzo")
+
+
+def test_gun_paint_bakes_zones_pattern_and_decal():
+    from darkstl.importers.borderlands import gunpaint
+
+    class Tex:  # stands in for a Texture2D
+        def __init__(self, rgb):
+            self.rgb = np.asarray(rgb, np.float32)
+
+        def decode(self, dirs=()):
+            return np.dstack([np.round(self.rgb * 255), np.full(self.rgb.shape[:2], 255.0)]).astype(np.uint8)
+
+    p = gunpaint.GunPaint("Mati_Test")
+    p.textures = {"p_masks": Tex(_masks()), "p_pattern": Tex(np.ones((4, 4, 3)))}
+    p.vectors = {"p_acolormidtone": (1, 0, 0, 1), "p_bcolormidtone": (0, 0, 1, 1), "p_patterncolor": (0, 1, 0, 1),
+                 "p_patternchannelscale": (0, 1, 0, 0)}
+    p.scalars = {"p_replacepattern": 1.0}
+    out = gunpaint.bake(p, None, None)  # without a second UV set: zones only
+    assert out.shape == (8, 8, 4)
+    assert tuple(out[0, 0, :3]) == (170, 0, 0) and tuple(out[7, 7, :3]) == (0, 0, 170)  # 0.4 x linear, as sRGB
+    quad = np.array([[(0, 0), (1, 0), (1, 1)], [(0, 0), (1, 1), (0, 1)]], np.float32)
+    out = gunpaint.bake(p, quad, quad)  # the pattern goes on zone B, replacing its colour
+    assert tuple(out[0, 0, :3]) == (170, 0, 0) and tuple(out[7, 7, :3]) == (0, 170, 0)
+    p.vectors.update({"p_decalcolor": (1, 1, 1, 1), "p_decalchannel": (1, 0, 0, 0)})
+    p.textures["p_decal"] = Tex(np.ones((4, 4, 3)))
+    p.scalars["p_replacedecal"] = 1.0
+    out = gunpaint.bake(p, quad, quad)  # a white decal on zone A
+    assert tuple(out[0, 0, :3]) == (170, 170, 170) and tuple(out[7, 7, :3]) == (0, 170, 0)
+
+
+def test_gun_skins_without_a_colour_texture_are_painted_on_each_part(bl2, tmp_path, monkeypatch):
+    """A skin whose colour Master_Gun mixes (zone colours over masks): each part gets the colour baked on its
+    UVs when its texture is first shown, kept on disk for the next time."""
+    from darkstl import configs
+    from darkstl.importers import set_cache_folder
+    from darkstl.importers.borderlands import gunpaint
+
+    cooked = bl2 / "WillowGame" / "CookedPCConsole"
+    (cooked / "GD_Weap_Paint.upk").write_bytes(paint_skins_package())
+    files._INDEXES.clear()
+    set_cache_folder(tmp_path / "cache")
+    try:
+        imp = importer_for(cooked / "Startup.upk" / "Weap_Pistol.Pistol_Gestalt.SkeletalMesh")
+        entries = imp.scan(bl2, files.GAME_BL2)
+        (c,) = imp.configurations(bl2, files.GAME_BL2, entries)
+        skin = next(s for s in c.slots if s.id == "skin")
+        assert [o.id for o in skin.options] == ["Mat_Bandit_Ruby"]
+        paint = open_model(skin.options[0].model.file, skin.options[0].model.variant)
+        assert paint.paint_for is not None and not paint.textures  # the masks and detail aren't shown as maps
+        assert any("mixed from the skin's paint" in line for line in paint.info)
+        gun = configs.assemble(c, {"skin": "Mat_Bandit_Ruby"}, open_model)
+        assert len(gun.materials) > 1  # the body, barrel, ... each painted on its own UVs
+        assert len({m.albedo for m in gun.materials}) == len(gun.materials)
+        for mat in gun.materials:
+            assert "(Bandit Ruby)" in mat.name and mat.albedo and mat.albedo.endswith(":colour")
+        mat = gun.materials[0]
+        tex = gun.textures[mat.albedo]
+        assert "when shown" in tex.describe()
+        assert not (tmp_path / "cache" / "borderlands" / "gunpaint").exists()  # nothing made until it's needed
+        img = tex.decode()
+        assert tuple(img[0, 0, :3]) == (170, 0, 0) and tuple(img[-1, -1, :3]) == (0, 0, 170)
+        assert "mixed from Mati_Bandit_Ruby" in tex.describe()
+        (kept,) = (tmp_path / "cache" / "borderlands" / "gunpaint").glob("*.npy")
+        monkeypatch.setattr(gunpaint, "bake", lambda *a, **k: pytest.fail("baked again"))
+        again = configs.assemble(c, {"skin": "Mat_Bandit_Ruby"}, open_model)
+        assert np.array_equal(again.textures[again.materials[0].albedo].decode(), img)
+    finally:
+        set_cache_folder(None)
