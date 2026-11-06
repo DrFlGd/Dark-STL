@@ -90,6 +90,9 @@ class PartOption:
     attach: Attach | None = None
 
 
+SLOT_KINDS = ("parts", "material")
+
+
 @dataclass
 class Slot:
     id: str
@@ -97,6 +100,7 @@ class Slot:
     options: list[PartOption] = field(default_factory=list)
     required: bool = False  # not required: "None" can be chosen
     default: str | None = None  # an option id; None: the first option if required, else none
+    kind: str = "parts"  # "parts": its option adds a part; "material": its option's materials repaint every part
 
 
 @dataclass
@@ -142,6 +146,9 @@ class Configuration:
         d = asdict(self)
         d.pop("guessed")
         d.pop("source")
+        for s in d["slots"]:
+            if s.get("kind") == "parts":
+                s.pop("kind")
         return _drop_none(d)
 
 
@@ -206,8 +213,11 @@ def parse(raw: dict, game: str | None = None, source: str = "") -> list[Configur
                                   _ref(o.get("model") or o.get("file"), f"{where}, slot {sid}"),
                                   _attach(o.get("attach"), f"{where}, slot {sid}"))
                        for k, o in enumerate(s.get("options") or [])]
+            kind = str(s.get("kind") or "parts")
+            if kind not in SLOT_KINDS:
+                raise FormatError(f"{where}, slot {sid}: 'kind' is one of {', '.join(SLOT_KINDS)}")
             slots.append(Slot(sid, str(s.get("label") or sid), options, bool(s.get("required", False)),
-                              s.get("default") or None))
+                              s.get("default") or None, kind))
         presets = {str(k): {str(a): str(b or "") for a, b in (v or {}).items()}
                    for k, v in (c.get("presets") or {}).items()}
         cid = str(c.get("id") or "")
@@ -381,7 +391,7 @@ def resolve(config: Configuration, resolver: Resolver) -> tuple[Configuration | 
                 continue
             options.append(PartOption(o.id, o.label, ModelRef(str(p), o.model.variant, o.model.parts), o.attach))
         if options:
-            slots.append(Slot(s.id, s.label, options, s.required, s.default))
+            slots.append(Slot(s.id, s.label, options, s.required, s.default, s.kind))
     out = Configuration(config.id, config.label, config.game, ModelRef(str(base), config.base.variant, config.base.parts),
                         slots, config.presets, config.category, config.group, config.source, config.guessed)
     return out, missing
@@ -581,7 +591,8 @@ def assemble(config: Configuration, choices: dict | None, load: Loader) -> Sourc
         return c
 
     for s in config.slots:
-        place(s.id)
+        if s.kind == "parts":
+            place(s.id)
     comps += [by_slot[s.id] for s in config.slots if s.id in by_slot]
 
     parts: list[Part] = []
@@ -614,6 +625,34 @@ def assemble(config: Configuration, choices: dict | None, load: Loader) -> Sourc
             mesh = c.model.build_mesh(MeshOptions())
             parts.append(Part(c.label, c.material_base, mesh.n_vertices, mesh.n_faces))
             c.keep, c.n_parts = None, 1
+    for s in config.slots:  # a material slot paints every component with its option's materials
+        if s.kind != "material":
+            continue
+        opt = next((o for o in s.options if o.id == chosen.get(s.id)), None)
+        if opt is None:
+            continue
+        try:
+            paint = load(opt.model.file, opt.model.variant)
+        except FormatError as exc:
+            notes.append(f"{s.label}: {opt.label} couldn't be opened ({exc})")
+            continue
+        if not paint.materials:
+            notes.append(f"{s.label}: {opt.label} has no materials")
+            continue
+        prefix = f"{s.id}:"
+        for k, t in paint.textures.items():
+            textures[prefix + k] = t
+        for c in comps:  # its first material replaces each model's first, and so on; the rest stay
+            for j in range(min(len(c.model.materials), len(paint.materials))):
+                old, new = materials[c.material_base + j], paint.materials[j]
+                materials[c.material_base + j] = Material(
+                    f"{old.name} ({opt.label})", prefix + new.albedo if new.albedo else None,
+                    prefix + new.normal if new.normal else None, prefix + new.height if new.height else None,
+                    new.normal_scale, new.guessed, new.details, new.normal_green,
+                    prefix + new.specular if new.specular else None,
+                    prefix + new.detail_normal if new.detail_normal else None, new.detail_scale)
+        info.append(f"{s.label}: {opt.label}")
+        notes += [f"{s.label}: {n}" for n in paint.notes]
     flag_keys = {o.key for o in base.options}
 
     def build(options: MeshOptions) -> TriMesh:
@@ -667,7 +706,7 @@ def configuration_json(config: Configuration, chosen: dict[str, str]) -> dict:
         "base": _drop_none(asdict(config.base)), "base_name": Path(config.base.file).name,
         "chosen": chosen, "defaults": config.defaults(),
         "presets": [{"name": k, "choices": config.choose(v)} for k, v in config.presets.items()],
-        "slots": [{"id": s.id, "label": s.label, "required": s.required, "default": s.default,
+        "slots": [{"id": s.id, "label": s.label, "required": s.required, "default": s.default, "kind": s.kind,
                    "options": [{"id": o.id, "label": o.label, "file": Path(o.model.file).name, "path": o.model.file,
                                 "variant": o.model.variant, "parts": o.model.parts,
                                 "attach": None if o.attach is None else _drop_none(asdict(o.attach))}

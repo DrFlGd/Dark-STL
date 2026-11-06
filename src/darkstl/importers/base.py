@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from ..collect import RelatedFile
 from ..model import CatalogEntry, SourceModel
@@ -36,6 +36,15 @@ class Importer:
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
         """Things to tell the user about a folder they added (for example that its files are still packed)."""
         return []
+
+    def scan_state(self, folder: Path) -> Any:
+        """What a scan of ``folder`` readied for opening its models (an index of its textures, say), to be
+        kept with the scan's findings: when the folder hasn't changed by the next start, it isn't scanned
+        again and this is given back to :meth:`restore_state` instead. Must pickle. None: nothing."""
+        return None
+
+    def restore_state(self, folder: Path, state: Any) -> None:
+        """Ready ``folder`` for opening its models from what :meth:`scan_state` gave after its last scan."""
 
     def configurations(self, folder: Path, game: str, entries: list[CatalogEntry]) -> list:
         """Models in ``folder`` that are built from parts chosen per slot (a weapon and its magazines,

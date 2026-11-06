@@ -68,6 +68,11 @@ Later sources replace earlier ones when a game has two configurations with the s
   Model tab lists them).
 - **`slots`**: `required` slots always have a part; the others can be *None*. `default` is the
   option chosen when the model is opened (else the first for a required slot, none otherwise).
+  `kind` is `"parts"` (the default: the chosen option adds a part) or `"material"`: the
+  chosen option adds no geometry; its materials repaint every part of the model instead (its first
+  material replaces each part model's first material, its second the second, and so on; materials
+  beyond those it has stay as they are). Borderlands 2 and The Pre-Sequel use it for gun skins,
+  which the game puts in the first material slot of the gun's meshes.
 - **`attach`** places a part. Without it the part is taken to be modelled in place, as game
   weapon parts usually are. Otherwise, in this order:
   - `socket`: a named point of the base model, or of the part chosen for slot `to`

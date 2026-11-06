@@ -101,6 +101,40 @@ def test_the_index_is_kept_between_scans(shared_dir, tmp_path, monkeypatch):
     assert read == ["common_body.tpf.dcx"] and "common_body_b" in changed.names and "common_body_a" not in changed.names
 
 
+def test_an_unchanged_folder_isnt_scanned_again_at_start(home, shared_dir, monkeypatch):  # noqa: F811
+    first = make_service(home)
+    wait(first, first.call("folder_add", {"path": str(shared_dir)})["job"])
+    texindex.forget(shared_dir)  # as a fresh start of the app
+    scanned = []
+    real = library.Library.add_root
+    monkeypatch.setattr(library.Library, "add_root", lambda self, *a, **k: scanned.append(a) or real(self, *a, **k))
+    again = make_service(home)
+    wait(again, again.load_folders().id)
+    assert scanned == []
+    # what the scan readied comes back with it: the object still finds its textures in the map's pack
+    (obj,) = again.call("models_query", {"game": "Dark Souls III", "q": "o000100"})["items"]
+    assert set(files.load_model(again.library.find(obj["id"]).path).textures) == {"m24_wall_a", "m24_wall_n"}
+
+    # a file added anywhere in the folder changes its fingerprint: scanned at the next start
+    (shared_dir / "parts/am_m_2000.partsbnd.dcx").write_bytes((shared_dir / "parts/am_m_1000.partsbnd.dcx").read_bytes())
+    third = make_service(home)
+    wait(third, third.load_folders().id)
+    assert len(scanned) == 1 and third.call("models_query", {"game": "Dark Souls III", "q": "am_m_2000"})["total"] == 1
+
+
+def test_a_scan_lists_the_folder_once(shared_dir, monkeypatch):
+    from darkstl import listing
+
+    walks = []
+    real = listing.Listing.read
+    monkeypatch.setattr(listing.Listing, "read", classmethod(lambda cls, root: walks.append(root) or real.__func__(cls, root)))
+    found, _notes, kept = library.scan_folder_kept(shared_dir)
+    assert len(walks) == 1 and len(found) == 4
+    assert kept.fingerprint.unchanged() and "fromsoft" in kept.state
+    # the same files, in the same order, as walking the folder
+    assert texindex.walk(shared_dir) == [p for p in listing.Listing.read(shared_dir).files]
+
+
 def test_collecting_writes_out_textures_taken_from_elsewhere(home, shared_dir):  # noqa: F811
     s = make_service(home)
     wait(s, s.call("folder_add", {"path": str(shared_dir)})["job"])

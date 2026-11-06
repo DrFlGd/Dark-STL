@@ -315,6 +315,19 @@ def test_the_app_lists_opens_and_previews_archive_models(game_dir, tmp_path, mon
     assert len(opened["materials"]) == 1 and opened["materials"][0]["albedo"]
     assert s.call("thumb", {"id": items[0]["id"]})[:4] == b"\x89PNG"
 
+    # the next start doesn't scan the unchanged folder; the archives' names come back once one is opened
+    arc._open.cache_clear()  # as a fresh start of the app
+    scanned = []
+    real = library.Library.add_root
+    monkeypatch.setattr(library.Library, "add_root", lambda self, *a, **k: scanned.append(a) or real(self, *a, **k))
+    again = Service(Config.load(), tmp_path / "home" / "cache")
+    wait(again, again.load_folders().id)
+    assert scanned == [] and again.call("overview", {})["total"] == 3
+    assert arc._open.cache_info().currsize == 0  # no archive read at start-up
+    rifle = again.library.find(items[0]["id"])
+    model = open_model(rifle.path)
+    assert model.name == "w_rifle_a" and model.materials[0].albedo, model.notes
+
 
 def test_every_archive_of_the_game_stays_open(tmp_path, monkeypatch):
     """Cyberpunk has dozens of archives and a model's files are looked for in all of them: none may be read

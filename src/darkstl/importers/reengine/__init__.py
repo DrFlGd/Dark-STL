@@ -70,6 +70,14 @@ class REEngineImporter(Importer):
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
         return list(getattr(self, "_notes", {}).get(str(folder), []))
 
+    def scan_state(self, folder: Path):
+        index = files.index_for(Path(folder))
+        return index if index is not None and files._norm(index.root) == files._norm(Path(folder)) else None
+
+    def restore_state(self, folder: Path, state) -> None:
+        if isinstance(state, files.FileIndex):
+            files.register_index(state)
+
     def configurations(self, folder: Path, game: str, entries: list[CatalogEntry]) -> list:
         """Weapons kept as a body and separate parts in one folder, guessed from their names."""
         from ...configs import from_folders

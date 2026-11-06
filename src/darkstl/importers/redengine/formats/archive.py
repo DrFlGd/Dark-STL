@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import os
 import struct
+import threading
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
 
@@ -245,7 +246,33 @@ def open_archive(path: str | os.PathLike) -> Archive:
     """An archive's index, kept open across calls (re-read when the file changes)."""
     p = Path(path)
     st = p.stat()
+    if _first_use:
+        _run_first_use(str(p))
     return _open(str(p), st.st_size, st.st_mtime_ns)
+
+
+# Work put off until one of a group of archives is first opened (see when_first_opened)
+_first_use: dict[str, Callable[[], None]] = {}
+_first_use_lock = threading.Lock()
+
+
+def when_first_opened(paths, fn: Callable[[], None]) -> None:
+    """Call ``fn`` (once) when any of these archives is next opened, before it's handed out. Used to learn
+    a game folder's names from the cache only once its models are opened, not at start-up."""
+    with _first_use_lock:
+        for p in paths:
+            _first_use[os.path.normcase(str(Path(p)))] = fn
+
+
+def _run_first_use(path: str) -> None:
+    key = os.path.normcase(path)
+    with _first_use_lock:
+        fn = _first_use.get(key)
+        if fn is None:
+            return
+        for k in [k for k, v in _first_use.items() if v is fn]:  # the whole group: fn opens the others
+            del _first_use[k]
+    fn()
 
 
 __all__ = ["Archive", "Entries", "Entry", "Segment", "fnv1a64", "is_archive_file", "normalize_path", "open_archive",

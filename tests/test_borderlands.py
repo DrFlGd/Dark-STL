@@ -245,6 +245,68 @@ def test_configuration_from_fragment_names_alone(bl2):
     assert len(slots["barrel"].options) == 2
 
 
+GREEN = 0x07E0
+
+
+def skins_package() -> bytes:
+    """Material parts (skins): one whose material instance is in the same package, one that imports it."""
+    b = S.PackageBuilder()
+    top = b.add_export("Package", "GD_Weap_Pistol", b"", 0)
+    group = b.add_export("Package", "ManufacturerMaterials", b"", top)
+    dif = b.add_export("Texture2D", "Bandit_Skin_Dif", S.texture_data(b, 8, 8, S.bc1_solid(8, 8, BLUE)), group)
+    master = b.add_export("Material", "Master_Gun", S.material_data(b, []), group)
+    mic = b.add_export("MaterialInstanceConstant", "Mati_Bandit_1", S.mic_data(b, master, [("p_Diffuse", dif)]), group)
+    gun_skins = b.add_import("Core", "Package", 0, "GunSkins")
+    jakobs = b.add_import("Engine", "MaterialInstanceConstant", gun_skins, "Mati_Jakobs_1")
+    for name, ref in (("Mat_Jakobs_1", jakobs), ("Mat_Bandit_1", mic)):
+        b.add_export("WeaponPartDefinition", name,
+                     b.props(b.p_enum("PartType", "EWeaponPartType", "WP_Material"), b.p_obj("Material", ref)), group)
+    shotgun = b.add_export("Package", "GD_Weap_Shotgun", b"", 0)  # another weapon type's skin: not offered
+    b.add_export("WeaponPartDefinition", "Mat_Torgue_1",
+                 b.props(b.p_enum("PartType", "EWeaponPartType", "WP_Material"), b.p_obj("Material", mic)), shotgun)
+    return b.build("lzo")
+
+
+def gun_skins_package() -> bytes:
+    b = S.PackageBuilder()
+    dif = b.add_export("Texture2D", "Jakobs_Skin_Dif", S.texture_data(b, 8, 8, S.bc1_solid(8, 8, GREEN)))
+    master = b.add_export("Material", "Master_Gun", S.material_data(b, []))
+    b.add_export("MaterialInstanceConstant", "Mati_Jakobs_1", S.mic_data(b, master, [("p_Diffuse", dif)]))
+    return b.build("lzo")
+
+
+def test_gun_skins_paint_the_whole_gun(bl2):
+    from darkstl import configs
+
+    cooked = bl2 / "WillowGame" / "CookedPCConsole"
+    (cooked / "GD_Weap_Skins.upk").write_bytes(skins_package())
+    (cooked / "GunSkins.upk").write_bytes(gun_skins_package())
+    files._INDEXES.clear()
+    imp = BorderlandsImporter()
+    entries = imp.scan(bl2, files.GAME_BL2)
+    (c,) = imp.configurations(bl2, files.GAME_BL2, entries)
+    skin = next(s for s in c.slots if s.id == "skin")
+    assert skin.kind == "material" and skin.required
+    assert [o.label for o in skin.options] == ["Bandit 1", "Jakobs 1"]  # the shotgun's skin isn't offered
+    assert skin.default == "Mat_Bandit_1"  # the default body's maker
+    assert skin.options[0].model.parts == [] and skin.options[0].model.variant.startswith("skin:GD_Weap_Skins:")
+    # the slot's kind survives the list format
+    (again,) = configs.parse(configs.dump([c], c.game), c.game)
+    assert next(s for s in again.slots if s.id == "skin").kind == "material"
+    assert "kind" not in configs.dump([c], c.game)["configurations"][0]["slots"][0]
+
+    def colour(gun):
+        return {tuple(gun.textures[mat.albedo].decode()[0, 0, :3].tolist()) for mat in gun.materials}
+
+    gun = configs.assemble(c, None, open_model)
+    assert gun.build_mesh().n_faces > 0
+    assert colour(gun) == {(0, 0, 255)}  # every part painted with the Bandit skin
+    assert all("(Bandit 1)" in mat.name for mat in gun.materials)
+    jakobs = configs.assemble(c, {"skin": "Mat_Jakobs_1"}, open_model)
+    assert colour(jakobs) == {(0, 255, 0)}  # its material instance read from the package it's imported from
+    assert any("Skin: Jakobs 1" in line for line in jakobs.info)
+
+
 def test_texture_formats_and_bad_data(tmp_path):
     b = S.PackageBuilder()
     raw = bytes([10, 20, 30, 255]) * 16
@@ -259,3 +321,108 @@ def test_texture_formats_and_bad_data(tmp_path):
     gray = read_texture(pkg, pkg.exports[g - 1]).decode()
     assert gray[0, 1, 0] == 1
     assert struct.calcsize("<I") == 4
+
+
+def test_the_shared_gun_mesh_points_to_its_configurable_gun(bl2, tmp_path, monkeypatch):
+    from darkstl.app.config import Config
+    from darkstl.app.service import Service
+    from test_app import wait
+
+    cooked = bl2 / "WillowGame" / "CookedPCConsole"
+    (cooked / "GD_Weap_Skins.upk").write_bytes(skins_package())
+    (cooked / "GunSkins.upk").write_bytes(gun_skins_package())
+    files._INDEXES.clear()
+    monkeypatch.setenv("DARKSTL_HOME", str(tmp_path / "home"))
+    app = Service(Config.load(), tmp_path / "home" / "cache")
+    wait(app, app.call("folder_add", {"path": str(bl2), "game": files.GAME_BL2})["job"])
+    items = app.call("models_query", {"game": files.GAME_BL2, "category": "Weapons"})["items"]
+    gun = next(i for i in items if i.get("configurable"))
+    mesh = next(i for i in items if i["label"] == "Pistol_Gestalt")
+    opened = app.call("model_open", {"id": mesh["id"]})
+    assert opened["configurable_as"] == [{"id": gun["id"], "label": "Pistol (any parts)", "slots": 5}]
+    assert any("Pistol (any parts)" in n for n in opened["notes"])
+    built = app.call("model_open", {"id": gun["id"], "choices": {"skin": "Mat_Jakobs_1"}})
+    assert built["configurable_as"] == [] and built["configuration"]["chosen"]["skin"] == "Mat_Jakobs_1"
+    assert next(s for s in built["configuration"]["slots"] if s["id"] == "skin")["kind"] == "material"
+
+
+def ar_parts_package() -> bytes:
+    """Assault rifle parts as meshes of their own, as Borderlands 2 ships them, and no gestalt definition."""
+    b = S.PackageBuilder()
+    grp = b.add_export("Package", "Weap_AssaultRifle", b"", 0, export_flags=1)
+    dif = b.add_export("Texture2D", "AR_Dif", S.texture_data(b, 8, 8, S.bc1_solid(8, 8, RED)), grp)
+    mat = b.add_export("Material", "Master_Gun", S.material_data(b, [dif]), grp)
+    for i, name in enumerate(("AR_Body_Dahl", "AR_Body_Jakobs", "AR_Barrel_Dahl", "AR_Grip_Dahl", "AR_Thing")):
+        pos, nrm, uv, idx = _quads(1)
+        pos = [(x + 20 * i, y, z) for x, y, z in pos]
+        mesh = b.add_export("SkeletalMesh", name, b"", grp)
+        b.set_data(mesh, S.skeletal_data(b, [mat], pos, nrm, uv, idx, [(0, 0, 2)]))
+    return b.build("lzo")
+
+
+def ar_part_definitions() -> bytes:
+    b = S.PackageBuilder()
+    top = b.add_export("Package", "GD_Weap_AssaultRifle", b"", 0)
+    for group, names in (("Body", ("AR_Body_Dahl", "AR_Body_Jakobs")), ("Barrel", ("AR_Barrel_Dahl",)),
+                         ("Grip", ("AR_Grip_Dahl",))):
+        g = b.add_export("Package", group, b"", top)
+        for n in names:
+            b.add_export("WeaponPartDefinition", n, S.part_data(b, n), g)
+    mats = b.add_export("Package", "ManufacturerMaterials", b"", top)
+    skin = b.add_export("Texture2D", "Dahl_Skin_Dif", S.texture_data(b, 8, 8, S.bc1_solid(8, 8, BLUE)), mats)
+    master = b.add_export("Material", "Master_Gun", S.material_data(b, []), mats)
+    mic = b.add_export("MaterialInstanceConstant", "Mati_Dahl_1", S.mic_data(b, master, [("p_Diffuse", skin)]), mats)
+    b.add_export("WeaponPartDefinition", "Mat_Dahl_1",
+                 b.props(b.p_enum("PartType", "EWeaponPartType", "WP_Material"), b.p_obj("Material", mic)), mats)
+    return b.build("zlib")
+
+
+@pytest.fixture
+def bl2_parts(tmp_path):
+    root = tmp_path / "Borderlands 2"
+    cooked = root / "WillowGame" / "CookedPCConsole"
+    cooked.mkdir(parents=True)
+    (root / "Binaries" / "Win32").mkdir(parents=True)
+    (root / "Binaries" / "Win32" / "Borderlands2.exe").write_bytes(b"MZ")
+    (cooked / "Weap_AssaultRifle.upk").write_bytes(ar_parts_package())
+    (cooked / "GD_Weap_AssaultRifle.upk").write_bytes(ar_part_definitions())
+    files._INDEXES.clear()
+    return root
+
+
+def test_guns_from_part_meshes_of_their_own(bl2_parts):
+    from darkstl import configs
+
+    imp = BorderlandsImporter()
+    entries = imp.scan(bl2_parts, files.GAME_BL2)
+    assert {e.group for e in entries if e.stem.startswith("AR_")} == {"Assault rifles"}
+    (c,) = imp.configurations(bl2_parts, files.GAME_BL2, entries)
+    assert c.id == "parts-assaultrifle" and c.label == "Assault rifle (any parts)" and not c.guessed
+    assert c.group == "Assault rifles" and c.base.parts == [] and c.base.file.endswith("AR_Body_Dahl.SkeletalMesh")
+    slots = {s.id: s for s in c.slots}
+    assert list(slots) == ["body", "grip", "barrel", "skin"]  # AR_Thing is in no slot
+    assert [o.label for o in slots["body"].options] == ["Dahl", "Jakobs"] and slots["body"].required
+    gun = configs.assemble(c, {"body": "AR_Body_Jakobs", "grip": "AR_Grip_Dahl"}, open_model)
+    mesh = gun.build_mesh()
+    assert mesh.n_faces == 6  # Jakobs body, Dahl barrel and grip; the base adds nothing
+    assert {tuple(gun.textures[m.albedo].decode()[0, 0, :3].tolist()) for m in gun.materials} == {(0, 0, 255)}
+    # without the part definitions the slots come from the names
+    (bl2_parts / "WillowGame" / "CookedPCConsole" / "GD_Weap_AssaultRifle.upk").unlink()
+    (c,) = imp.configurations(bl2_parts, files.GAME_BL2, entries)
+    assert c.guessed and [s.id for s in c.slots] == ["body", "grip", "barrel"]
+
+
+def test_every_part_of_a_gun_points_to_it(bl2_parts, tmp_path, monkeypatch):
+    from darkstl.app.config import Config
+    from darkstl.app.service import Service
+    from test_app import wait
+
+    monkeypatch.setenv("DARKSTL_HOME", str(tmp_path / "home"))
+    app = Service(Config.load(), tmp_path / "home" / "cache")
+    wait(app, app.call("folder_add", {"path": str(bl2_parts), "game": files.GAME_BL2})["job"])
+    items = app.call("models_query", {"game": files.GAME_BL2, "category": "Weapons"})["items"]
+    gun = next(i for i in items if i.get("configurable"))
+    barrel = next(i for i in items if i["label"] == "AR_Barrel_Dahl")
+    thing = next(i for i in items if i["label"] == "AR_Thing")
+    assert app.call("model_open", {"id": barrel["id"]})["configurable_as"][0]["id"] == gun["id"]
+    assert app.call("model_open", {"id": thing["id"]})["configurable_as"] == []

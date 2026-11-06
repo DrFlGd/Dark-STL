@@ -310,7 +310,7 @@ def test_cut_a_model_into_pieces_with_joints_and_export_them(page, app, tmp_path
     assert page.get_attribute('#cut-from button:has-text("Enhanced")', "disabled") is not None
     page.click('#cut-add [data-axis="z"]')
     page.wait_for_selector('#cut-list li[data-cut="1"][aria-selected="true"]')
-    assert page.evaluate("window.__viewer.cutGroup.children.length") == 1
+    page.wait_for_function("window.__viewer.cutGroup.children.length === 1")  # drawn after the list shows
     assert "across z · 0.00 mm from the middle · Pegs" in page.text_content("#cut-list")
     # moved to the waist with the number box, then dragged in the 3D view a little way up
     page.fill("#cut-position-mm", "-10")
@@ -336,7 +336,7 @@ def test_cut_a_model_into_pieces_with_joints_and_export_them(page, app, tmp_path
     page.fill("#cut-clearance", "0.3")
     page.press("#cut-clearance", "Tab")
     page.wait_for_selector("#cut-list :text('Magnets, 0.30 mm clearance')")
-    assert page.evaluate("window.__viewer.cutGroup.children.length") == 2
+    page.wait_for_function("window.__viewer.cutGroup.children.length === 2")  # drawn after the list shows
     if shots:
         page.screenshot(path=os.path.join(shots, "cut-planes.png"))
     page.click("#cut-run")
@@ -345,8 +345,8 @@ def test_cut_a_model_into_pieces_with_joints_and_export_them(page, app, tmp_path
     page.wait_for_selector('#show-which [data-value="pieces"][aria-pressed="true"]')
     page.wait_for_selector("#stage-canvas:not([data-loading])")
     assert page.locator("#piece-list li").count() == 3
-    assert page.evaluate("window.__viewer.mesh.children.length") == 3
-    assert page.evaluate("window.__viewer.cutGroup.children.length") == 0  # the planes aren't drawn over the pieces
+    page.wait_for_function("window.__viewer.mesh.children.length === 3")
+    page.wait_for_function("window.__viewer.cutGroup.children.length === 0")  # the planes aren't drawn over the pieces
     page.fill("#cut-explode", "0.6")
     page.dispatch_event("#cut-explode", "input")
     assert page.evaluate("window.__viewer.mesh.children[0].position.length()") > 0

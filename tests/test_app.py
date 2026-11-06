@@ -87,10 +87,23 @@ def test_folders_are_kept_between_runs(service, home, weapon_dir):  # noqa: F811
     wait(again, again.load_folders().id)
     assert again.call("overview", {})["total"] == 4
 
-    # the next start lists the library from the last scan at once, while the folder is scanned again
+    # an unchanged folder isn't scanned again at the next start: its last scan is used as it is
     import threading
 
     from darkstl import library as library_mod
+
+    scans = []
+    real = library_mod.Library.add_root
+    library_mod.Library.add_root = lambda self, *a, **k: scans.append(a) or real(self, *a, **k)
+    try:
+        unchanged = make_service(home)
+        wait(unchanged, unchanged.load_folders().id)
+    finally:
+        library_mod.Library.add_root = real
+    assert scans == [] and unchanged.call("overview", {})["total"] == 4
+
+    # a folder that changed is: the library is listed from the last scan at once, while it's scanned again
+    (weapon_dir / "readme.txt").write_text("a file added since")
 
     release, scanning = threading.Event(), threading.Event()
     real = library_mod.Library.add_root

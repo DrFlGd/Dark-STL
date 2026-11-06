@@ -210,25 +210,22 @@ def walk(root: Path, cache: Path | None = None, progress: ScanProgress | None = 
     files: list[ModelPath] = []
     paks: list[Path] = []
     lists: list[Path] = []
-    n = 0
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames.sort()
-        for name in sorted(filenames):
-            p = Path(dirpath) / name
-            rel = p.relative_to(root).as_posix()
-            if PAK_FILE.search(name):
-                paks.append(p)
-            elif LIST_FILE.search(name):
-                lists.append(p)
-            else:
-                try:
-                    size = p.stat().st_size
-                except OSError:
-                    size = 0
-                files.append(ModelPath(p, rel, size))
-            n += 1
-            if progress and n % 500 == 0:
-                progress(n, name)
+    from ...listing import Listing, shared
+
+    listed = shared(root) or Listing.read(root)  # sizes come with the listing (free on Windows)
+    prefix = os.path.join(str(root), "")
+    for n, (p, size) in enumerate(zip(listed.files, listed.sizes), 1):
+        name = p.name
+        if PAK_FILE.search(name):
+            paks.append(p)
+        elif LIST_FILE.search(name):
+            lists.append(p)
+        else:
+            s = str(p)  # Path.relative_to took seconds over a big folder
+            rel = s[len(prefix):].replace(os.sep, "/") if s.startswith(prefix) else p.relative_to(root).as_posix()
+            files.append(ModelPath(p, rel, size))
+        if progress and n % 500 == 0:
+            progress(n, name)
     notes: list[str] = []
     if paks:
         lists = lists + bundled_lists(game)  # a .list in the folder adds what a game update brought
@@ -339,6 +336,12 @@ def build_index(root: Path, files: Iterable[ModelPath], cache: Path | None = Non
         except OSError:
             pass
     return index
+
+
+def register_index(index: FileIndex) -> None:
+    """Use an index built before (kept from an earlier scan of its folder)."""
+    with _lock:
+        _indexes[_norm(index.root)] = index
 
 
 def index_for(path: Path) -> FileIndex | None:
