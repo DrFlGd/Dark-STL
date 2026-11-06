@@ -195,3 +195,16 @@ a.chip-btn.on { background: var(--sel); }
 .part-results { max-height: 240px; overflow: auto; margin-top: 6px; }
 .part-result { width: 100%; text-align: left; justify-content: flex-start; }
 .config-tag { font-size: 11.5px; }
+
+/* Export tab: the painted 3MF's palette */
+.paint-options { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 8px; }
+.paint-options .field-row { display: flex; gap: 10px; align-items: center; }
+.paint-options .field-row .field-block { flex: 1; }
+.paint-options input[type="range"] { flex: 1; }
+.paint-options .num-short { width: 64px; }
+.paint-options > small, .paint-options .field-block > small { display: block; }
+.paint-swatches { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
+.paint-swatch { position: relative; display: inline-flex; align-items: flex-end; width: 44px; height: 36px; border-radius: var(--radius-s); border: 1px solid #0004; box-shadow: inset 0 0 0 1px #fff5; cursor: pointer; overflow: hidden; }
+.paint-swatch > span { font-size: 11px; font-weight: 700; line-height: 1; padding: 2px 4px; margin: 0 0 3px 3px; border-radius: 3px; background: #fffc; color: #222; }
+.paint-swatch input[type="color"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.paint-done .paint-swatch { cursor: default; }

@@ -172,7 +172,13 @@ darkstl            # or darkstl-gui; darkstl gui --browser opens it in your brow
    *Show › Pieces* shows them in colour, spread apart with a slider.
 9. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default; *Finished* the watertight
    model; *Pieces* writes each piece
-   to its own file, laid on a cut face ready to print.
+   to its own file, laid on a cut face ready to print. **Painted 3MF** paints the model from its
+   colour textures for a multi-colour printer (Bambu Studio, OrcaSlicer, PrusaSlicer): the textures
+   are reduced to a palette of 2 to 12 colours (suggested from the model, or chosen swatch by
+   swatch), and each triangle is painted finer than the mesh, down to the smallest feature you
+   name at the print size, the way the slicers' own brush paint is stored. *Show the colours on
+   the model* previews it, and a picture of the palette is written beside the file to set the
+   filament slots by.
 
 ![A game's library](docs/images/library.png)
 
@@ -183,6 +189,7 @@ darkstl scan "D:/Games/DARK SOULS III/Game"              # list models by game a
 darkstl info parts/wp_a_0210.partsbnd.dcx                # models, parts, materials, textures
 darkstl textures parts/wp_a_0210.partsbnd.dcx -o tex/    # save every texture as PNG
 darkstl export parts/wp_a_0210.partsbnd.dcx -o grip.obj  # original model with textures
+darkstl export chr/c2010.chrbnd.dcx -o c2010.3mf --colours 6 --print-height 200 --feature 0.5  # painted 3MF
 darkstl enhance parts/wp_a_0210.partsbnd.dcx -o grip.stl -n 2000000
 darkstl enhance chr/c2010.chrbnd.dcx -o c2010.stl -n 4000000 --strength 1.5 --save-heights heights/
 ```
@@ -194,7 +201,9 @@ opengl|directx` if the relief comes out inverted, `--max-mm` to clamp displaceme
 `pegs`, `dowels`, `magnets`, `key`, and `--clearance 0.2`) to write the model as pieces,
 `--watertight` to wrap it into one watertight solid first (with `--close-gaps 1` to bridge gaps up
 to 1 mm, `--drop-loose 1` to remove loose bits under 1% of it, `--keep-hollows`), and `--variant WP_A_0402_1.flver` to pick a model in a
-file that holds several (see `info`). Run `darkstl <command> -h` for all.
+file that holds several (see `info`). A `.3mf` output is painted from the colour textures: `--colours 6` or
+`--palette "#1a1a1a,#c8b89a,..."`, `--print-height` and `--feature` (mm) for how fine the paint goes, `--cleanup
+none|light|strong`. Run `darkstl <command> -h` for all.
 
 ## Development
 
