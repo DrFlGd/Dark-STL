@@ -14,14 +14,14 @@ from ..model import SourceModel
 from .base import Importer
 from .borderlands import BorderlandsImporter
 from .fromsoft import FromSoftwareImporter
+from .package import PackageImporter
 from .redengine import RedEngineImporter
 from .reengine import REEngineImporter
 from .returnal import ReturnalImporter
 from .wavefront import WavefrontImporter
 
-IMPORTERS: list[Importer] = [FromSoftwareImporter(), RedEngineImporter(), REEngineImporter(), ReturnalImporter(),
-                             BorderlandsImporter(),
-                             WavefrontImporter()]
+IMPORTERS: list[Importer] = [PackageImporter(), FromSoftwareImporter(), RedEngineImporter(), REEngineImporter(),
+                             ReturnalImporter(), BorderlandsImporter(), WavefrontImporter()]
 
 
 def register(importer: Importer) -> None:

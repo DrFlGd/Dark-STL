@@ -115,7 +115,7 @@ class TriMesh:
             None if self.corner_uvs is None else self.corner_uvs[face_mask],
             self.face_material[face_mask],
             self.face_group[face_mask],
-            dict(self.metadata),
+            _pick_vertices(self.metadata, used),
             None if self.corner_normals is None else self.corner_normals[face_mask],
         )
 
@@ -154,9 +154,23 @@ def weld(mesh: TriMesh, tolerance: float | None = None) -> TriMesh:
     inverse = inverse.reshape(-1)
     vertices = mesh.vertices[first]
     faces = inverse[mesh.faces]
-    out = TriMesh(vertices, faces, mesh.corner_uvs, mesh.face_material, mesh.face_group, dict(mesh.metadata),
-                  mesh.corner_normals)
+    out = TriMesh(vertices, faces, mesh.corner_uvs, mesh.face_material, mesh.face_group,
+                  _pick_vertices(mesh.metadata, first), mesh.corner_normals)
     return out.remove_degenerate()
+
+
+# metadata entries that hold arrays per vertex, kept in step when vertices are dropped or merged
+VERTEX_METADATA = ("skin",)
+
+
+def _pick_vertices(metadata: dict, index: np.ndarray) -> dict:
+    """``metadata`` for a mesh made of the vertices ``index`` of this one (per-vertex entries picked)."""
+    out = dict(metadata)
+    for key in VERTEX_METADATA:
+        value = out.get(key)
+        if value is not None:
+            out[key] = tuple(np.asarray(a)[index] for a in value)
+    return out
 
 
 def concatenate(meshes: list[TriMesh]) -> TriMesh:
@@ -172,6 +186,22 @@ def concatenate(meshes: list[TriMesh]) -> TriMesh:
         np.concatenate([m.corner_uvs for m in meshes]) if has_uv else None,
         np.concatenate([m.face_material for m in meshes]),
         np.concatenate([m.face_group for m in meshes]),
-        dict(meshes[0].metadata),
+        _joined_metadata(meshes),
         np.concatenate([m.corner_normals for m in meshes]) if has_n else None,
     )
+
+
+def _joined_metadata(meshes: list[TriMesh]) -> dict:
+    out = dict(meshes[0].metadata)
+    for key in VERTEX_METADATA:
+        parts = [m.metadata.get(key) for m in meshes]
+        if parts[0] is None:
+            continue
+        if any(p is None or len(p) != len(parts[0]) for p in parts):
+            out.pop(key)
+            continue
+        try:
+            out[key] = tuple(np.concatenate([p[i] for p in parts]) for i in range(len(parts[0])))
+        except ValueError:  # different widths (4 and 8 influences)
+            out.pop(key)
+    return out

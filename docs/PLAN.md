@@ -38,6 +38,25 @@ importer and registering it in `importers/__init__.py`:
 An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
 folder), `detect_game`, `variants` (files holding several models) and `describe`.
 
+### Model packages: a model written out once, opened without the game
+
+Collect imports models as **model packages** by default (since 0.27.0; "Game files" still copies
+the game's own files). Each model file becomes a folder named after it,
+`<library>/<game> packages/<path in the game>.darkpkg/`, holding `package.json` (what the model
+is: game, kind, group, name, the file it came from, the models the file holds) and per model a
+glTF binary (`.glb`: mesh with one primitive per part and material, UVs, shading normals,
+skeleton and skin weights, so Blender opens it as it is; the extra `_VERTEX` attribute names the
+welded vertex each glTF vertex is, so it reads back exactly as the importer built it) and a
+JSON sidecar (materials and texture roles, normal-map convention, sockets, notes, animations).
+Textures and animations go into the game's asset store (`assets/` beside the packages), each
+once: textures under their name in the game (as the decoded picture, PNG), animations by content
+(the local matrix each bone takes per frame), so armour pieces posed by the same animations
+share them. `package.py` writes and reads packages; `posing.py` poses a package's mesh from its
+skeleton and weights (importers that can pose give a `Rig` and per-vertex weights for this);
+`importers/package.py` lists and opens them like any other model, and the library prefers a
+model's package to its game file. Configurable models (weapons with parts and skins) are still
+copied as game files when importing, until packages hold configurations.
+
 ### The app: a game library on Model Library's interface
 
 The app is a small local web server (`app/server.py`) and a page (`web/`) shown in the
@@ -361,12 +380,15 @@ src/darkstl/
                 types), catalog.py (classifies models by the engine's folder layout), animation.py
                 (.motlist / .mot motions -> poses, skinning)
     wavefront.py  OBJ + MTL
+    package.py  model packages (see package.py), listed and opened like any game's models
   geometry/     TriMesh, subdivision, isotropic remesh, UV seam matching, closest-point queries,
                 displacement
   textures/     DDS decoding, normal map -> height, grayscale height, UV coverage, texel size
   library.py    the library: game folders scanned by every importer, by game, kind and group
   configs.py    configurable models: configuration lists, finding their files, assembling a choice
   collect.py    copies the files chosen models need into the app's own library folder
+  package.py    model packages: writing and reading them, the asset store (textures, animations)
+  posing.py     posing a mesh from a skeleton and per-vertex weights (packages)
   thumbnails.py preview pictures for the library's cards, cached on disk
   pipeline.py   the three steps with their settings
   cut.py        the model made solid and cut into pieces with joints (manifold3d)
@@ -452,6 +474,23 @@ differs:
       behind it over a pipe (no local server), the isotropic remesher included
 - [ ] User guide with extraction steps for each game
 
+### Phase 5: model packages, asset store and library overlay
+
+The plan in the backlog entry below, built in stages:
+
+- [x] Packages: Collect imports each model as a glTF mesh with its skeleton, skin weights,
+      materials and sockets, its textures and animations in the game's asset store; the library
+      lists and opens packages, posing included, with the game removed (0.27.0)
+- [ ] Texture picker: search every stored texture by name, preview, assign one to a material slot
+      and role; kept in the library overlay
+- [ ] Library overlay per game: own folders and hierarchy, in-game names, models combined into one
+      (face, body and hair), keyed by the model's path in the game
+- [ ] Saved variations: Generate results kept beside the model's package, listed, exported again or
+      used as a starting point
+- [ ] Configurable models as packages (configurations, Borderlands skins baked per part)
+- [ ] The whole asset store: every texture of a game extracted, kept compressed (DDS), with a size
+      estimate first; models from other tools (FModel, UModel, Blender) imported as packages
+
 ### Backlog (on hold)
 
 - [ ] **Game files instead of per-game code.** Most of what makes a game differ from others on
@@ -465,7 +504,8 @@ differs:
       appearance files) are still fixed there. Start with the Unreal 4/5 games (Returnal,
       Borderlands 3, Wonderlands, Borderlands 4) and a generic Unreal fallback, then the other
       engines. Raised by Jerred on 2026-11-07, held for now.
-- [ ] **Model packages between the importers and the editor.** Importers convert a game model
+- [ ] **Model packages between the importers and the editor** (approved by Jerred on 2026-11-07
+      and being built in stages, see Phase 5). Importers convert a game model
       into a self-contained package (glTF for mesh, skeleton and animations; a JSON sidecar for
       texture roles, normal-map convention, sockets and configurations), and the editing side
       only reads packages. Collect becomes "write the package", which keeps the game uninstallable;

@@ -1,0 +1,69 @@
+"""Lists and opens model packages (see :mod:`darkstl.package`), which need nothing from the game."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from ..collect import RelatedFile, read_manifest
+from ..errors import FormatError
+from ..model import CatalogEntry, SourceModel
+from .. import package as pkg
+from .base import Importer, ScanProgress
+
+
+class PackageImporter(Importer):
+    key = "package"
+    name = "Dark STL model packages"
+    file_filter = "Model packages (package.json)"
+    record_reads = False
+
+    def detect_game(self, folder: Path) -> str | None:
+        data = read_manifest(Path(folder))
+        return data.get("game") if data and data.get("packages") else None
+
+    def scan(self, folder: Path, game: str, progress: ScanProgress | None = None) -> list[CatalogEntry]:
+        out: list[CatalogEntry] = []
+        seen = 0
+        for dirpath, dirs, files in os.walk(folder):
+            if Path(dirpath) == Path(folder):
+                dirs[:] = [d for d in dirs if d != pkg.ASSETS]
+            here = Path(dirpath)
+            if here.name.endswith(pkg.SUFFIX):
+                dirs[:] = []
+                if pkg.INDEX not in files:
+                    continue
+                seen += 1
+                if progress is not None and seen % 50 == 0:
+                    progress(seen, here.name)
+                try:
+                    index = pkg.read_index(here / pkg.INDEX)
+                except FormatError:
+                    continue
+                stem = str(index.get("stem") or here.name[:-len(pkg.SUFFIX)])
+                out.append(CatalogEntry(game or str(index.get("game") or ""), str(index.get("category") or "Models"),
+                                        str(index.get("group") or ""), stem, str(index.get("label") or stem),
+                                        here / pkg.INDEX, self.key, is_lod=bool(index.get("is_lod")), packed=True))
+        return out
+
+    def can_open(self, path: Path) -> bool:
+        return pkg.is_package_index(Path(path)) or Path(path).name.endswith(pkg.SUFFIX) and Path(path).is_dir()
+
+    def variants(self, path: Path) -> list[str]:
+        models = pkg.read_index(self._index(path)).get("models") or []
+        return [m.get("variant") or m.get("name") for m in models] if len(models) > 1 else []
+
+    def load(self, path: Path, variant: str | None = None, texture_dirs: tuple[str, ...] = ()) -> SourceModel:
+        return pkg.load_package(self._index(path), variant)
+
+    def related_files(self, path: Path, textures: bool = True, animations: bool = True,
+                      lod: bool = False) -> list[RelatedFile]:
+        return [RelatedFile(self._index(path).parent, "model")]
+
+    @staticmethod
+    def _index(path: Path) -> Path:
+        path = Path(path)
+        return path / pkg.INDEX if path.is_dir() else path
+
+
+__all__ = ["PackageImporter"]

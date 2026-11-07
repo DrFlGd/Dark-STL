@@ -97,7 +97,7 @@ def _same_file(src: Path, dst: Path) -> bool:
     return a.st_size == b.st_size and int(a.st_mtime) == int(b.st_mtime)
 
 
-def _relative(path: Path, roots: list[Path]) -> Path:
+def relative_path(path: Path, roots: list[Path]) -> Path:
     """Where a file goes under the game's library folder: its path below the game folder it is in,
     else its own folder's name and its name."""
     for root in roots:
@@ -142,7 +142,7 @@ def plan(library: Path, game: str, entries: list[CatalogEntry], roots: list[Path
             size = src.stat().st_size
         except OSError:
             return
-        target = folder / _relative(src, roots)
+        target = folder / relative_path(src, roots)
         if _is_under(src, folder):
             return  # already a library copy
         out.files.append(PlannedFile(src, target, f.kind, size, model, _same_file(src, target)))
@@ -169,7 +169,7 @@ def collected_path(path: str | Path, moved: dict[Path, str], roots: list[Path], 
         return p.relative_to(folder).as_posix()
     if p in moved:
         return moved[p].replace("\\", "/")
-    return _relative(p, roots).as_posix()
+    return relative_path(p, roots).as_posix()
 
 
 def _moved_config(config, moved: dict[Path, str], roots: list[Path], folder: Path):
@@ -251,13 +251,16 @@ def read_manifest(folder: Path) -> dict | None:
     return data
 
 
-def write_manifest(folder: Path, game: str, models: list[str] = (), sources: list[str] = ()) -> dict:
-    """Record (or bring up to date) which game a folder of copies belongs to and what it holds."""
+def write_manifest(folder: Path, game: str, models: list[str] = (), sources: list[str] = (),
+                   packages: bool | None = None) -> dict:
+    """Record (or bring up to date) which game a folder of copies belongs to and what it holds.
+    ``packages``: the folder holds model packages (see darkstl.package) rather than copies of game files."""
     from . import __version__
 
     folder = Path(folder)
     old = read_manifest(folder) or {}
     data = {"kind": "collection", "app": "Dark STL", "format": 1, "game": game,
+            "packages": bool(old.get("packages") if packages is None else packages),
             "models": sorted(set(old.get("models") or []) | set(models), key=str.lower),
             "sources": sorted(set(old.get("sources") or []) | set(sources)),
             "created": old.get("created") or time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -303,7 +306,8 @@ def move_folder(src: Path, dst: Path) -> None:
                 continue
             shutil.move(str(Path(dirpath) / name), str(dst / rel / name))  # replaces an older copy
     data = read_manifest(src) or {}
-    write_manifest(dst, data.get("game") or dst.name, data.get("models") or [], data.get("sources") or [])
+    write_manifest(dst, data.get("game") or dst.name, data.get("models") or [], data.get("sources") or [],
+                   bool(data.get("packages")))
     shutil.rmtree(src, ignore_errors=True)
 
 
@@ -322,6 +326,11 @@ def folder_size(folder: Path) -> tuple[int, int]:
     return files, total
 
 
+def packages_folder(library: Path, game: str) -> Path:
+    """Where a game's model packages go in the app's library folder, beside its collected copies."""
+    return Path(library) / f"{_folder_name(game)} packages"
+
+
 def _folder_name(game: str) -> str:
     keep = "".join(c if c.isalnum() or c in " -_." else "_" for c in game).strip(" .")
     return keep or "Game"
@@ -336,5 +345,5 @@ def _is_under(path: Path, root: Path) -> bool:
 
 
 __all__ = ["CONFIGS", "KINDS", "MANIFEST", "CollectOptions", "Plan", "PlannedFile", "RelatedFile", "collected_path",
-           "collections_in", "folder_size", "move_folder", "plan", "read_manifest", "run", "write_configurations",
-           "write_manifest"]
+           "collections_in", "folder_size", "move_folder", "packages_folder", "plan", "read_manifest", "relative_path",
+           "run", "write_configurations", "write_manifest"]

@@ -309,7 +309,8 @@ class Library:
     def hides(self, entry: CatalogEntry, include_lod: bool = False, copies: bool = True) -> bool:
         """Whether the lists leave ``entry`` out: a low-detail copy is hidden while its full model is there
         (unless ``include_lod``), and a model held by several of a game's folders (a copy collected into
-        the app's library beside the game's own folder) is listed once, from the folder added first."""
+        the app's library beside the game's own folder) is listed once: from its model package when it has
+        one, else from the folder added first."""
         if entry.is_lod and not include_lod:
             if self._full is None:
                 self._full = {(e.game, e.stem.lower()) for e in self.entries if not e.is_lod}
@@ -322,7 +323,7 @@ class Library:
             best: dict[tuple[str, str], tuple[int, str]] = {}
             for e in self.entries:
                 key = (e.game, e.stem.lower())
-                rank = order.get(self.root_of(e), len(order))
+                rank = (e.importer != "package", order.get(self.root_of(e), len(order)))
                 if key not in best or rank < best[key][0]:
                     best[key] = (rank, e.id)
             self._first = {k: v[1] for k, v in best.items()}

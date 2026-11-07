@@ -634,6 +634,10 @@ def test_collect_dialog_works_out_its_plan_in_a_job(page, app, weapon_dir):  # n
     page.click("#place-collect")
     page.wait_for_selector("#collect-plan-text", timeout=30000)
     assert "model" in page.text_content("#collect-plan-text")
+    assert page.is_checked("#collect-as-packages")  # models are imported as packages unless asked otherwise
+    page.click("#collect-as-files")
+    page.wait_for_selector('[data-collect="textures"]')
+    page.wait_for_selector("#collect-plan-text", timeout=30000)
     jobs = [j for j in app.service.jobs.running()]
     page.click('[data-collect="textures"]')  # another plan: the one before is let go
     page.wait_for_selector("#collect-plan-text", timeout=30000)

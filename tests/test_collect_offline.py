@@ -1,6 +1,7 @@
 """A collected game works without the game: for each kind of game, collect everything, take the game's folder
 away (as if it were uninstalled), and open every model, texture, pose and configuration again from the copy
-alone. What each shows must be what it showed from the game."""
+alone. What each shows must be what it showed from the game. Each game is collected both ways: as copies of
+its files, and imported as model packages (configurable models are still copied as files then)."""
 
 import hashlib
 import shutil
@@ -59,7 +60,8 @@ def _everything(s: Service, game: str) -> dict:
     return {k: sorted(v, key=repr) for k, v in out.items()}
 
 
-def collect_and_uninstall(home, game_dir: Path, game: str | None = None) -> tuple[dict, dict, dict]:  # noqa: F811
+def collect_and_uninstall(home, game_dir: Path, game: str | None = None,  # noqa: F811
+                          packages: bool = False) -> tuple[dict, dict, dict]:
     """(what the game showed, what its collected copy shows once the game is gone, the plan's summary)."""
     s = _service(home)
     args = {"path": str(game_dir)}
@@ -68,8 +70,11 @@ def collect_and_uninstall(home, game_dir: Path, game: str | None = None) -> tupl
     game = wait(s, s.call("folder_add", args)["job"])["game"]
     before = _everything(s, game)
     assert before, "the game lists models"
-    plan = wait(s, s.call("collect_plan", {"game": game, "job": 1})["job"])
-    wait(s, s.call("collect_run", {"game": game})["job"])
+    plan = wait(s, s.call("collect_plan", {"game": game, "job": 1, "packages": packages})["job"])
+    done = wait(s, s.call("collect_run", {"game": game, "packages": packages})["job"])
+    if packages:
+        assert not done["failed"], done["failed"]
+        assert done["written"] + done["configurable"] > 0
     s.call("folder_remove", {"path": str(game_dir)})
     gone = game_dir.with_name(game_dir.name + " (uninstalled)")
     bl_files._INDEXES.clear()
@@ -79,15 +84,30 @@ def collect_and_uninstall(home, game_dir: Path, game: str | None = None) -> tupl
         again = _service(home, "cache2")  # a fresh start, with nothing kept from the game
         wait(again, again.load_folders().id)
         after = _everything(again, game)
+        if packages:  # every model that isn't configurable opens from its package
+            items = again.call("models_query", {"game": game, "limit": 100000})["items"]
+            plain = [i for i in items if not i.get("configurable")]
+            assert plain and all(i["importer"] == "package" for i in plain if not _is_part(i, items)), \
+                [(i["label"], i["importer"]) for i in plain if i["importer"] != "package"]
     finally:
         shutil.move(str(gone), str(game_dir))
     return before, after, plan
+
+
+def _is_part(item: dict, items: list[dict]) -> bool:
+    """A part file of a configurable model, copied as a game file with it."""
+    return any(i.get("configurable") for i in items) and item["importer"] != "package"
 
 
 def assert_same(before: dict, after: dict) -> None:
     for key, shown in before.items():
         assert key in after, f"{key} isn't listed in the collected copy"
         assert after[key] == shown, f"{key} differs in the collected copy"
+
+
+@pytest.fixture(params=[False, True], ids=["files", "packages"])
+def packages(request):
+    return request.param
 
 
 @pytest.fixture(autouse=True)
@@ -97,14 +117,14 @@ def _importer_cache(tmp_path):
     set_cache_folder(None)
 
 
-def test_fromsoftware(home, weapon_dir, tmp_path):  # noqa: F811
+def test_fromsoftware(home, packages, weapon_dir, tmp_path):  # noqa: F811
     make_char_dir(weapon_dir)
-    before, after, _plan = collect_and_uninstall(home, weapon_dir)
+    before, after, _plan = collect_and_uninstall(home, weapon_dir, packages=packages)
     assert any(shown[0][0]["animations"] for shown in before.values()), "an animated model is in the test"
     assert_same(before, after)
 
 
-def test_borderlands_2_guns_parts_and_skins(home, tmp_path):  # noqa: F811
+def test_borderlands_2_guns_parts_and_skins(home, packages, tmp_path):  # noqa: F811
     import test_borderlands as T
 
     root = tmp_path / "Borderlands 2"
@@ -125,63 +145,67 @@ def test_borderlands_2_guns_parts_and_skins(home, tmp_path):  # noqa: F811
     (cooked / "Weap_AssaultRifle.upk").write_bytes(T.ar_parts_package())
     (cooked / "GD_Weap_AssaultRifle.upk").write_bytes(T.ar_part_definitions())
     bl_files._INDEXES.clear()
-    before, after, plan = collect_and_uninstall(home, root, bl_files.GAME_BL2)
+    before, after, plan = collect_and_uninstall(home, root, bl_files.GAME_BL2, packages=packages)
     gun = before[("Weapons", "Pistol (any parts)", True)][0]
     assert len(gun) > 3 and any(":colour" in (m[1] or "") for o in gun for m in o["materials"]), \
         "a painted skin is in the test"
     assert_same(before, after)
+    if packages:
+        return
     folder = Path(plan["folder"])
     assert (folder / "WillowGame" / "CookedPCConsole" / "WeaponTextures.tfc").is_file()
     assert not (folder / "WillowGame" / "CookedPCConsole" / "Unused.tfc").exists(), "only the caches read"
     assert (folder / "collected.darkstl-configs.json").is_file() and plan["configurations"] >= 2
 
 
-def test_cyberpunk_from_archives(home, tmp_path):  # noqa: F811
+def test_cyberpunk_from_archives(home, packages, tmp_path):  # noqa: F811
     from test_redengine_weapons import archive_game, weapon_files
 
     root = archive_game(tmp_path / "Cyberpunk 2077", weapon_files())
-    before, after, plan = collect_and_uninstall(home, root)
+    before, after, plan = collect_and_uninstall(home, root, packages=packages)
     assert any(k[2] for k in before), "a configurable weapon is in the test"
     assert_same(before, after)
-    assert not list(Path(plan["folder"]).rglob("*.archive")), "pieces of archives are kept as loose files"
+    if not packages:
+        assert not list(Path(plan["folder"]).rglob("*.archive")), "pieces of archives are kept as loose files"
 
 
-def test_resident_evil_from_paks(home, re2_pak_dir):  # noqa: F811
-    before, after, _plan = collect_and_uninstall(home, re2_pak_dir)
+def test_resident_evil_from_paks(home, packages, re2_pak_dir):  # noqa: F811
+    before, after, _plan = collect_and_uninstall(home, re2_pak_dir, packages=packages)
     assert_same(before, after)
 
 
-def test_resident_evil_unpacked(home, re4_dir):  # noqa: F811
-    before, after, _plan = collect_and_uninstall(home, re4_dir)
+def test_resident_evil_unpacked(home, packages, re4_dir):  # noqa: F811
+    before, after, _plan = collect_and_uninstall(home, re4_dir, packages=packages)
     assert_same(before, after)
 
 
-def test_wonderlands_from_paks(home, tmp_path):  # noqa: F811
+def test_wonderlands_from_paks(home, packages, tmp_path):  # noqa: F811
     from test_borderlands4 import _game
 
     root = _game(tmp_path, 426, 11, compress=True, exe="Wonderlands.exe")
-    before, after, plan = collect_and_uninstall(home, root)
+    before, after, plan = collect_and_uninstall(home, root, packages=packages)
     assert_same(before, after)
-    assert not list(Path(plan["folder"]).rglob("*.pak")), "pieces of paks are kept as loose files"
+    if not packages:
+        assert not list(Path(plan["folder"]).rglob("*.pak")), "pieces of paks are kept as loose files"
 
 
-def test_borderlands_4_from_zen_containers(home, tmp_path):  # noqa: F811
+def test_borderlands_4_from_zen_containers(home, packages, tmp_path):  # noqa: F811
     from test_borderlands_ue5 import _bl4
 
     root = _bl4(tmp_path)
-    before, after, _plan = collect_and_uninstall(home, root)
+    before, after, _plan = collect_and_uninstall(home, root, packages=packages)
     assert_same(before, after)
 
 
-def test_returnal_from_paks(home, tmp_path):  # noqa: F811
+def test_returnal_from_paks(home, packages, tmp_path):  # noqa: F811
     from test_returnal import _game
 
     root = _game(tmp_path)
-    before, after, _plan = collect_and_uninstall(home, root)
+    before, after, _plan = collect_and_uninstall(home, root, packages=packages)
     assert_same(before, after)
 
 
-def test_returnal_unversioned_keeps_its_mappings_and_engine(home, tmp_path):  # noqa: F811
+def test_returnal_unversioned_keeps_its_mappings_and_engine(home, packages, tmp_path):  # noqa: F811
     import synth_ue4 as S
     from darkstl.importers.borderlands.ue4 import unversioned
     from test_returnal import _mappings, _unversioned_files
@@ -196,6 +220,6 @@ def test_returnal_unversioned_keeps_its_mappings_and_engine(home, tmp_path):  # 
     (paks / "Mappings.usmap").write_bytes(_mappings())
     vfs.forget(root)
     unversioned.forget_mappings()
-    before, after, _plan = collect_and_uninstall(home, root)
+    before, after, _plan = collect_and_uninstall(home, root, packages=packages)
     assert before and any(m["materials"][0][1] for shown in before.values() for v in shown for m in v)
     assert_same(before, after)

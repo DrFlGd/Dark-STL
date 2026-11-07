@@ -177,7 +177,8 @@ def test_the_library_folder_can_be_moved(home, weapon_dir, tmp_path):  # noqa: F
     assert s.call("settings_set", {"library_dir": ""})["library_dir"] == str(home / "library")
 
 
-def test_the_collect_dialog_on_the_page(home, weapon_dir, tmp_path):  # noqa: F811
+@pytest.mark.parametrize("as_packages", [False, True], ids=["files", "packages"])
+def test_the_collect_dialog_on_the_page(home, weapon_dir, tmp_path, as_packages):  # noqa: F811
     pytest.importorskip("playwright.sync_api")
     from playwright.sync_api import sync_playwright
 
@@ -199,15 +200,27 @@ def test_the_collect_dialog_on_the_page(home, weapon_dir, tmp_path):  # noqa: F8
             page.wait_for_function("!document.querySelector('.dialog')", timeout=60000)
             page.click("#place-collect")
             page.wait_for_selector("#collect-plan-text", timeout=30000)
+            if not as_packages:
+                page.click("#collect-as-files")
+                page.wait_for_selector("[data-collect=textures]")
+            page.wait_for_selector("#collect-plan-text", timeout=30000)
             assert "4 models" in page.inner_text("#collect-plan-text")
             page.check("[data-collect=lod]")
             page.wait_for_function("document.querySelector('#collect-plan-text')?.textContent.includes('5 models')", timeout=30000)
             page.click("#collect-dialog-ok")
             page.wait_for_function("!document.querySelector('.dialog')", timeout=120000)
-            assert page.inner_text("#toast").startswith("Copied 7 files")
-            assert (home / "library" / "Dark Souls III" / "parts" / "wp_a_0300_l.partsbnd.dcx").is_file()
+            if as_packages:
+                assert page.inner_text("#toast").startswith("Imported 5 models as packages")
+                assert (home / "library" / "Dark Souls III packages" / "parts" / "wp_a_0300_l.partsbnd.dcx.darkpkg"
+                        / "package.json").is_file()
+            else:
+                assert page.inner_text("#toast").startswith("Copied 7 files")
+                assert (home / "library" / "Dark Souls III" / "parts" / "wp_a_0300_l.partsbnd.dcx").is_file()
             page.goto(server.url + "#/settings")
-            page.wait_for_function("document.querySelector('#library-status')?.textContent.includes('7 files')", timeout=30000)
+            if not as_packages:
+                page.wait_for_function("document.querySelector('#library-status')?.textContent.includes('7 files')",
+                                       timeout=30000)
+            page.wait_for_selector("#folder-list li", timeout=30000)
             assert page.locator("#folder-list li", has_text="kept by Dark STL").count() == 1
             assert page.evaluate("window.__errors") == []
             browser.close()

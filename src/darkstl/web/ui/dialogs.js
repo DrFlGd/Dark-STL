@@ -195,7 +195,8 @@ function Collect({ game, category, group, model }) {
   if (game && cat) scopes.push({ key: "kind", label: `All ${cat}`, args: { game, category: cat } });
   if (game) scopes.push({ key: "game", label: `All of ${game}`, args: { game } });
   const [scope, setScope] = useState(scopes[0].key);
-  const [opts, setOpts] = useState({ textures: true, animations: true, player_animations: false, lod: false });
+  const [opts, setOpts] = useState({ textures: true, animations: true, player_animations: false, lod: false, packages: true });
+  const packages = !!opts.packages;
   const [plan, setPlan] = useState(null);
   const [planError, setPlanError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -203,7 +204,7 @@ function Collect({ game, category, group, model }) {
   const [progress, setProgress] = useState("");
   const seq = useRef(0);
   const args = { ...(scopes.find((s) => s.key === scope) || scopes[0]).args, textures: opts.textures, animations: opts.animations,
-    player_animations: opts.player_animations, lod: opts.lod, lod_copies: opts.lod };
+    player_animations: opts.player_animations, lod: opts.lod, lod_copies: opts.lod, packages };
   const argsKey = JSON.stringify(args);
   const [reading, setReading] = useState("");
   useEffect(() => {
@@ -230,10 +231,13 @@ function Collect({ game, category, group, model }) {
     setBusy(true); setError(null);
     try {
       const { job } = await api("collect_run", args);
-      const r = await followJob(job, `Collecting from ${plan.game}`, (j) => setProgress(j.message || ""));
+      const r = await followJob(job, `${packages ? "Importing" : "Collecting"} from ${plan.game}`, (j) => setProgress(j.message || ""));
       await loadOverview();
       close();
-      toast(r.copied ? `Copied ${plural(r.copied, "file")} (${bytesText(r.bytes)}) into the app's library`
+      const failed = r.failures ? ` · ${plural(r.failures, "model")} couldn't be read` : "";
+      toast(packages ? (r.written ? `Imported ${plural(r.written, "model")} as packages (${bytesText(r.bytes)})${failed}`
+          : `Everything was imported already${failed}`)
+        : r.copied ? `Copied ${plural(r.copied, "file")} (${bytesText(r.bytes)}) into the app's library`
         : "Everything was already in the app's library", { ms: 6000, action: { label: "Show in folder", run: () => showInFolder(r.folder) } });
     } catch (e) {
       setBusy(false);
@@ -244,30 +248,50 @@ function Collect({ game, category, group, model }) {
   const check = (key, label, sub) => html`<label class="check-row">
     <input type="checkbox" data-collect=${key} checked=${!!opts[key]} disabled=${busy} onChange=${(e) => setOpts({ ...opts, [key]: e.target.checked })} />
     <span>${label}${sub ? html`<small class="muted">${sub}</small>` : null}</span></label>`;
+  const submitLabel = busy ? (packages ? "Importing…" : "Copying…")
+    : packages ? (plan && !plan.to_write && !plan.configurable ? "Already imported" : "Import")
+    : plan && !plan.to_copy && plan.files ? "Already collected" : "Copy";
   return html`<${Dialog} title="Collect into the app" id="collect-dialog" onSubmit=${submit} busy=${busy || !plan} error=${error}
-      submitLabel=${busy ? "Copying…" : plan && !plan.to_copy && plan.files ? "Already collected" : "Copy"}>
-    <p class="muted">Copies the files these models need (the model itself, its textures and animations) into Dark STL's own
-      library folder, laid out like the game's folder. Afterwards the game's folder can be removed from the library, or
-      the game uninstalled, and the models stay.</p>
+      submitLabel=${submitLabel}>
+    <p class="muted">${packages
+      ? html`Writes each model as a model package in Dark STL's own library folder: its mesh, skeleton and animations as a
+        glTF file, with its textures stored under their names in the game. Packages open without the game, so it can be
+        removed from the library or uninstalled afterwards.`
+      : html`Copies the files these models need (the model itself, its textures and animations) into Dark STL's own
+        library folder, laid out like the game's folder. Afterwards the game's folder can be removed from the library, or
+        the game uninstalled, and the models stay.`}</p>
+    <div class="field-block"><span class="field-label">Save as</span>
+      <label class="check-row"><input type="radio" name="collect-as" id="collect-as-packages" checked=${packages} disabled=${busy}
+        onChange=${() => setOpts({ ...opts, packages: true })} />
+        <span>Model packages<small class="muted">self-contained, opened by any game's tools alike; weapons with configurations are copied as game files for now</small></span></label>
+      <label class="check-row"><input type="radio" name="collect-as" id="collect-as-files" checked=${!packages} disabled=${busy}
+        onChange=${() => setOpts({ ...opts, packages: false })} />
+        <span>Game files<small class="muted">copies of the game's own files, read by the importers as before</small></span></label>
+    </div>
     ${scopes.length > 1 ? html`<div class="field-block"><label class="field-label" for="collect-scope">What to collect</label>
       <select id="collect-scope" value=${scope} disabled=${busy} onChange=${(e) => setScope(e.target.value)}>
         ${scopes.map((s) => html`<option key=${s.key} value=${s.key}>${SCOPE_NAMES[s.key]}: ${s.label}</option>`)}
       </select></div>` : html`<p><b>${scopes[0].label}</b></p>`}
     <div class="field-block"><span class="field-label">With</span>
-      ${check("textures", "Textures", "the texture archives beside each model, and the shared texture packs map pieces use")}
-      ${check("animations", "Animations", "each model's own skeleton and animations (its .anibnd)")}
-      ${check("player_animations", "Player animations", "the player character's animations, which armour pieces and weapons are animated with; large")}
+      ${packages ? null : check("textures", "Textures", "the texture archives beside each model, and the shared texture packs map pieces use")}
+      ${check("animations", "Animations", packages ? "the model's skeleton and every animation it can be posed with, sampled per frame"
+        : "each model's own skeleton and animations (its .anibnd)")}
+      ${packages ? null : check("player_animations", "Player animations", "the player character's animations, which armour pieces and weapons are animated with; large")}
       ${check("lod", "Low-detail copies", "the _l models the game shows from afar")}
     </div>
     <div class="collect-plan" id="collect-plan" aria-live="polite">
       ${planError ? html`<p class="warn-text" id="collect-plan-error">${planError}</p>`
       : !plan ? html`<p class="muted" id="collect-plan-reading">Working out what to copy…${reading ? html`<br /><small>${reading}</small>` : null}</p>`
+      : plan.packages ? html`<p id="collect-plan-text"><b>${plural(plan.models, "model")}</b>
+          ${plan.present ? html`<span class="muted"> · ${plan.to_write ? `${plural(plan.present, "model")} imported already, ${plural(plan.to_write, "model")} to write` : "all imported already"}</span>` : null}</p>
+        ${plan.configurable ? html`<p class="muted" id="collect-plan-configurable">${plural(plan.configurable, "configurable model")} copied as game files, so their parts and skins can still be chosen</p>` : null}
+        <p class="muted">Into <span class="note-path" id="collect-folder">${plan.folder}</span> · <a href=${routeHash("settings")} id="collect-change-folder" onClick=${close}>change where</a></p>`
       : html`<p id="collect-plan-text"><b>${plural(plan.models, "model")}</b> · ${plural(plan.files, "file")} · ${bytesText(plan.bytes)}
           ${plan.present ? html`<span class="muted"> · ${plan.to_copy ? `${plural(plan.present, "file")} already there, ${bytesText(plan.bytes_to_copy)} to copy` : "all already there"}</span>` : null}</p>
         <p class="muted" id="collect-plan-kinds">${kinds.join(" · ")}</p>
         <p class="muted">Into <span class="note-path" id="collect-folder">${plan.folder}</span> · <a href=${routeHash("settings")} id="collect-change-folder" onClick=${close}>change where</a></p>`}
     </div>
-    ${busy ? html`<p class="muted" id="collect-progress">${progress || "Copying…"}</p>` : null}
+    ${busy ? html`<p class="muted" id="collect-progress">${progress || (packages ? "Importing…" : "Copying…")}</p>` : null}
   <//>`;
 }
 

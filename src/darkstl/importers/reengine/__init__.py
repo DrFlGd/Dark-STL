@@ -16,7 +16,7 @@ import numpy as np
 from ...collect import RelatedFile
 from ...errors import FormatError
 from ...geometry.mesh import TriMesh, weld
-from ...model import CatalogEntry, MeshOptions, Part, SourceModel, Texture
+from ...model import CatalogEntry, MeshOptions, Part, Rig, SourceModel, Texture, frame_matrix
 from ..base import Importer, ScanProgress
 from . import animation, catalog, files, materials
 from . import games as profiles
@@ -152,6 +152,8 @@ class REEngineImporter(Importer):
             n = n / np.where(length > 0, length, 1)
             out = TriMesh(p, f, np.concatenate(uvs).astype(np.float32), np.concatenate(mats), np.concatenate(groups),
                           corner_normals=n[f].astype(np.float32))
+            if skin is None and mesh.bones:
+                out.metadata["skin"] = _skin_arrays([s for _, s in chosen])
             # make every outward face counter-clockwise, as the stored normals say
             flip = np.einsum("ij,ij->i", out.face_cross(), out.corner_normals.sum(axis=1)) < 0
             if flip.any():
@@ -169,7 +171,7 @@ class REEngineImporter(Importer):
             name=asset.name, path=Path(path), importer=self.key, build=build, game=game, parts=parts,
             materials=[materials.to_material(i) for i in infos],
             textures={k: _texture(ref) for k, ref in asset.textures.items()},
-            info=info, notes=notes, animations=anims,
+            info=info, notes=notes, animations=anims, rig=_rig(anims) if anims is not None else None,
         )
 
     def describe(self, path: Path) -> list[str] | None:
@@ -232,6 +234,35 @@ class REEngineImporter(Importer):
         stem = files.file_stem(Path(path).name)
         ref = files.TexRef(stem, Path(path), str(path))
         return {stem.lower(): _texture(ref)}
+
+
+
+
+def _skin_arrays(subs) -> tuple[np.ndarray, np.ndarray]:
+    """Per vertex of the chosen submeshes, in order: the bones it follows and their weights, (n, k) with
+    k the most influences any of them has (-1 / 0 where there is none)."""
+    k = max([s.joints.shape[1] for s in subs if s.joints is not None] or [1])
+    joints, weights = [], []
+    for s in subs:
+        j = np.full((len(s.positions), k), -1, np.int32)
+        w = np.zeros((len(s.positions), k), np.float32)
+        if s.joints is not None and s.weights is not None:
+            j[:, :s.joints.shape[1]] = s.joints
+            w[:, :s.weights.shape[1]] = s.weights
+        joints.append(j)
+        weights.append(w)
+    return np.concatenate(joints), np.concatenate(weights)
+
+
+def _rig(anims) -> Rig:
+    """The mesh's bones in the export frame, posed from its motions."""
+    g = frame_matrix(GAME_TO_EXPORT)
+    gi = np.linalg.inv(g)
+
+    def pose_locals(anim: str, frame: int):
+        return list(anims.names_), g @ anims.local_pose(anim, anims.clamp(anim, frame)) @ gi
+
+    return Rig(list(anims.names_), anims.parents.copy(), g @ anims.local @ gi, g @ anims.bind_world @ gi, pose_locals)
 
 
 __all__ = ["REEngineImporter", "mesh_summary"]
