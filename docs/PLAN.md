@@ -54,8 +54,12 @@ once: textures under their name in the game (as the decoded picture, PNG), anima
 share them. `package.py` writes and reads packages; `posing.py` poses a package's mesh from its
 skeleton and weights (importers that can pose give a `Rig` and per-vertex weights for this);
 `importers/package.py` lists and opens them like any other model, and the library prefers a
-model's package to its game file. Configurable models (weapons with parts and skins) are still
-copied as game files when importing, until packages hold configurations.
+model's package to its game file. Configurable models (weapons with parts and skins) are imported
+too: every file their configurations name is written as a package (with any model of the file only
+a configuration names, kept but not listed), and the configurations are kept in the packages'
+folder (`collected.darkstl-configs.json`), naming files by their path in the game, which finds
+their packages. Borderlands 2 guns with a skin mixed for each part when it's shown (`paint_for`), or
+read from another package, are still copied as game files.
 
 The **library overlay** (`overlay.py`) is one file per game in the settings folder
 (`overlays/<game>.json`) holding the user's own changes, keyed by the model's path in the game
@@ -519,7 +523,9 @@ The plan in the backlog entry below, built in stages:
       (face, body and hair), keyed by the model's path in the game (0.29.0)
 - [x] Saved variations: Generate results kept beside the model's package, listed, exported again or
       used as a starting point (0.30.0)
-- [ ] Configurable models as packages (configurations, Borderlands skins baked per part)
+- [x] Configurable models as packages: their configurations kept with the packages, every part and
+      skin a package (0.31.0)
+- [ ] Borderlands 2 skins mixed for each part baked into packages (copied as game files until then)
 - [ ] The whole asset store: every texture of a game extracted, kept compressed (DDS), with a size
       estimate first; models from other tools (FModel, UModel, Blender) imported as packages
 

@@ -1078,6 +1078,92 @@ class Service:
                 "to_write": len(plain) - present, "present": present, "configurable": len(configurable),
                 "files": 0, "bytes": 0, "to_copy": len(plain) - present, "kinds": {}}
 
+    @staticmethod
+    def _config_refs(config) -> list:
+        return [config.base] + [o.model for s in config.slots for o in s.options]
+
+    def _package_configurable(self, configurable: list[CatalogEntry], roots: list[Path], root: Path,
+                              store: "package.AssetStore", options: "package.WriteOptions", job: "Job",
+                              done: set[Path], again: bool, failed: list[str]) -> tuple[list, list, int]:
+        """Import configurable models as packages: their base, every part and every paint written as a package
+        (with the models of the file the configurations name), and the configurations kept in the packages'
+        folder (``collected.darkstl-configs.json``, naming each file by its path in the game). One whose
+        paint is mixed for each part when it's shown (Borderlands 2 skins), or whose files don't open, is
+        left out, to be collected as game files. Returns the configurable models imported, those left out,
+        and the number of packages written."""
+        import dataclasses
+
+        from ..importers import IMPORTERS, importer_for
+
+        by_key = {imp.key: imp for imp in IMPORTERS}
+        with self.lock:
+            entries = {e.path: e for e in self.library.entries}
+        wanted: dict[Path, set] = {}
+        raw = []
+        for e in configurable:
+            refs = self._config_refs(e.config)
+            if any("|" in (r.variant or "") for r in refs):  # a skin read from another file (Borderlands 2)
+                raw.append(e)
+                continue
+            for r in refs:
+                if not package.is_package_index(Path(r.file)):  # a package already (a combined model's part)
+                    wanted.setdefault(Path(r.file), set()).add(r.variant or None)
+        loaded: dict[Path, list[SourceModel]] = {}
+        own: dict[Path, set] = {}  # the models each file lists itself (a plain model's package holds those)
+        unusable: set[Path] = set()  # a paint mixed per part, or a file that doesn't open
+        n = len(wanted)
+        for i, (path, variants) in enumerate(wanted.items()):
+            job.check()
+            job.report(i / max(n, 1), f"Importing the configurable models' parts ({i + 1:,} of {n:,})")
+            entry = entries.get(path)
+            imp = (by_key.get(entry.importer) if entry is not None else None) or importer_for(path)
+            try:
+                listed = list(imp.variants(path)[:self.MAX_PACKAGE_VARIANTS]) or [None]
+                own[path] = set(listed) | {None}
+                models = []
+                for v in listed + sorted(v for v in variants if v is not None and v not in listed):
+                    job.check()
+                    m = imp.load(path, v, tuple(self.config.texture_dirs))
+                    if m.paint_for is not None:
+                        unusable.add(path)
+                        break
+                    models.append(m if v is None or m.variant == v else dataclasses.replace(m, variant=v))
+                loaded[path] = models
+            except Stopped:
+                raise
+            except Exception as exc:  # noqa: BLE001 - its configurations are collected as game files
+                log.debug("Import: %s failed", path, exc_info=True)
+                failed.append(f"{path.name}: {exc}")
+                unusable.add(path)
+        packed = []
+        for e in configurable:
+            if e in raw:
+                continue
+            files = {Path(r.file) for r in self._config_refs(e.config)}
+            (raw if files & unusable else packed).append(e)
+        written = 0
+        need = {Path(r.file): e for e in packed for r in self._config_refs(e.config) if Path(r.file) in wanted}
+        for path, owner in need.items():
+            rel = collect.relative_path(path, roots).as_posix()
+            if wanted[path] <= own[path] and (path in done or not again and self._package_present(root, rel, path)):
+                continue  # its package (written with the plain models) holds every model the configurations name
+            entry = entries.get(path) or dataclasses.replace(owner, stem=path.name.split(".")[0], label=path.stem,
+                                                              path=path, config=None)
+            try:
+                package.write_package(root, entry, rel, loaded[path], store, options, wanted[path] - own[path])
+                written += 1
+            except Stopped:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one model that won't write doesn't stop the rest
+                log.debug("Import: %s failed", path, exc_info=True)
+                failed.append(f"{entry.label}: {exc}")
+            finally:
+                store.save()
+        if packed:
+            game = packed[0].game
+            collect.write_configurations(root, game, [collect.moved_config(e.config, {}, roots, root) for e in packed])
+        return packed, raw, written
+
     def _package_run(self, args: dict) -> dict:
         from ..importers import IMPORTERS, importer_for
 
@@ -1092,6 +1178,7 @@ class Service:
             store = package.AssetStore(root)
             size_before = collect.folder_size(root)[1] if root.is_dir() else 0
             written, kept, failed = 0, 0, []
+            done: set[Path] = set()  # files written as packages now
             n = len(plain)
             with self.thumbs.foreground():
                 for i, e in enumerate(plain):
@@ -1111,6 +1198,7 @@ class Service:
                             models.append(imp.load(e.path, v, tuple(self.config.texture_dirs)))
                         package.write_package(root, e, rel, models, store, options)
                         written += 1
+                        done.add(e.path)
                     except Stopped:
                         raise
                     except Exception as exc:  # noqa: BLE001 - one model that won't open doesn't stop the rest
@@ -1119,14 +1207,19 @@ class Service:
                     finally:
                         store.save()
             collect.write_manifest(root, game, [e.stem for e in plain], sorted({str(r) for r in roots}), packages=True)
+            packed, raw = [], list(configurable)
+            if configurable:
+                packed, raw, more = self._package_configurable(configurable, roots, root, store, options, job, done,
+                                                               again, failed)
+                written += more
             result = {"game": game, "folder": str(root), "models": n, "written": written, "present": kept,
                       "failed": failed[:20], "failures": len(failed),
                       "bytes": max(collect.folder_size(root)[1] - size_before, 0),
-                      "copied": written, "configurable": len(configurable)}
+                      "copied": written, "configurable": len(configurable), "configurable_packed": len(packed)}
             scanned = [(root, game)]
-            if configurable:  # weapons and their parts and skins stay game files for now (see darkstl.package)
-                job.report(1.0, "Collecting the configurable models")
-                plan = self._make_collect_plan({**args, "ids": [e.id for e in configurable], "packages": False}, None)
+            if raw:  # a paint mixed for each part when it's shown (Borderlands 2 skins): game files for now
+                job.report(1.0, "Collecting the configurable models with skins")
+                plan = self._make_collect_plan({**args, "ids": [e.id for e in raw], "packages": False}, None)
                 result["collected"] = collect.run(plan)
                 scanned.append((plan.folder, game))
             job.report(1.0, f"Reading {root.name}")

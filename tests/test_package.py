@@ -133,3 +133,9 @@ def test_newer_packages_are_refused(tmp_path):
     (folder / "package.json").write_text(json.dumps({"format": pkg.FORMAT, "version": pkg.VERSION + 1}))
     with pytest.raises(Exception, match="newer Dark STL"):
         pkg.read_index(folder / "package.json")
+
+
+def test_names_with_slashes_stay_inside_the_package():
+    assert pkg._safe("GD_Weap:Skins.Dahl|/games/BL2/GD_Weap.upk") == "GD_Weap_Skins.Dahl__games_BL2_GD_Weap.upk"
+    assert pkg.listed_variants([{"variant": "a"}, {"variant": "b", "hidden": True}]) == []
+    assert pkg.listed_variants([{"variant": "a"}, {"variant": "b"}, {"variant": "c", "hidden": True}]) == ["a", "b"]

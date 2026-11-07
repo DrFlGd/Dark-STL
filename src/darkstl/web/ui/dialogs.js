@@ -265,7 +265,7 @@ function Collect({ game, category, group, model }) {
     <div class="field-block"><span class="field-label">Save as</span>
       <label class="check-row"><input type="radio" name="collect-as" id="collect-as-packages" checked=${packages} disabled=${busy}
         onChange=${() => setOpts({ ...opts, packages: true })} />
-        <span>Model packages<small class="muted">self-contained, opened by any game's tools alike; weapons with configurations are copied as game files for now</small></span></label>
+        <span>Model packages<small class="muted">self-contained, opened by any game's tools alike; Borderlands 2 guns with skins are copied as game files for now</small></span></label>
       <label class="check-row"><input type="radio" name="collect-as" id="collect-as-files" checked=${!packages} disabled=${busy}
         onChange=${() => setOpts({ ...opts, packages: false })} />
         <span>Game files<small class="muted">copies of the game's own files, read by the importers as before</small></span></label>
@@ -286,7 +286,7 @@ function Collect({ game, category, group, model }) {
       : !plan ? html`<p class="muted" id="collect-plan-reading">Working out what to copy…${reading ? html`<br /><small>${reading}</small>` : null}</p>`
       : plan.packages ? html`<p id="collect-plan-text"><b>${plural(plan.models, "model")}</b>
           ${plan.present ? html`<span class="muted"> · ${plan.to_write ? `${plural(plan.present, "model")} imported already, ${plural(plan.to_write, "model")} to write` : "all imported already"}</span>` : null}</p>
-        ${plan.configurable ? html`<p class="muted" id="collect-plan-configurable">${plural(plan.configurable, "configurable model")} copied as game files, so their parts and skins can still be chosen</p>` : null}
+        ${plan.configurable ? html`<p class="muted" id="collect-plan-configurable">${plural(plan.configurable, "configurable model")} with every part and skin that can be chosen for ${plan.configurable > 1 ? "them" : "it"}${plan.game === "Borderlands 2" ? " (guns with skins mixed for each part are copied as game files)" : ""}</p>` : null}
         <p class="muted">Into <span class="note-path" id="collect-folder">${plan.folder}</span> · <a href=${routeHash("settings")} id="collect-change-folder" onClick=${close}>change where</a></p>`
       : html`<p id="collect-plan-text"><b>${plural(plan.models, "model")}</b> · ${plural(plan.files, "file")} · ${bytesText(plan.bytes)}
           ${plan.present ? html`<span class="muted"> · ${plan.to_copy ? `${plural(plan.present, "file")} already there, ${bytesText(plan.bytes_to_copy)} to copy` : "all already there"}</span>` : null}</p>
