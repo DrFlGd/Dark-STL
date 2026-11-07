@@ -13,7 +13,7 @@ import { useStore } from "../lib/store.js";
 import { ui, setPref, resolvedTheme } from "./state.js";
 import { routeHash, placeRoute, modelOf } from "./context.js";
 import { Icon } from "./icons.js";
-import { collectModelItem } from "./games.js";
+import { collectModelItem, arrangeModel, combineModels } from "./games.js";
 import { api, binUrl, info, plural, bytesText, followJob, stopJob, toast, showInFolder, pickFolder, pickFile } from "./api.js";
 import { CommandBar } from "./layout.js";
 import { Inspector, useWidth } from "./inspector.js";
@@ -88,6 +88,7 @@ export function ModelPage({ route }) {
   const choices = useStore(ui, (st) => (st.configChoices || {})[id] || null);
   const choicesKey = JSON.stringify(choices);
   const rev = useStore(ui, (st) => st.configRev);
+  const libRev = useStore(ui, (st) => st.libRev); // renamed or moved: the same model, under its new name
   const [switching, setSwitching] = useState(false);
   useEffect(() => {
     let live = true;
@@ -95,7 +96,7 @@ export function ModelPage({ route }) {
     api("model_open", { id, variant, choices }).then((v) => { if (live) { setM(v); setError(""); setSwitching(false); } },
       (e) => { if (live) { setError(msg(e)); setSwitching(false); } });
     return () => { live = false; };
-  }, [id, variant, choicesKey, rev]);
+  }, [id, variant, choicesKey, rev, libRev]);
   // a configurable model opens on its Configure tab
   useEffect(() => { if (m?.configuration && m.id === id) ui.set({ inspectorAsk: { page: "model", tab: "configure" } }); }, [m?.id, !!m?.configuration]);
   const entry = m?.entry;
@@ -119,8 +120,10 @@ export function ModelPage({ route }) {
     collectModelItem({ id: m.id, file: m.file, label: entry?.label || m.name, category: entry?.category, group: entry?.group }, entry?.game),
     { sep: true },
     { id: "open-file", label: "Open another model file…", icon: "file", run: () => ui.set({ dialog: { type: "open-file" } }) },
-    ...(entry && !m.configuration ? [{ sep: true }, { id: "make-configurable", label: "Make configurable…", icon: "box",
-      run: () => makeConfigurable(m, entry) }] : []),
+    ...(entry && !m.configuration ? [{ sep: true },
+      { id: "arrange", label: "Rename or move…", sub: "its in-game name, a folder of your own", icon: "edit", run: () => arrangeModel(entry) },
+      { id: "combine", label: "Combine with other models…", sub: "face, body and hair as one model", icon: "box", run: () => combineModels(entry) },
+      { id: "make-configurable", label: "Make configurable…", icon: "box", run: () => makeConfigurable(m, entry) }] : []),
   ];
   return html`<${CommandBar} ...${bar} up=${up.filter(([, href]) => href)} title=${html`<h1 id="mp-name" title=${entry?.label || m.name}>${entry?.label || m.name}</h1>`}
       count=${html`<span class="page-count" id="mp-count" title=${m.file}>${fileName}</span>`}

@@ -224,4 +224,10 @@ a.chip-btn.on { background: var(--sel); }
 .picker-preview p { margin: 6px 0 0; overflow-wrap: anywhere; }
 .picker-preview small { display: block; }
 #materials-pick-note { margin: 6px 0 0; font-size: 12px; }
+/* combining models: the models of the game to add, each with a box to tick */
+#combine-dialog { width: min(640px, 100%); }
+#combine-results { max-height: 34vh; margin-bottom: 8px; }
+#combine-results .picker-item { padding: 6px 8px; }
+#combine-results .picker-item input { flex: none; margin: 0; }
+.picker-empty { padding: 8px; }
 @media (max-width: 640px) { .picker-body, .picker-top { grid-template-columns: minmax(0, 1fr); } }

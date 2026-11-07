@@ -60,10 +60,22 @@ copied as game files when importing, until packages hold configurations.
 The **library overlay** (`overlay.py`) is one file per game in the settings folder
 (`overlays/<game>.json`) holding the user's own changes, keyed by the model's path in the game
 (the same for the game's file, a collected copy and its package), so they survive rescans and
-importing. Today it holds texture assignments made with the texture picker (Change… beside a
-material's maps on the Textures tab): the picked texture is stored in the game's asset store,
-and the model opens with it in place of the one it names. Importers list a game folder's textures
-for the picker with `list_textures` / `open_texture`.
+importing. It holds:
+
+- texture assignments made with the texture picker (Change… beside a material's maps on the
+  Textures tab): the picked texture is stored in the game's asset store, and the model opens with
+  it in place of the one it names. Importers list a game folder's textures for the picker with
+  `list_textures` / `open_texture`;
+- a model's own name and folder (Rename or move…: `Kind/Group`, any depth), and folder renames (a
+  kind or group renamed or moved as a whole, from its summary). The library files each model by
+  them as it lists it (`Library.arrange`), keeping the game's own place (`original_place`), which
+  the model's summary shows. They don't change what a model opens as, so nothing generated is redone.
+
+Models combined into one (Combine with other models…: a character's face, body and hair) are
+configurations of the user's own (`configs.py`) whose base is the model and whose parts are the
+others, each part a slot that is on by default. Configurations name their models by the path in
+the game, which also finds the model's package, so a combined model holds once the game is
+imported and removed.
 
 ### The app: a game library on Model Library's interface
 
@@ -397,7 +409,7 @@ src/darkstl/
   collect.py    copies the files chosen models need into the app's own library folder
   package.py    model packages: writing and reading them, the asset store (textures, animations)
   posing.py     posing a mesh from a skeleton and per-vertex weights (packages)
-  overlay.py    the library overlay: the user's own changes per game (texture assignments)
+  overlay.py    the library overlay: the user's own changes per game (names, folders, textures)
   thumbnails.py preview pictures for the library's cards, cached on disk
   pipeline.py   the three steps with their settings
   cut.py        the model made solid and cut into pieces with joints (manifold3d)
@@ -494,8 +506,8 @@ The plan in the backlog entry below, built in stages:
       folders hold where the importer can list them: FromSoftware, RE Engine), preview, assign one to
       a material's colour, normal or height map; the texture is kept in the asset store and the choice
       in the game's library overlay (0.28.0)
-- [ ] Library overlay per game: own folders and hierarchy, in-game names, models combined into one
-      (face, body and hair), keyed by the model's path in the game
+- [x] Library overlay per game: own folders and hierarchy, in-game names, models combined into one
+      (face, body and hair), keyed by the model's path in the game (0.29.0)
 - [ ] Saved variations: Generate results kept beside the model's package, listed, exported again or
       used as a starting point
 - [ ] Configurable models as packages (configurations, Borderlands skins baked per part)

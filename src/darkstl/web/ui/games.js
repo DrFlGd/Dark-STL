@@ -39,6 +39,12 @@ export const unpackFolder = (path, game) => ui.set({ dialog: { type: "unpack", p
 /** What Unpack does, in a line (menus and button tips). */
 export const UNPACK_HINT = "write the models in the game's archives out into the app's library";
 
+/** Rename a model or file it in a folder of one's own (the library overlay). */
+export const arrangeModel = (m) => ui.set({ dialog: { type: "arrange", model: m } });
+
+/** Make one model of several (face, body and hair): a configuration with each of them as a part. */
+export const combineModels = (m) => ui.set({ dialog: { type: "combine", model: m } });
+
 /** Open the Collect dialog for a game, a place in it ({ game, category, group }) or one model ({ game, model }). */
 export const collectInto = (scope) => ui.set({ dialog: { type: "collect", ...scope } });
 

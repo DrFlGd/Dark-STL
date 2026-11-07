@@ -14,7 +14,7 @@ import { Inspector } from "./inspector.js";
 import { openMenu, usePageKeys } from "./actions.js";
 import { Thumb } from "./thumbs.js";
 import { GameBadge, CategoryIcon } from "./gameicons.js";
-import { gameMenu, rescanFolder, collectItem, collectModelItem, unpackFolder, UNPACK_HINT } from "./games.js";
+import { gameMenu, rescanFolder, collectItem, collectModelItem, unpackFolder, UNPACK_HINT, arrangeModel, combineModels } from "./games.js";
 
 const PAGE = 300;
 const VIEWS = [["grid", "Grid", "grid"], ["list", "List", "list"]];
@@ -33,6 +33,8 @@ function whereOf(m, place) {
 function modelMenu(m) {
   return [
     { id: "open", label: "Open", icon: "eye", key: "Enter", run: () => openModel(m) },
+    ...(m.configurable ? [] : [{ id: "arrange", label: "Rename or move…", sub: "its in-game name, a folder of your own", icon: "edit", run: () => arrangeModel(m) },
+      { id: "combine", label: "Combine with other models…", sub: "face, body and hair as one model", icon: "box", run: () => combineModels(m) }]),
     { id: "show", label: "Show in folder", icon: "folder", run: () => showInFolder(m.file) },
     { id: "copy-path", label: "Copy file path", icon: "copy", run: () => navigator.clipboard?.writeText(m.file) },
     { sep: true },
@@ -137,7 +139,9 @@ function PlaceSummary({ game, cat, group, total }) {
     <section class="insp-section"><h3>${group || cat?.name || game.name}</h3>
       <p>${plural(total ?? (cat ? cat.count : game.count), "model")}${!cat ? ` in ${plural(game.categories.length, "kind")}` : ""}.</p>
       <p class="muted">Click a model to see it here; double-click (or Enter) opens it.</p>
-      ${game.count ? html`<div class="insp-actions"><button type="button" class="ghost" id="place-collect" disabled=${!!collect.disabled} title=${collect.disabled || "Copy the files these models need into Dark STL's own folder, so the game's folder isn't required"} onClick=${collect.run}>${Icon.inbox(14)} Collect into the app…</button></div>` : null}</section>
+      ${game.count ? html`<div class="insp-actions"><button type="button" class="ghost" id="place-collect" disabled=${!!collect.disabled} title=${collect.disabled || "Copy the files these models need into Dark STL's own folder, so the game's folder isn't required"} onClick=${collect.run}>${Icon.inbox(14)} Collect into the app…</button>
+        ${cat ? html`<button type="button" class="ghost" id="place-rename" title="Rename this folder, or move it into another, for every model in it"
+          onClick=${() => ui.set({ dialog: { type: "arrange-folder", game: game.name, category: cat.name, group } })}>${Icon.edit(14)} Rename or move this folder…</button>` : null}</div>` : null}</section>
     ${!cat && game.categories.length ? html`<section class="insp-section"><h3>Kinds</h3><ul class="ls-list">${game.categories.map((c) => html`<li key=${c.name}>
       <a href=${routeHash(placeRoute(game.name, c.name))}>${c.name}</a><span class="muted">${c.count.toLocaleString()}</span></li>`)}</ul></section>` : null}
     ${cat && !group && groups.length > 1 ? html`<section class="insp-section"><h3>Groups</h3><ul class="ls-list">${groups.map((g) => html`<li key=${g.name}>
@@ -156,10 +160,12 @@ function ModelSummary({ m }) {
       <button type="button" class="primary compact" id="summary-open" onClick=${() => openModel(m)}>${Icon.eye(15)} Open</button>
       <button type="button" class="ghost" id="summary-show" onClick=${() => showInFolder(m.file)}>${Icon.folder(14)} Show in folder</button>
       <button type="button" class="ghost" id="summary-collect" disabled=${!!collect.disabled} title=${collect.disabled || "Copy this model's files into Dark STL's own folder"} onClick=${collect.run}>${Icon.inbox(14)} Collect…</button>
+      ${m.configurable ? null : html`<button type="button" class="ghost" id="summary-arrange" title="Give it its in-game name, or file it in a folder of your own" onClick=${() => arrangeModel(m)}>${Icon.edit(14)} Rename or move…</button>`}
     </div>
     <dl class="insp-dl">
       <dt>File</dt><dd>${m.name}</dd>
       <dt>Kind</dt><dd>${m.category}${m.group ? ` › ${m.group}` : ""}</dd>
+      ${m.original ? html`<dt>In the game</dt><dd id="summary-original">${m.original.label} · ${m.original.category}${m.original.group ? ` › ${m.original.group}` : ""}</dd>` : null}
       ${m.configurable ? html`<dt>Parts</dt><dd id="summary-config">${configText(m).replace("Configurable: ", "")} to choose from${m.configurable.guessed ? " (matched by file names)" : ""}</dd>` : null}
       <dt>Game</dt><dd>${m.game}</dd>
       <dt>Folder</dt><dd class="note-path">${m.file.slice(0, m.file.length - m.name.length - 1)}</dd>
@@ -172,6 +178,7 @@ function ModelSummary({ m }) {
 export function Browser({ route }) {
   const place = placeOf(route);
   const s = useStore(ui, (st) => ({ overview: st.overview, q: st.q, layout: st.layout, lod: st.lod, sort: st.sort }));
+  const libRev = useStore(ui, (st) => st.libRev);
   const game = s.overview?.games.find((g) => g.name === place.game);
   const cat = game?.categories.find((c) => c.name === place.category);
   const tiles = !place.category && !s.q;
@@ -188,7 +195,7 @@ export function Browser({ route }) {
     const q = s.q;
     api("models_query", { game: place.game, category: place.category, group: place.group, q, lod: s.lod, sort: s.sort, limit })
       .then((r) => { if (n === seq.current) setResult({ ...r, q }); }, (e) => { if (n === seq.current) setResult({ total: 0, items: [], q, error: String(e.message || e) }); });
-  }, [route, s.q, s.lod, s.sort, limit, tiles, game?.count]);
+  }, [route, s.q, s.lod, s.sort, limit, tiles, game?.count, libRev]);
   useEffect(() => {
     if (text === s.q) return;
     const t = setTimeout(() => ui.set({ q: text }), 150);

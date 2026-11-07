@@ -199,10 +199,22 @@ class Library:
     _configs: list[CatalogEntry] | None = field(default=None, repr=False)
     _all: list[CatalogEntry] | None = field(default=None, repr=False)
     _overview: dict[bool, list[dict]] = field(default_factory=dict, repr=False)  # include_lod -> overview()
+    # files a model under the user's own name and place (see darkstl.overlay): called with each model, it may
+    # change its label, category and group, which original_place() keeps as the game had them
+    arrange: Callable[["Library", CatalogEntry], None] | None = field(default=None, repr=False, compare=False)
 
     def _changed(self) -> None:
         self._by_id = self._full = self._first = self._configs = self._all = self._root = None
         self._overview = {}
+        if self.arrange is not None and self.entries:
+            for e in self.entries:
+                self.arrange(self, e)
+            self.entries.sort(key=lambda e: e.sort_key)
+            self._by_id = self._full = self._first = self._configs = self._all = self._root = None
+
+    def rearrange(self) -> None:
+        """File every model again by the user's names and places (they changed)."""
+        self._changed()
 
     def configs_changed(self) -> None:
         """Read the configuration lists again (the user saved one)."""
@@ -287,8 +299,13 @@ class Library:
         if root not in self.roots:
             raise KeyError(root)
         self.roots[root] = game
-        self.entries = sorted((dataclasses.replace(e, game=game) if _is_under(e.path, root) else e
-                               for e in self.entries), key=lambda e: e.sort_key)
+
+        def moved(e: CatalogEntry) -> CatalogEntry:
+            category, group, label = original_place(e)
+            return dataclasses.replace(e, game=game, category=category, group=group, label=label)
+
+        self.entries = sorted((moved(e) if _is_under(e.path, root) else e for e in self.entries),
+                              key=lambda e: e.sort_key)
         self._changed()
 
     def merge(self, other: "Library") -> None:
@@ -400,6 +417,19 @@ class Library:
             games.append({"name": game, "count": sum(c["count"] for c in categories),
                           "folders": folders, "categories": categories})
         return games
+
+
+def original_place(entry: CatalogEntry) -> tuple[str, str, str]:
+    """(category, group, label) as the game's files gave them, before the user renamed or moved the model."""
+    return entry.__dict__.get("_original") or (entry.category, entry.group, entry.label)
+
+
+def place_entry(entry: CatalogEntry, category: str | None, group: str | None, label: str | None) -> None:
+    """File ``entry`` under the user's own place and name (None: as the game has it)."""
+    orig = entry.__dict__.setdefault("_original", (entry.category, entry.group, entry.label))
+    entry.category = category or orig[0]
+    entry.group = orig[1] if group is None else group
+    entry.label = label or orig[2]
 
 
 def _category_index(name: str) -> int:
