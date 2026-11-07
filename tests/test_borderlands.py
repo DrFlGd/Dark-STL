@@ -190,6 +190,26 @@ def test_gestalt_mesh_parts_textures_and_frame(bl2):
     assert any("gestalt" in line for line in m.info)
 
 
+def test_a_dlc_package_finds_its_large_mips_in_the_games_own_cache(bl2):
+    """A DLC's packages (<game>/DLC/<name>/CookedPCConsole) keep their large mips in the game's caches."""
+    from darkstl.importers.borderlands.formats import texture as texfmt
+
+    dlc = bl2 / "DLC" / "Aster" / "CookedPCConsole"
+    dlc.mkdir(parents=True)
+    shutil.copy(bl2 / "WillowGame" / "CookedPCConsole" / "Startup.upk", dlc / "CastleExterior_P.upk")
+    texfmt._TREE_INDEX.clear()
+    m = open_model(dlc / "CastleExterior_P.upk" / "Weap_Pistol.Pistol_Gestalt.SkeletalMesh")
+    normal = m.textures[m.materials[0].normal]
+    assert normal.decode().shape[:2] == (16, 16) and "showing" not in normal.describe()
+    (bl2 / "WillowGame" / "CookedPCConsole" / "WeaponTextures.tfc").rename(bl2 / "Elsewhere.tfc")
+    texfmt._CACHE_INDEX.clear()
+    texfmt._TREE_INDEX.clear()
+    m = open_model(dlc / "CastleExterior_P.upk" / "Weap_Pistol.Pistol_Gestalt.SkeletalMesh")
+    normal = m.textures[m.materials[0].normal]
+    assert "16 x 16" in normal.describe() and "(showing 8 x 8; WeaponTextures.tfc with the larger ones wasn't found)" \
+        in normal.describe()
+
+
 def test_missing_texture_cache_falls_back_to_the_package_mips(bl2):
     (bl2 / "WillowGame" / "CookedPCConsole" / "WeaponTextures.tfc").unlink()
     from darkstl.importers.borderlands.formats import texture as texfmt
