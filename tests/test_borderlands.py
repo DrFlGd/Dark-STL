@@ -341,9 +341,11 @@ def test_skins_from_a_dlc(bl2, tmp_path):
     assert paint.textures and paint.materials[0].albedo
 
 
-def test_a_skin_cooked_into_some_other_package_is_found(bl2):
+@pytest.mark.parametrize("whole", [False, True])
+def test_a_skin_cooked_into_some_other_package_is_found(bl2, whole):
     """The skin's material instance is imported from a package that isn't a file of its own; a copy of it was
-    cooked (as a forced export) into some other package, and its texture into a third."""
+    cooked (as a forced export) into some other package, and its texture into a third. ``whole``: that
+    package is compressed as a whole, as Borderlands 2's Startup.upk is."""
     from darkstl import configs
     from darkstl.importers.borderlands import catalog
 
@@ -366,7 +368,7 @@ def test_a_skin_cooked_into_some_other_package_is_found(bl2):
     master = b.add_export("Material", "Master_Gun", S.material_data(b, []), group)
     b.add_export("MaterialInstanceConstant", "Mati_Dahl_4_Emerald", S.mic_data(b, master, [("p_Diffuse", dif)]),
                  group)
-    (cooked / "Dam_P.upk").write_bytes(b.build("lzo"))
+    (cooked / "Dam_P.upk").write_bytes(S.fully_compressed(b.build()) if whole else b.build("lzo"))
 
     b = S.PackageBuilder()  # another level with the texture
     forced = b.add_export("Package", "Common_GunTextures", b"", 0, export_flags=0x01)
@@ -678,3 +680,17 @@ def test_a_parent_of_another_material_class_is_found(tmp_path):
     hit = idx.find("Common_GunMaterials.Materials.AssaultRifle.Mati_DahlEpicAR", "MaterialInstanceConstant")
     assert hit == (Path("A.upk"), "Materials.Mati_DahlEpicAR")
     assert idx.find("X.Mati_DahlEpicAR", "Texture2D") is None  # only materials stand in for each other
+
+
+@pytest.mark.parametrize("method", ["lzo", "zlib"])
+def test_a_package_compressed_as_a_whole_reads_like_the_plain_one(tmp_path, method):
+    plain = tmp_path / "Plain.upk"
+    plain.write_bytes(startup_package(None))
+    whole = tmp_path / "Whole.upk"
+    whole.write_bytes(S.fully_compressed(startup_package(None), method, block=1024, per_chunk=2))
+    a, b = upk.open_package(plain), upk.open_package(whole)
+    assert b.summary.version == 832 and len(b._blocks) > 4
+    assert [(e.path, e.class_name) for e in a.exports] == [(e.path, e.class_name) for e in b.exports]
+    for e in a.exports:
+        assert a.export_data(e).data == b.export_data(b.exports[e.index]).data
+    assert upk.is_package_file(whole)
