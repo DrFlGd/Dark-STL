@@ -42,7 +42,7 @@ GAMES = (GAME_BL1, GAME_BL2, GAME_TPS, GAME_BL3, GAME_WL, GAME_BL4)
 
 
 def _texture(tex: Texture2D, dirs: list[Path]) -> Texture:
-    return Texture(tex.name, f"{tex.pkg.path.name}: {tex.path}", lambda: tex.decode(dirs), tex.describe)
+    return Texture(tex.name, f"{tex.pkg.path.name}: {tex.path}", lambda: tex.decode(dirs), lambda: tex.describe(dirs))
 
 
 def _open(path: Path) -> tuple[upk.Package, upk.Export, str]:
