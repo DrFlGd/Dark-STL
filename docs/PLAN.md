@@ -452,6 +452,20 @@ differs:
       behind it over a pipe (no local server), the isotropic remesher included
 - [ ] User guide with extraction steps for each game
 
+### Backlog (on hold)
+
+- [ ] **Game files instead of per-game code.** Most of what makes a game differ from others on
+      the same engine is settings: its folder layout and executable, engine release, AES key and
+      type mappings, how folders and names sort models into groups, texture role suffixes
+      (`_BaseColor`, `_N`, ...), the normal maps' green direction, and what Collect copies. Move
+      those into a JSON file per game that names the engine backend it uses (`unreal4`,
+      `unreal3`, `fromsoft`, `reengine`, `redengine`): shipped with the app, overridable from a
+      settings folder (like configurations), so a game is added or tuned without a release.
+      Engine readers stay code, and format quirks (unversioned packages, compressed packages,
+      appearance files) are still fixed there. Start with the Unreal 4/5 games (Returnal,
+      Borderlands 3, Wonderlands, Borderlands 4) and a generic Unreal fallback, then the other
+      engines. Raised by Jerred on 2026-11-07, held for now.
+
 ## Known limits today
 
 - Of the real game files, Dark Souls Remastered weapons and Bloodborne characters, objects and
