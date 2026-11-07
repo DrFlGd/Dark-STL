@@ -6,8 +6,11 @@ with them into ``<library folder>/<game>/``, keeping each file's path relative t
 folder it came from, so the same lookups (sibling ``.texbnd``, ``.anibnd``, split
 ``.tpfbhd``/``.tpfbdt`` pairs, unpacked folders) work on the copies. Textures a model takes from
 elsewhere in the game (a map's texture pack) are written out on their own instead of copying
-the whole pack. The game's folder can then
-be removed from the library, or the game uninstalled, and the copies stay.
+the whole pack. Files a model reads from inside an archive (a ``.pak``, ``.archive``...) are written out
+as loose files, and what an importer can't name ahead of time is found by opening each model while
+recording what it reads (see :mod:`darkstl.access`). The configurable models collected (a gun and its
+parts and skins) are written beside the copies as a configuration list, naming the copies. The game's
+folder can then be removed from the library, or the game uninstalled, and the copies stay.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from .model import CatalogEntry
 
 KINDS = ("model", "texture", "animation", "other")
 MANIFEST = "darkstl-collection.json"
+CONFIGS = "collected.darkstl-configs.json"  # the configurable models collected (see configs.in_folder)
 
 
 @dataclass(frozen=True)
@@ -66,6 +70,7 @@ class Plan:
     models: list[str]
     files: list[PlannedFile] = field(default_factory=list)
     roots: list[Path] = field(default_factory=list)  # the game folders the files come from
+    configurations: list = field(default_factory=list)  # configs.Configuration, naming the copies
 
     @property
     def to_copy(self) -> list[PlannedFile]:
@@ -80,6 +85,7 @@ class Plan:
                 "files": len(self.files), "bytes": sum(f.size for f in self.files),
                 "to_copy": len(self.to_copy), "bytes_to_copy": sum(f.size for f in self.to_copy),
                 "present": len(self.files) - len(self.to_copy), "kinds": kinds,
+                "configurations": len(self.configurations),
                 "sample": [str(f.source) for f in self.files[:8]]}
 
 
@@ -105,12 +111,14 @@ def _relative(path: Path, roots: list[Path]) -> Path:
 def plan(library: Path, game: str, entries: list[CatalogEntry], roots: list[Path], options: CollectOptions,
          related: Callable[[CatalogEntry], list[RelatedFile]],
          extras: Callable[[Path], list[RelatedFile]] | None = None,
-         progress: Callable[[int, str], None] | None = None) -> Plan:
+         progress: Callable[[int, str], None] | None = None, configurations: list = ()) -> Plan:
     """What collecting ``entries`` would copy, and what is already there. ``progress(i, model)`` is called
-    before each model is read (it may raise to stop)."""
+    before each model is read (it may raise to stop). ``configurations`` (with their files resolved) are
+    kept with the copies, naming them."""
     folder = Path(library) / _folder_name(game)
     out = Plan(game, folder, [e.stem for e in entries], roots=[Path(r) for r in roots if not _is_under(Path(r), folder)])
     seen: set[Path] = set()
+    moved: dict[Path, str] = {}  # archive member -> where its copy goes
 
     def add(f: RelatedFile, model: str) -> None:
         src = Path(f.path)
@@ -119,6 +127,7 @@ def plan(library: Path, game: str, entries: list[CatalogEntry], roots: list[Path
             if target in seen or _is_under(src, folder):
                 return
             seen.add(target)
+            moved.setdefault(src, f.save_as)
             out.files.append(PlannedFile(src, target, f.kind, f.size, model, target.is_file(), f.extract))
             return
         if src in seen:
@@ -149,7 +158,59 @@ def plan(library: Path, game: str, entries: list[CatalogEntry], roots: list[Path
         for root in roots:
             for f in extras(root):
                 add(f, "")
+    out.configurations = [_moved_config(c, moved, roots, folder) for c in configurations]
     return out
+
+
+def collected_path(path: str | Path, moved: dict[Path, str], roots: list[Path], folder: Path) -> str:
+    """Where a model file of the game is in its collected copy, below the copy's folder (``/`` separators)."""
+    p = Path(path)
+    if _is_under(p, folder):
+        return p.relative_to(folder).as_posix()
+    if p in moved:
+        return moved[p].replace("\\", "/")
+    return _relative(p, roots).as_posix()
+
+
+def _moved_config(config, moved: dict[Path, str], roots: list[Path], folder: Path):
+    """``config`` naming the collected copies (paths below the copy's folder), its variants' files too
+    (a Borderlands 2 skin's ``...|<package file>``)."""
+    import dataclasses
+
+    from . import configs
+
+    def ref(r: configs.ModelRef) -> configs.ModelRef:
+        variant = r.variant
+        if variant and "|" in variant:
+            head, _, file = variant.partition("|")
+            if file:
+                variant = f"{head}|{collected_path(file, moved, roots, folder)}"
+        return configs.ModelRef(collected_path(r.file, moved, roots, folder), variant, r.parts)
+
+    slots = [dataclasses.replace(s, options=[dataclasses.replace(o, model=ref(o.model)) for o in s.options])
+             for s in config.slots]
+    return dataclasses.replace(config, base=ref(config.base), slots=slots)
+
+
+def write_configurations(folder: Path, game: str, found: list) -> Path:
+    """Keep the configurable models collected in the copy's folder, with those collected before."""
+    from . import configs
+    from .errors import FormatError
+
+    path = Path(folder) / CONFIGS
+    have = []
+    if path.is_file():
+        try:
+            have = configs.load_file(path, game)
+        except FormatError:
+            have = []
+    ids = {c.id for c in found}
+    keep = [c for c in have if c.id not in ids] + list(found)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".part")
+    tmp.write_text(json.dumps(configs.dump(keep, game), indent=2), "utf-8")
+    os.replace(tmp, path)
+    return path
 
 
 def run(plan: Plan, progress: Callable[[float, str], None] | None = None) -> dict:
@@ -170,6 +231,8 @@ def run(plan: Plan, progress: Callable[[float, str], None] | None = None) -> dic
         os.replace(tmp, f.target)
         done += f.size
         copied += 1
+    if plan.configurations:
+        write_configurations(plan.folder, plan.game, plan.configurations)
     write_manifest(plan.folder, plan.game, plan.models, sorted({str(r) for r in plan.roots}))
     if progress:
         progress(1.0, "Done")
@@ -272,5 +335,6 @@ def _is_under(path: Path, root: Path) -> bool:
         return False
 
 
-__all__ = ["KINDS", "MANIFEST", "CollectOptions", "Plan", "PlannedFile", "RelatedFile", "collections_in", "folder_size",
-           "move_folder", "plan", "read_manifest", "run", "write_manifest"]
+__all__ = ["CONFIGS", "KINDS", "MANIFEST", "CollectOptions", "Plan", "PlannedFile", "RelatedFile", "collected_path",
+           "collections_in", "folder_size", "move_folder", "plan", "read_manifest", "run", "write_configurations",
+           "write_manifest"]

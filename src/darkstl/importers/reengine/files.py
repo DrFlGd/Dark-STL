@@ -27,6 +27,7 @@ from typing import Callable, Iterable
 
 import numpy as np
 
+from ... import access
 from ...errors import FormatError
 from .formats import mdf as mdffmt
 from .formats import mesh as meshfmt
@@ -166,7 +167,25 @@ def locate(path: Path) -> tuple[pakfmt.Pak, pakfmt.Entry] | None:
     return None
 
 
+def note(path: Path, kind: str = "other") -> None:
+    """For collecting: a file on disk as it is, a pak entry as a loose file under its own path."""
+    if not access.active():
+        return
+    try:
+        found = locate(Path(path))
+    except FormatError:
+        return
+    if found is None:
+        if Path(path).is_file():
+            access.note_file(Path(path), kind)
+        return
+    pak, entry = found
+    access.note_member(Path(path), entry.name or Path(path).name, lambda pk=pak, e=entry: pk.read(e), entry.size,
+                       kind)
+
+
 def read_bytes(path: Path) -> bytes:
+    note(Path(path))
     found = locate(Path(path))
     if found is None:
         try:
@@ -602,6 +621,7 @@ def load_model(path: os.PathLike | str, texture_dirs: tuple[str, ...] = ()) -> M
                     if binding.path not in asset.missing:
                         asset.missing.append(binding.path)
                     continue
+                note(found, "texture")
                 asset.textures[stem.lower()] = TexRef(stem, found, str(found))
         if asset.missing:
             asset.notes.append(f"{len(asset.missing)} texture{'s' if len(asset.missing) != 1 else ''} named by the "

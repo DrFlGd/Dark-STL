@@ -29,6 +29,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
+from .... import access
 from ....errors import FormatError
 from ..formats.upk import Reader
 from . import asset, pak
@@ -548,10 +549,27 @@ class ZenStore:
             index = so.outer
         return out[::-1]
 
+    def note(self, virtual: str) -> None:
+        """For collecting: a zen package is read through its container's table, so the container (its .utoc,
+        .ucas and .pak) and the global one are kept whole."""
+        hit = self.files.get(virtual.lower())
+        if hit is None:
+            return
+        for c in {id(x): x for x in [hit[0]] + [x for x in self.containers
+                                                  if x.toc.path.stem.lower() == "global"]}.values():
+            access.note_file(c.toc.path, "model")
+            for part in c.parts:
+                access.note_file(part, "model")
+            pak_file = c.toc.path.with_suffix(".pak")
+            if pak_file.is_file():
+                access.note_file(pak_file, "model")
+
     def open_package(self, virtual: str) -> Package:
         hit = self.files.get(virtual.lower())
         if hit is None:
             raise FormatError(f"{virtual} isn't in the game's containers")
+        if access.active():
+            self.note(virtual)
         c, entry = hit
         pid = c.toc.chunk_ids[entry][0]
         got = self._header(pid)

@@ -24,6 +24,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .... import access
 from ....errors import FormatError
 from . import asset, pak
 
@@ -165,8 +166,29 @@ class GameFiles:
     def virtual_of_package(self, name: str) -> str | None:
         return self.packages.get(name.lower().split(".", 1)[0])
 
+    def note(self, virtual: str) -> None:
+        """For collecting: the package at ``virtual`` and its payload files, each kept as a loose file (a zen
+        package can't be: its whole container is)."""
+        if not access.active():
+            return
+        if self.zen is not None and not self.exists(virtual):
+            self.zen.note(virtual)
+            return
+        stem = virtual[:virtual.rfind(".")]
+        for name in [virtual] + [stem + ext for ext in PAYLOAD_SUFFIXES]:
+            ref = self.files.get(name.lower())
+            if ref is None:
+                continue
+            spelled = self.spelled.get(name.lower(), name)
+            if ref.container is None:
+                access.note_file(Path(ref.entry), "model")
+            else:
+                access.note_member(self.root / spelled, spelled, lambda n=spelled: self.read(n),
+                                   getattr(ref.entry, "usize", 0) or 0, "model")
+
     def open_package(self, virtual: str) -> asset.Package:
         """The package whose ``.uasset`` (or ``.umap``) is at ``virtual``, its ``.uexp``/``.ubulk`` with it."""
+        self.note(virtual)
         key = virtual.lower()
         with self._lock:
             if key in self._cache:
@@ -283,8 +305,12 @@ def game_files(root: str | os.PathLike, game: str | None = None, refresh: bool =
 
 
 def forget(root: str | os.PathLike) -> None:
+    """Let a game folder go, closing the containers kept open (so its files can be moved or deleted)."""
     with _OPEN_LOCK:
-        _OPEN.pop(os.path.normcase(str(Path(root))), None)
+        gone = _OPEN.pop(os.path.normcase(str(Path(root))), None)
+    if gone is not None and gone.zen is not None:
+        for c in gone.zen.containers:
+            c.close()  # each reopens what it reads if it's used again
 
 
 def locate(path: str | os.PathLike) -> tuple[Path, str] | None:

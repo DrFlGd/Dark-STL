@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .... import access
 from ....errors import FormatError
 from ....textures import dds
 from .props import Props, object_props
@@ -61,6 +62,8 @@ class Texture2D:
     def available(self, tfc_dirs: list[Path] | None = None) -> list[tuple[Mip, Path | None]]:
         out = []
         cache = find_cache_file(self.pkg.path, self.cache_name, tfc_dirs) if self.cache_name else None
+        if cache is not None:
+            access.note_file(cache, "texture")
         for m in self.mips:
             if m.flags & 0x20 or m.size <= 0 or m.width <= 0:
                 continue
@@ -157,6 +160,10 @@ def read_texture(pkg: Package, export: Export) -> Texture2D:
         codec = _guess_codec(sized[0].elements, sized[0].width, sized[0].height) if sized else "BC1"
     cache = props.get("TextureFileCacheName")
     cache = None if cache in (None, "None", "") else str(cache)
+    if cache and access.active():  # where its large mips are, for collecting
+        hit = find_cache_file(pkg.path, cache)
+        if hit is not None:
+            access.note_file(hit, "texture")
     return Texture2D(pkg, export.name, export.path, props, width, height, fmt or "?", codec, cache, mips)
 
 

@@ -24,6 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ... import access
 from ...collect import RelatedFile
 from ...errors import FormatError
 from ..fromsoft.formats import oodle
@@ -98,9 +99,28 @@ def game_archives(root: Path) -> list[Path]:
 # Files
 
 
+def _note(path: Path, depot: str | None = None) -> None:
+    """For collecting: a loose file as it is, an archive member as a loose file under its depot path."""
+    if not access.active():
+        return
+    kind = "texture" if str(depot or path).lower().endswith((".xbm", ".mlmask")) else "other"
+    if is_archive_member(path):
+        try:
+            ar = arc.open_archive(path.parent)
+        except (FormatError, OSError):
+            return
+        h = member_hash(path)
+        name = arc.normalize_path(depot) if depot else ar.names.get(h)
+        save_as = (name or f"_unnamed/{h:016x}{Path(path.name).suffix}").replace("\\", "/")
+        access.note_member(path, save_as, lambda ar=ar, h=h: ar.read(h), ar.size_of(h), kind)
+    else:
+        access.note_file(path, kind)
+
+
 def _read_file(path: Path) -> cr2w.Cr2wFile:
     """A CR2W file, loose or in an archive, parsed once while it is unchanged."""
     path = Path(path)
+    _note(path)
     if is_archive_member(path):
         ar = arc.open_archive(path.parent)
         key = (str(path), ar.path.stat().st_size, 0)
@@ -222,6 +242,7 @@ class Store:
         """The loose file or archive member that holds ``depot``, or None."""
         p = self._loose(depot)
         if p is not None:
+            _note(p)
             return p
         h = arc.path_hash(depot)
         for a in self.archive_paths:
@@ -231,8 +252,15 @@ class Store:
                 continue
             if h in ar.entries:
                 ar.names.setdefault(h, arc.normalize_path(depot))
-                return member_path(a, h, Path(depot).suffix.lower())
-        return self._named(depot)
+                p = member_path(a, h, Path(depot).suffix.lower())
+                _note(p, depot)
+                return p
+        p = self._named(depot)
+        if p is not None:  # kept under its depot path in a collected copy
+            if access.active():
+                access.note_member(p, arc.normalize_path(depot).replace("\\", "/"), lambda p=p: p.read_bytes(),
+                                   p.stat().st_size)
+        return p
 
     def read(self, depot: str) -> cr2w.Cr2wFile | None:
         p = self.locate(depot)

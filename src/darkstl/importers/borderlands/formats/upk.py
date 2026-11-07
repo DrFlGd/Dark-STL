@@ -22,6 +22,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .... import access
 from ....errors import FormatError
 from . import lzo
 
@@ -403,6 +404,7 @@ _OPEN_LOCK = threading.Lock()
 def open_package(path: str | os.PathLike) -> Package:
     """Read a package's header and tables (kept for the last few packages opened)."""
     path = Path(path)
+    access.note_file(path, "model")
     st = path.stat()
     key = (os.path.normcase(str(path.resolve())), st.st_size, st.st_mtime_ns)
     with _OPEN_LOCK:
