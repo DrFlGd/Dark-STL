@@ -681,6 +681,9 @@ class Service:
                 raise AppError(f"{path} isn't one of the game folders.")
             self.library.remove_root(path)
             self._save_folders()
+        from ..importers.borderlands.ue4 import vfs
+
+        vfs.forget(path)  # the containers it kept open, so the game can be uninstalled with the app running
         return {}
 
     def cmd_folder_set_game(self, args: dict) -> dict:

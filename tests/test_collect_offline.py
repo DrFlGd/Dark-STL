@@ -72,9 +72,9 @@ def collect_and_uninstall(home, game_dir: Path, game: str | None = None) -> tupl
     wait(s, s.call("collect_run", {"game": game})["job"])
     s.call("folder_remove", {"path": str(game_dir)})
     gone = game_dir.with_name(game_dir.name + " (uninstalled)")
-    shutil.move(str(game_dir), str(gone))
     bl_files._INDEXES.clear()
-    vfs.forget(game_dir)
+    vfs.forget(game_dir)  # lets go of the files it holds open (Windows won't move them)
+    shutil.move(str(game_dir), str(gone))
     try:
         again = _service(home, "cache2")  # a fresh start, with nothing kept from the game
         wait(again, again.load_folders().id)

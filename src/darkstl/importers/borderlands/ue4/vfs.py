@@ -305,8 +305,12 @@ def game_files(root: str | os.PathLike, game: str | None = None, refresh: bool =
 
 
 def forget(root: str | os.PathLike) -> None:
+    """Let a game folder go, closing the containers kept open (so its files can be moved or deleted)."""
     with _OPEN_LOCK:
-        _OPEN.pop(os.path.normcase(str(Path(root))), None)
+        gone = _OPEN.pop(os.path.normcase(str(Path(root))), None)
+    if gone is not None and gone.zen is not None:
+        for c in gone.zen.containers:
+            c.close()  # each reopens what it reads if it's used again
 
 
 def locate(path: str | os.PathLike) -> tuple[Path, str] | None:
