@@ -31,6 +31,8 @@ const CLEANUPS = [["none", "None"], ["light", "Light: specks under 4 texels"], [
 /** The paint settings as the engine takes them (without the page's own). */
 const paintArgs = (p) => ({ colours: p.colours, palette: p.palette, print_height_mm: p.print_height_mm, feature_mm: p.feature_mm, cleanup: p.cleanup });
 const VIEW = { shading: "textured", edges: false };
+/** A material's texture roles, as the Materials list names them. */
+const ROLES = [["albedo", "Colour"], ["normal", "Normals"], ["height", "Height"]];
 const JOINT = { kind: "pegs", clearance_mm: 0.2, count: 0, diameter_mm: 5, depth_mm: 6, magnet_diameter_mm: 6, magnet_height_mm: 3, flip: false, print_dowels: true };
 const CUT = { from: "enhanced", sheet_mm: 1.2, wall_mm: 1.6, joint: JOINT, lay_flat: true };
 const FINISH = { from: "enhanced", sheet_mm: 1.2, fill_hollows: true, close_gaps: false, close_gaps_mm: 1, remove_loose: false, loose_percent: 1 };
@@ -455,6 +457,7 @@ function TexturesTab({ m, args, s, set, run, setRun, call, sendSettings, over, u
     } catch (e) { toast(msg(e)); }
   };
   const nameOf = (k) => m.textures.find((t) => t.key === k)?.name;
+  const canPick = !!m.entry && !m.configuration; // the texture picker files choices under the model's place in the game
   const [error, setError] = useState(null);
   const [ai, setAi] = useState(null); // { folder, models, included, available } once asked for
   const wantsAi = s.upsample === "ai" || s.deblock === "ai";
@@ -560,9 +563,13 @@ function TexturesTab({ m, args, s, set, run, setRun, call, sendSettings, over, u
     <section class="insp-section" id="materials"><h3>Materials</h3>${m.materials.map((mat, i) => html`<div class="material" key=${i} title=${mat.details.join("\n")}>
       <p class="material-name">${mat.name}${mat.guessed ? html` <small class="muted" title="Matched by the textures' names: the material didn't say">(guessed)</small>` : null}</p>
       <dl class="insp-dl">
-        <dt>Colour</dt><dd>${nameOf(mat.albedo) || html`<span class="muted">none</span>`}</dd>
-        <dt>Normals</dt><dd>${nameOf(mat.normal) || html`<span class="muted">none</span>`}</dd>
-        ${mat.height ? html`<dt>Height</dt><dd>${nameOf(mat.height)}</dd>` : null}</dl></div>`)}</section>
+        ${ROLES.filter(([role]) => role !== "height" || mat.height || canPick).map(([role, label]) => html`<dt key=${`t${role}`}>${label}</dt>
+          <dd key=${`d${role}`}>${nameOf(mat[role]) || html`<span class="muted">none</span>`}
+            ${m.assigned?.[i]?.[role] ? html` <small class="muted" title="Chosen in the app (texture picker), in place of the one the model names">(chosen)</small>` : null}
+            ${canPick ? html` <button type="button" class="link-btn" data-pick=${`${i}:${role}`} title=${`Find a texture of the game by its name and use it as this material's ${label.toLowerCase()} map`}
+              onClick=${() => ui.set({ dialog: { type: "texture-picker", sid: m.sid, game: m.entry.game, material: i, materialName: mat.name, role,
+                current: nameOf(mat[role]) || "", assigned: !!m.assigned?.[i]?.[role] } })}>Change…</button>` : null}</dd>`)}</dl></div>`)}
+      ${canPick ? html`<p class="muted small" id="materials-pick-note">Change… finds any texture of the game by its name and uses it for that material. The choice is kept apart from the game's files, and the texture is kept in the app's library, so it stays after the game is uninstalled.</p>` : null}</section>
   </div>`;
 }
 

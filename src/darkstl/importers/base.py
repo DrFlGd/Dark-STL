@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..collect import RelatedFile
-from ..model import CatalogEntry, SourceModel
+from ..errors import FormatError
+from ..model import CatalogEntry, SourceModel, Texture
 
 ScanProgress = Callable[[int, str], None]  # (files looked at, the file now); a count below 0: just the text
 
@@ -74,6 +75,15 @@ class Importer:
         """The files a model needs when it is copied somewhere else: itself, and with it the textures,
         animations and low-detail copies kept beside it. Folders stand for everything in them."""
         return [RelatedFile(Path(path), "model")]
+
+    def list_textures(self, folder: Path) -> list[tuple[str, str]]:
+        """Every texture a scanned game folder holds, as (its name in the game, a reference to it that
+        :meth:`open_texture` takes), for the texture picker. Empty when the importer can't list them."""
+        return []
+
+    def open_texture(self, folder: Path, ref: str) -> Texture:
+        """A texture :meth:`list_textures` listed."""
+        raise FormatError(f"{self.name} can't open textures on their own")
 
     def shared_files(self, root: Path, game: str, player_animations: bool = False) -> list[RelatedFile]:
         """Files a game folder holds that every model from it may need (a compression library, the

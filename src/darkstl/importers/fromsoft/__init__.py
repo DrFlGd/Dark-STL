@@ -123,6 +123,11 @@ class FromSoftwareImporter(Importer):
         return entries
 
     def scan_state(self, folder: Path):
+        return self._own_index(folder)
+
+    @staticmethod
+    def _own_index(folder: Path):
+        """The texture index of ``folder`` itself (not of a folder it is in)."""
         index = texindex.index_for(folder)
         return index if index is not None and texindex._norm(index.root) == texindex._norm(Path(folder)) else None
 
@@ -229,6 +234,21 @@ class FromSoftwareImporter(Importer):
 
     def shared_files(self, root: Path, game: str, player_animations: bool = False) -> list[RelatedFile]:
         return [RelatedFile(p, _kind_of(p)) for p in files.shared_files(Path(root), player_animations)]
+
+    def list_textures(self, folder: Path) -> list[tuple[str, str]]:
+        index = self._own_index(folder)
+        if index is None:
+            return []
+        return [(name, f"{rels[0]}|{name}") for name, rels in sorted(index.names.items()) if rels
+                and not texindex.PLACEHOLDER.match(name)]
+
+    def open_texture(self, folder: Path, ref: str) -> Texture:
+        rel, _, name = ref.rpartition("|")
+        held: dict[str, files.TextureRef] = {}
+        files.textures_in_file(held, Path(folder) / rel, {name.lower()})
+        if name.lower() not in held:
+            raise FormatError(f"{name} isn't in {Path(rel).name} any more")
+        return _texture(held[name.lower()])
 
     @staticmethod
     def texture_pack(path: Path) -> dict[str, Texture]:

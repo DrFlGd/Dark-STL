@@ -6,7 +6,7 @@ import { useStore } from "../lib/store.js";
 import { ui } from "./state.js";
 import { routeHash, placeRoute } from "./context.js";
 import { Icon } from "./icons.js";
-import { api, info, followJob, loadOverview, pickFolder, showInFolder, toast, plural, bytesText } from "./api.js";
+import { api, binUrl, info, followJob, loadOverview, pickFolder, showInFolder, toast, plural, bytesText } from "./api.js";
 
 export const close = () => ui.set({ dialog: null });
 
@@ -389,6 +389,64 @@ function ConfirmDialog({ title, text, button, run }) {
   return html`<${Dialog} title=${title} id="confirm-dialog" onSubmit=${submit} busy=${busy} error=${error} submitLabel=${button} danger=${true}><p>${text}</p><//>`;
 }
 
+const ROLE_LABELS = { albedo: "Colour map", normal: "Normal map", height: "Height map" };
+
+/** The texture picker: find any texture of the game by its name, see it, and use it for one of a material's
+ *  roles (kept in the game's library overlay; the texture is kept in its asset store). */
+function TexturePicker({ sid, game, material, materialName, role: startRole, current, assigned }) {
+  const [q, setQ] = useState(current || "");
+  const [found, setFound] = useState(null);
+  const [chosen, setChosen] = useState(null);
+  const [role, setRole] = useState(startRole || "albedo");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    let live = true;
+    const t = setTimeout(() => {
+      api("textures_search", { sid, q, limit: 80 }).then((r) => live && (setFound(r), setError(null)), (e) => live && setError(String(e.message || e)));
+    }, 200);
+    return () => { live = false; clearTimeout(t); };
+  }, [q]);
+  const reopen = () => ui.set({ configRev: (ui.get().configRev || 0) + 1 });
+  const assign = async (ref) => {
+    setBusy(true); setError(null);
+    try {
+      const r = await api("texture_assign", { sid, material, role, ref });
+      close();
+      reopen();
+      toast(ref ? `${materialName} uses ${r.texture.name} as its ${ROLE_LABELS[role].toLowerCase()}` : `${materialName} uses its own ${ROLE_LABELS[role].toLowerCase()} again`, { ms: 5000 });
+    } catch (e) {
+      setBusy(false);
+      setError(String(e.message || e));
+    }
+  };
+  const submit = () => { if (!chosen) { setError("Choose a texture first."); return; } assign(chosen.ref); };
+  const items = found?.items || [];
+  return html`<${Dialog} title=${`Choose a texture for ${materialName}`} id="texture-picker" onSubmit=${submit} busy=${busy || !chosen} error=${error}
+      submitLabel=${busy ? "Saving…" : "Use it"}>
+    <p class="muted">Search ${game}'s textures by their names in the game${current ? html`. This material uses <b>${current}</b> now` : ""}.</p>
+    <div class="picker-top">
+      <label class="field-block picker-search"><span>Name</span>
+        <input type="search" id="texture-search" value=${q} placeholder="Part of the name: wall, _n, c1100" onInput=${(e) => setQ(e.target.value)} disabled=${busy} /></label>
+      <label class="field-block"><span>Use as</span>
+        <select id="texture-role" value=${role} onChange=${(e) => setRole(e.target.value)} disabled=${busy}>
+          ${Object.entries(ROLE_LABELS).map(([k, v]) => html`<option key=${k} value=${k}>${v}</option>`)}</select></label>
+    </div>
+    <p class="muted small" id="texture-count">${found ? (found.listed ? `${plural(found.total, "texture")} of ${found.listed.toLocaleString()} match${found.total > items.length ? `; the first ${items.length} shown` : ""}`
+      : "No textures can be listed for this game yet: import its models as packages, or choose a game whose textures are indexed (FromSoftware, RE Engine).") : "Looking…"}</p>
+    <div class="picker-body">
+      <ul class="picker-list" id="texture-results" role="listbox" aria-label="Textures">${items.map((t) => html`<li key=${t.ref}>
+        <button type="button" role="option" aria-selected=${chosen?.ref === t.ref} class=${chosen?.ref === t.ref ? "picker-item selected" : "picker-item"}
+          data-texture=${t.name} onClick=${() => setChosen(t)} onDblClick=${() => { setChosen(t); assign(t.ref); }}>
+          <img loading="lazy" alt="" width="40" height="40" src=${binUrl("texture_preview", { game, ref: t.ref, max: 64 })} />
+          <span>${t.name}<small class="muted">${t.where}</small></span></button></li>`)}</ul>
+      <div class="picker-preview" id="texture-chosen">${chosen ? html`<img alt=${chosen.name} src=${binUrl("texture_preview", { game, ref: chosen.ref, max: 512 })} />
+        <p><b>${chosen.name}</b><small class="muted">${chosen.where}</small></p>` : html`<p class="muted">Choose a texture to see it here.</p>`}</div>
+    </div>
+    ${assigned ? html`<p><button type="button" class="link-btn" id="texture-reset" disabled=${busy} onClick=${() => assign(null)}>Go back to the texture the model names itself</button></p>` : null}
+  <//>`;
+}
+
 export function Dialogs() {
   const dialog = useStore(ui, (s) => s.dialog);
   if (!dialog) return null;
@@ -397,6 +455,7 @@ export function Dialogs() {
   if (dialog.type === "open-file") return html`<${OpenFile} />`;
   if (dialog.type === "confirm") return html`<${ConfirmDialog} ...${dialog} />`;
   if (dialog.type === "collect") return html`<${Collect} ...${dialog} />`;
+  if (dialog.type === "texture-picker") return html`<${TexturePicker} key=${`${dialog.sid}:${dialog.material}:${dialog.role}`} ...${dialog} />`;
   if (dialog.type === "unpack") return html`<${Unpack} key=${dialog.path} path=${dialog.path} game=${dialog.game} added=${dialog.added} />`;
   return null;
 }

@@ -717,3 +717,39 @@ def test_export_a_painted_3mf(page, app, tmp_path):
     assert palette == ["#DE0202", "#0202DE"] and any(len(x) > 1 for x in strings)
     page.select_option("#export-format", ".stl")
     page.wait_for_selector("#paint-options", state="detached")
+
+
+def test_the_texture_picker_assigns_a_texture_by_name(page, app, weapon_dir):  # noqa: F811
+    """Materials on the Textures tab: Change… finds a texture of the game by name, shows it, and uses it."""
+    from test_overlay import _game_with_a_wall
+
+    game = _game_with_a_wall(weapon_dir)
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    from test_app import wait
+
+    wait(app.service, app.service.call("folder_add", {"path": str(game)})["job"])
+    items = app.service.call("models_query", {"game": "Dark Souls III", "limit": 100})["items"]
+    item = next(i for i in items if i["label"] == "Weapon 0300")
+    page.goto(app.url + f"#/model/{item['id']}")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    page.click("#rail-textures")
+    page.click('[data-pick="0:albedo"]')
+    page.wait_for_selector("#texture-picker")
+    page.fill("#texture-search", "mossy")
+    page.wait_for_selector('#texture-results [data-texture="m30_wall_mossy_a"]')
+    assert page.locator("#texture-results li").count() == 1
+    page.click('#texture-results [data-texture="m30_wall_mossy_a"]')
+    page.wait_for_selector("#texture-chosen img")
+    if shots:
+        page.screenshot(path=os.path.join(shots, "texture-picker.png"))
+    page.click("#texture-picker-ok")
+    page.wait_for_function("!document.querySelector('#texture-picker')")
+    page.wait_for_selector("#materials >> text=(chosen)", timeout=30000)
+    assert "m30_wall_mossy_a" in page.inner_text("#materials")
+    if shots:
+        page.screenshot(path=os.path.join(shots, "texture-chosen.png"))
+    # and back to the model's own
+    page.click('[data-pick="0:albedo"]')
+    page.wait_for_selector("#texture-reset")
+    page.click("#texture-reset")
+    page.wait_for_function("!document.querySelector('#materials')?.textContent.includes('(chosen)')", timeout=30000)

@@ -57,6 +57,14 @@ skeleton and weights (importers that can pose give a `Rig` and per-vertex weight
 model's package to its game file. Configurable models (weapons with parts and skins) are still
 copied as game files when importing, until packages hold configurations.
 
+The **library overlay** (`overlay.py`) is one file per game in the settings folder
+(`overlays/<game>.json`) holding the user's own changes, keyed by the model's path in the game
+(the same for the game's file, a collected copy and its package), so they survive rescans and
+importing. Today it holds texture assignments made with the texture picker (Change… beside a
+material's maps on the Textures tab): the picked texture is stored in the game's asset store,
+and the model opens with it in place of the one it names. Importers list a game folder's textures
+for the picker with `list_textures` / `open_texture`.
+
 ### The app: a game library on Model Library's interface
 
 The app is a small local web server (`app/server.py`) and a page (`web/`) shown in the
@@ -389,6 +397,7 @@ src/darkstl/
   collect.py    copies the files chosen models need into the app's own library folder
   package.py    model packages: writing and reading them, the asset store (textures, animations)
   posing.py     posing a mesh from a skeleton and per-vertex weights (packages)
+  overlay.py    the library overlay: the user's own changes per game (texture assignments)
   thumbnails.py preview pictures for the library's cards, cached on disk
   pipeline.py   the three steps with their settings
   cut.py        the model made solid and cut into pieces with joints (manifold3d)
@@ -481,8 +490,10 @@ The plan in the backlog entry below, built in stages:
 - [x] Packages: Collect imports each model as a glTF mesh with its skeleton, skin weights,
       materials and sockets, its textures and animations in the game's asset store; the library
       lists and opens packages, posing included, with the game removed (0.27.0)
-- [ ] Texture picker: search every stored texture by name, preview, assign one to a material slot
-      and role; kept in the library overlay
+- [x] Texture picker: search the game's textures by name (its asset store, and every texture its
+      folders hold where the importer can list them: FromSoftware, RE Engine), preview, assign one to
+      a material's colour, normal or height map; the texture is kept in the asset store and the choice
+      in the game's library overlay (0.28.0)
 - [ ] Library overlay per game: own folders and hierarchy, in-game names, models combined into one
       (face, body and hair), keyed by the model's path in the game
 - [ ] Saved variations: Generate results kept beside the model's package, listed, exported again or

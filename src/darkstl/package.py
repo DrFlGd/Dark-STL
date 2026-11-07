@@ -130,6 +130,10 @@ class AssetStore:
         self._by_texture[key] = rel
         return rel
 
+    def stored_textures(self) -> list[str]:
+        """Every texture in the store (paths relative to its root)."""
+        return [rel for rel in self._index if (self.root / rel).is_file()]
+
     def add_animation(self, names: list[str], local: np.ndarray) -> str:
         """Store an animation: the local matrices (frames, bones, 4, 4) it gives the bones ``names``."""
         local = np.asarray(local, np.float32).reshape(len(local), len(names), 4, 4)[:, :, :3, :]
@@ -151,6 +155,13 @@ class AssetStore:
             if not (self.root / rel).is_file():
                 self._write(rel, data)
         return rel
+
+
+def stored_texture_name(rel: str) -> str:
+    """A stored texture's name in the game, from its path in the store."""
+    name = Path(rel).name
+    name = re.sub(r"\.(png|npy)$", "", name, flags=re.I)
+    return re.sub(r"~[0-9a-f]{10}$", "", name)
 
 
 def _encode_image(img: np.ndarray) -> bytes:
@@ -786,4 +797,5 @@ def _material_from(m: dict) -> Material:
 
 __all__ = ["ASSETS", "AssetStore", "FORMAT", "INDEX", "PackageAnimations", "SUFFIX", "WriteOptions",
            "is_package_index", "load_package", "package_folder", "read_glb", "read_index", "safe_relative",
+           "stored_texture_name",
            "write_glb", "write_package"]
