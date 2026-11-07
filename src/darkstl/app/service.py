@@ -15,6 +15,7 @@ import io
 import json
 import logging
 import os
+import stat
 import subprocess
 import sys
 import threading
@@ -1065,17 +1066,31 @@ class Service:
         return game, plain, configurable, game_roots, collect.packages_folder(self.config.library_folder, game)
 
     @staticmethod
-    def _package_present(root: Path, rel: str, source: Path) -> bool:
+    def _package_present(root: Path, rel: str, source: Path, version: int = 1) -> bool:
+        """Whether the game file's package is written, since the file last changed, by an importer as new as
+        ``version`` (see Importer.package_version)."""
         index = package.package_folder(root, rel) / package.INDEX
+        changed = _changed_at(source)
         try:
-            return index.stat().st_mtime >= source.stat().st_mtime
+            if changed is None or index.stat().st_mtime < changed:
+                return False
         except OSError:
             return False
+        if version <= 1:
+            return True
+        try:
+            return int(package.read_index(index).get("importer_version") or 1) >= version
+        except (FormatError, ValueError, TypeError):
+            return False
+
+    @staticmethod
+    def _package_version(e: CatalogEntry) -> int:
+        return package.importer_version(e.importer)
 
     def _package_plan(self, args: dict) -> dict:
         game, plain, configurable, roots, root = self._package_choice(args)
         present = sum(1 for e in plain if self._package_present(root, collect.relative_path(e.path, roots).as_posix(),
-                                                                  e.path))
+                                                                  e.path, self._package_version(e)))
         return {"game": game, "folder": str(root), "packages": True, "models": len(plain) + len(configurable),
                 "to_write": len(plain) - present, "present": present, "configurable": len(configurable),
                 "files": 0, "bytes": 0, "to_copy": len(plain) - present, "kinds": {}}
@@ -1089,10 +1104,11 @@ class Service:
                               done: set[Path], again: bool, failed: list[str]) -> tuple[list, list, int]:
         """Import configurable models as packages: their base, every part and every paint written as a package
         (with the models of the file the configurations name), and the configurations kept in the packages'
-        folder (``collected.darkstl-configs.json``, naming each file by its path in the game). One whose
-        paint is mixed for each part when it's shown (Borderlands 2 skins), or whose files don't open, is
-        left out, to be collected as game files. Returns the configurable models imported, those left out,
-        and the number of packages written."""
+        folder (``collected.darkstl-configs.json``, naming each file by its path in the game). A paint mixed
+        for each part it goes on (a Borderlands 2 skin) is kept as how it mixes (its PaintRecipe), the parts
+        with what it's mixed from. One whose paint can't be kept so, or whose files don't open, is left out,
+        to be collected as game files. Returns the configurable models imported, those left out, and the
+        number of packages written."""
         import dataclasses
 
         from ..importers import IMPORTERS, importer_for
@@ -1100,19 +1116,17 @@ class Service:
         by_key = {imp.key: imp for imp in IMPORTERS}
         with self.lock:
             entries = {e.path: e for e in self.library.entries}
-        wanted: dict[Path, set] = {}
-        raw = []
+        # per file, the models the configurations name: the name each is kept under in the file's package ->
+        # the variant to load it as (a Borderlands 2 skin's says which game file holds it: ``...|<file>``,
+        # which the package doesn't need)
+        wanted: dict[Path, dict] = {}
         for e in configurable:
-            refs = self._config_refs(e.config)
-            if any("|" in (r.variant or "") for r in refs):  # a skin read from another file (Borderlands 2)
-                raw.append(e)
-                continue
-            for r in refs:
+            for r in self._config_refs(e.config):
                 if not package.is_package_index(Path(r.file)):  # a package already (a combined model's part)
-                    wanted.setdefault(Path(r.file), set()).add(r.variant or None)
+                    wanted.setdefault(Path(r.file), {}).setdefault(self._kept_variant(r.variant), r.variant or None)
         loaded: dict[Path, list[SourceModel]] = {}
         own: dict[Path, set] = {}  # the models each file lists itself (a plain model's package holds those)
-        unusable: set[Path] = set()  # a paint mixed per part, or a file that doesn't open
+        unusable: set[Path] = set()  # a paint that can't be kept, or a file that doesn't open
         n = len(wanted)
         for i, (path, variants) in enumerate(wanted.items()):
             job.check()
@@ -1123,13 +1137,14 @@ class Service:
                 listed = list(imp.variants(path)[:self.MAX_PACKAGE_VARIANTS]) or [None]
                 own[path] = set(listed) | {None}
                 models = []
-                for v in listed + sorted(v for v in variants if v is not None and v not in listed):
+                extra = sorted(k for k in variants if k is not None and k not in listed)
+                for kept, load_as in [(v, v) for v in listed] + [(k, variants[k]) for k in extra]:
                     job.check()
-                    m = imp.load(path, v, tuple(self.config.texture_dirs))
-                    if m.paint_for is not None:
+                    m = imp.load(path, load_as, tuple(self.config.texture_dirs))
+                    if m.paint_for is not None and m.paint is None:
                         unusable.add(path)
                         break
-                    models.append(m if v is None or m.variant == v else dataclasses.replace(m, variant=v))
+                    models.append(m if kept is None or m.variant == kept else dataclasses.replace(m, variant=kept))
                 loaded[path] = models
             except Stopped:
                 raise
@@ -1137,22 +1152,23 @@ class Service:
                 log.debug("Import: %s failed", path, exc_info=True)
                 failed.append(f"{path.name}: {exc}")
                 unusable.add(path)
-        packed = []
+        packed, raw = [], []
         for e in configurable:
-            if e in raw:
-                continue
             files = {Path(r.file) for r in self._config_refs(e.config)}
             (raw if files & unusable else packed).append(e)
         written = 0
         need = {Path(r.file): e for e in packed for r in self._config_refs(e.config) if Path(r.file) in wanted}
         for path, owner in need.items():
             rel = collect.relative_path(path, roots).as_posix()
-            if wanted[path] <= own[path] and (path in done or not again and self._package_present(root, rel, path)):
+            entry = entries.get(path)
+            version = self._package_version(entry) if entry is not None else 1
+            if set(wanted[path]) <= own[path] and (path in done or not again and
+                                                   self._package_present(root, rel, path, version)):
                 continue  # its package (written with the plain models) holds every model the configurations name
-            entry = entries.get(path) or dataclasses.replace(owner, stem=path.name.split(".")[0], label=path.stem,
-                                                              path=path, config=None)
+            entry = entry or dataclasses.replace(owner, stem=path.name.split(".")[0], label=path.stem, path=path,
+                                                 config=None)
             try:
-                package.write_package(root, entry, rel, loaded[path], store, options, wanted[path] - own[path])
+                package.write_package(root, entry, rel, loaded[path], store, options, set(wanted[path]) - own[path])
                 written += 1
             except Stopped:
                 raise
@@ -1163,8 +1179,26 @@ class Service:
                 store.save(every=10.0)
         if packed:
             game = packed[0].game
-            collect.write_configurations(root, game, [collect.moved_config(e.config, {}, roots, root) for e in packed])
+            kept = [collect.moved_config(self._kept_variants(e.config), {}, roots, root) for e in packed]
+            collect.write_configurations(root, game, kept)
         return packed, raw, written
+
+    @staticmethod
+    def _kept_variant(variant: str | None) -> str | None:
+        """The name a model a configuration names is kept under in its file's package: a Borderlands 2 skin's
+        variant without the game file it's read from (``skin:<package>:<part>|<file>``)."""
+        return variant.partition("|")[0] if variant else None
+
+    def _kept_variants(self, config):
+        """``config`` naming the models as their packages keep them (see :meth:`_kept_variant`)."""
+        import dataclasses
+
+        def ref(r: configs.ModelRef) -> configs.ModelRef:
+            return dataclasses.replace(r, variant=self._kept_variant(r.variant))
+
+        slots = [dataclasses.replace(s, options=[dataclasses.replace(o, model=ref(o.model)) for o in s.options])
+                 for s in config.slots]
+        return dataclasses.replace(config, base=ref(config.base), slots=slots)
 
     def _list_collected(self, folders: list[tuple[Path, str]]) -> int:
         """Add folders of collected copies or packages (and the game each is of) to the library; the models listed."""
@@ -1232,7 +1266,7 @@ class Service:
             for e in plain:
                 job.check()
                 rel = collect.relative_path(e.path, roots).as_posix()
-                if not again and self._package_present(root, rel, e.path):
+                if not again and self._package_present(root, rel, e.path, self._package_version(e)):
                     kept += 1
                 else:
                     todo.append((e, rel, by_key.get(e.importer) or importer_for(e.path)))
@@ -1287,8 +1321,8 @@ class Service:
                       "bytes": max(collect.folder_size(root)[1] - size_before, 0),
                       "copied": written, "configurable": len(configurable), "configurable_packed": len(packed)}
             scanned = [(root, game)]
-            if raw:  # a paint mixed for each part when it's shown (Borderlands 2 skins): game files for now
-                job.report(1.0, "Collecting the configurable models with skins")
+            if raw:  # a paint that couldn't be kept, or a file that didn't open: copied as game files
+                job.report(1.0, "Collecting the configurable models that couldn't be imported")
                 plan = self._make_collect_plan({**args, "ids": [e.id for e in raw], "packages": False}, None)
                 result["collected"] = collect.run(plan)
                 scanned.append((plan.folder, game))
@@ -2706,3 +2740,17 @@ def _free_name(path: Path) -> Path:
         if not candidate.exists():
             return candidate
     return path
+
+
+def _changed_at(source: Path) -> float | None:
+    """When a game file last changed: a file kept inside an archive or package (a Borderlands package's
+    object, a file in a pak or archive) changes with it. None when it isn't there."""
+    for p in (source, *source.parents):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        if p == source or stat.S_ISREG(st.st_mode):
+            return st.st_mtime
+        return None  # a folder: the file isn't in it
+    return None

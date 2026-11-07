@@ -32,6 +32,9 @@ class Importer:
     # Whether several of its models may be loaded at once, in threads, as a whole game's import does: true for an
     # importer whose reading shares nothing between loads that isn't safe so (open files, unguarded caches).
     parallel = False
+    # Raised when its models' packages come to hold more (see darkstl.package), so that those written before are
+    # written again by the next import rather than kept.
+    package_version = 1
 
     def bulk(self) -> AbstractContextManager:
         """Within: a whole game's models are being loaded one after another, from folders that don't change

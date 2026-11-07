@@ -61,8 +61,11 @@ model's package to its game file. Configurable models (weapons with parts and sk
 too: every file their configurations name is written as a package (with any model of the file only
 a configuration names, kept but not listed), and the configurations are kept in the packages'
 folder (`collected.darkstl-configs.json`), naming files by their path in the game, which finds
-their packages. Borderlands 2 guns with a skin mixed for each part when it's shown (`paint_for`), or
-read from another package, are still copied as game files.
+their packages. A Borderlands 2 skin, whose colour is mixed for each part it goes on (`paint_for`), is
+kept as how it mixes (its `PaintRecipe`: the paint's values, and its textures in the asset store), and
+each gun part's package keeps the two sets of texture coordinates the mix reads (`<name>.paintuv.npz`);
+the colour is mixed when it's shown, from the packages alone. An importer whose packages come to hold
+more raises its `package_version`, so packages it wrote before are written again.
 
 The **library overlay** (`overlay.py`) is one file per game in the settings folder
 (`overlays/<game>.json`) holding the user's own changes, keyed by the model's path in the game
@@ -532,9 +535,9 @@ The plan in the backlog entry below, built in stages:
       PNG), animations sampled every frame at once (16 times faster), folders listed once, four
       models at a time; 12 animated Bloodborne characters 138 s -> 38 s. Cancel stops an import,
       Run in background leaves it running
-- [ ] Animations kept as the game's own files (Havok) if sampled frames turn out too big on a real
-      install (they are several times the size of the game's compressed animations)
-- [ ] Borderlands 2 skins mixed for each part baked into packages (copied as game files until then)
+- [x] Package size checked on a real install: Dark Souls 6.26 GB, 1.15 GB of it animations, which
+      Jerred found reasonable, so animations stay sampled (keeping the game's Havok files instead isn't needed)
+- [x] Borderlands 2 skins mixed for each part kept in packages, and mixed from them (0.33.0)
 - [ ] The whole asset store: every texture of a game extracted, kept compressed (DDS), with a size
       estimate first; models from other tools (FModel, UModel, Blender) imported as packages
 

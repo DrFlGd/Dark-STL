@@ -1,6 +1,7 @@
 """The Borderlands (Unreal 3) importer: LZO, packages, meshes, textures, materials, the library scan and the
 gun configurations built from Borderlands 2's gestalt meshes and part definitions."""
 
+import json
 import shutil
 import struct
 from pathlib import Path
@@ -672,6 +673,69 @@ def test_gun_skins_without_a_colour_texture_are_painted_on_each_part(bl2, tmp_pa
         again = configs.assemble(c, {"skin": "Mat_Bandit_Ruby"}, open_model)
         assert np.array_equal(again.textures[again.materials[0].albedo].decode(), img)
     finally:
+        set_cache_folder(None)
+
+
+def test_a_skin_mixed_on_each_part_is_kept_in_a_package_and_mixed_the_same_from_it(bl2, tmp_path):
+    """Imported as a package, a mixed skin keeps how it mixes (its zone colours and the masks they're mixed
+    over) and each part what it's mixed on (its UVs): the gun painted from the package, with the game gone,
+    is the gun painted from the game. A package written before skins were kept is written again."""
+    import dataclasses
+
+    from darkstl import configs, package
+    from darkstl.app.service import Service
+    from darkstl.importers import set_cache_folder
+
+    cooked = bl2 / "WillowGame" / "CookedPCConsole"
+    (cooked / "GD_Weap_Paint.upk").write_bytes(paint_skins_package())
+    files._INDEXES.clear()
+    set_cache_folder(tmp_path / "cache")
+    gone = bl2.with_name("Borderlands 2 (uninstalled)")
+    try:
+        gestalt = cooked / "Startup.upk" / "Weap_Pistol.Pistol_Gestalt.SkeletalMesh"
+        imp = importer_for(gestalt)
+        entries = imp.scan(bl2, files.GAME_BL2)
+        (c,) = imp.configurations(bl2, files.GAME_BL2, entries)
+        choice = {"skin": "Mat_Bandit_Ruby"}
+        game = configs.assemble(c, choice, open_model)
+        painted = {m.name: game.textures[m.albedo].decode() for m in game.materials}
+        assert len(painted) > 1
+
+        ref = next(s for s in c.slots if s.id == "skin").options[0].model
+        kept = ref.variant.partition("|")[0]  # the package holds the skin; which game file it was in isn't needed
+        root, rel = tmp_path / "packages", "WillowGame/CookedPCConsole/Startup.upk/Weap_Pistol.Pistol_Gestalt"
+        store = package.AssetStore(root / "assets")
+        models = [imp.load(gestalt, None), dataclasses.replace(imp.load(gestalt, ref.variant), variant=kept)]
+        entry = next(e for e in entries if e.path == gestalt)
+        index = package.write_package(root, entry, rel, models, store, hidden={kept})
+        store.save()
+        written = json.loads((index.parent / json.loads(index.read_text())["models"][1]["file"]).read_text())
+        assert written["paint"]["kind"] == "borderlands-gun-paint" and written["paint"]["textures"]
+        first = json.loads((index.parent / json.loads(index.read_text())["models"][0]["file"]).read_text())
+        assert (index.parent / first["paint_uvs"]).is_file()
+
+        shutil.move(str(bl2), str(gone))
+        files._INDEXES.clear()
+
+        def from_package(file, variant):
+            assert Path(file) == gestalt
+            return package.load_package(index, variant and variant.partition("|")[0], tmp_path / "cache2")
+
+        again = configs.assemble(c, choice, from_package)
+        assert [m.name for m in again.materials] == list(painted)
+        for m in again.materials:
+            assert np.array_equal(again.textures[m.albedo].decode(), painted[m.name]), m.name
+        shutil.move(str(gone), str(bl2))
+
+        assert Service._package_present(root, rel, gestalt, imp.package_version)
+        old = json.loads(index.read_text())
+        del old["importer_version"]  # written by 0.32, before skins were kept in packages
+        index.write_text(json.dumps(old))
+        assert Service._package_present(root, rel, gestalt, 1)
+        assert not Service._package_present(root, rel, gestalt, imp.package_version)
+    finally:
+        if gone.exists():
+            shutil.move(str(gone), str(bl2))
         set_cache_folder(None)
 
 

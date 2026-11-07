@@ -53,7 +53,7 @@ class PackageImporter(Importer):
         return pkg.listed_variants(pkg.read_index(self._index(path)).get("models") or [])
 
     def load(self, path: Path, variant: str | None = None, texture_dirs: tuple[str, ...] = ()) -> SourceModel:
-        return pkg.load_package(self._index(path), variant)
+        return pkg.load_package(self._index(path), variant, self.cache)
 
     def related_files(self, path: Path, textures: bool = True, animations: bool = True,
                       lod: bool = False) -> list[RelatedFile]:

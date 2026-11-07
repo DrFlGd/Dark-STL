@@ -42,7 +42,7 @@ from pathlib import Path
 import numpy as np
 
 from ...errors import FormatError
-from ...model import SourceModel, Texture
+from ...model import PaintRecipe, PaintUVs, SourceModel, Texture
 from . import files, materials
 from .files import resolve
 from .formats import upk
@@ -52,6 +52,7 @@ from .formats.texture import Texture2D
 log = logging.getLogger(__name__)
 
 BAKE_VERSION = 1
+RECIPE = "borderlands-gun-paint"  # PaintRecipe.kind
 DIFFUSE_SCALE = 0.4
 MAX_SIZE = 2048
 ZONES = "ABC"
@@ -350,7 +351,43 @@ def signature(paint: GunPaint) -> dict:
             "vectors": {k: [round(float(x), 6) for x in v] for k, v in sorted(paint.vectors.items())},
             "scalars": {k: round(v, 6) for k, v in sorted(paint.scalars.items())},
             "masks": dict(sorted(paint.masks.items())),
-            "textures": {k: [t.path, *_stamp(t.pkg.path)] for k, t in sorted(paint.textures.items())}}
+            "textures": {k: t.key if isinstance(t, _StoredTexture) else [t.path, *_stamp(t.pkg.path)]
+                         for k, t in sorted(paint.textures.items())}}
+
+
+def uvs_of(path: Path) -> PaintUVs:
+    """A gun part's (``SourceModel.paint_uvs``): read from its package when a paint is first mixed for it."""
+    path = Path(path)
+    return PaintUVs([str(path), _stamp(path.parent)], lambda: mesh_uvs(path))
+
+
+def recipe(paint: GunPaint, dirs=()) -> PaintRecipe:
+    """The paint as a model package keeps it: its numbers, and the textures it mixes from."""
+    values = {"name": paint.name, "vectors": {k: [float(x) for x in v] for k, v in paint.vectors.items()},
+              "scalars": dict(paint.scalars), "masks": dict(paint.masks), "details": list(paint.details)}
+    textures = {k: Texture(t.name, f"{t.pkg.path.name}: {t.path}", lambda t=t: t.decode(dirs),
+                           lambda t=t: t.describe(dirs)) for k, t in paint.textures.items()}
+    return PaintRecipe(RECIPE, values, textures)
+
+
+@dataclass
+class _StoredTexture:
+    """A paint's texture kept in a model package (the bake asks it as it asks a game's Texture2D)."""
+
+    texture: Texture
+    key: list  # its file and date
+
+    def decode(self, _dirs=None) -> np.ndarray:
+        return self.texture.decode()
+
+
+def from_recipe(values: dict, textures: dict[str, Texture], keys: dict[str, list]) -> GunPaint:
+    """The paint a model package kept (see :func:`recipe`); ``keys`` say which file each texture is, and its date."""
+    return GunPaint(str(values.get("name") or "paint"),
+                    {k: tuple(float(x) for x in v) for k, v in (values.get("vectors") or {}).items()},
+                    {k: float(v) for k, v in (values.get("scalars") or {}).items()},
+                    {k: _StoredTexture(t, list(keys.get(k) or [k])) for k, t in textures.items()},
+                    dict(values.get("masks") or {}), list(values.get("details") or []))
 
 
 def mesh_uvs(path: Path) -> tuple[np.ndarray, np.ndarray | None]:
@@ -383,10 +420,10 @@ def painter(paint: GunPaint, dirs=(), cache: Path | None = None):
     sig = signature(paint)
 
     def paint_for(target: SourceModel) -> Texture | None:
-        if target.importer != "borderlands" or not files.is_member(target.path):
+        uvs = target.paint_uvs
+        if uvs is None:  # not a gun part (or a package written before parts kept theirs)
             return None
-        path = Path(target.path)
-        key = hashlib.sha1(json.dumps([sig, str(path), _stamp(path.parent)], sort_keys=True).encode()).hexdigest()
+        key = hashlib.sha1(json.dumps([sig, *uvs.key], sort_keys=True).encode()).hexdigest()
         where = cache / "gunpaint" / f"{key}.npy" if cache is not None else None
         made: list[np.ndarray] = []
 
@@ -397,7 +434,7 @@ def painter(paint: GunPaint, dirs=(), cache: Path | None = None):
                     return made[0]
                 except (OSError, ValueError):
                     pass
-            uv0, uv1 = mesh_uvs(path)
+            uv0, uv1 = uvs.load()
             img = bake(paint, uv0, uv1, dirs)
             if where is not None:
                 try:
@@ -416,10 +453,11 @@ def painter(paint: GunPaint, dirs=(), cache: Path | None = None):
             h, w = made[0].shape[:2]
             return f"{w} x {h}, mixed from {paint.name}"
 
-        part = files.split_member(path)[1].rsplit(".", 1)[-1]
+        part = target.name or Path(target.path).name
         return Texture(f"{paint.name} on {part}", f"{paint.name}: the skin's paint, baked", load, describe)
 
     return paint_for
 
 
-__all__ = ["BAKE_VERSION", "GunPaint", "bake", "mesh_uvs", "painter", "read_paint", "signature", "static_masks"]
+__all__ = ["BAKE_VERSION", "RECIPE", "GunPaint", "bake", "from_recipe", "mesh_uvs", "painter", "read_paint", "recipe",
+           "signature", "static_masks", "uvs_of"]

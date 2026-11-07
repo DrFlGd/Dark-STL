@@ -1,9 +1,11 @@
 """A collected game works without the game: for each kind of game, collect everything, take the game's folder
 away (as if it were uninstalled), and open every model, texture, pose and configuration again from the copy
 alone. What each shows must be what it showed from the game. Each game is collected both ways: as copies of
-its files, and imported as model packages (configurable models are still copied as files then)."""
+its files, and imported as model packages (configurable models too, Borderlands 2 skins mixed for each part
+included)."""
 
 import hashlib
+import json
 import shutil
 from pathlib import Path
 
@@ -84,8 +86,8 @@ def collect_and_uninstall(home, game_dir: Path, game: str | None = None,  # noqa
         again = _service(home, "cache2")  # a fresh start, with nothing kept from the game
         wait(again, again.load_folders().id)
         after = _everything(again, game)
-        if packages:  # every model opens from its package, configurable ones too (but those with a skin of
-            # Borderlands 2's, mixed for each part when it's shown, which are copied as game files)
+        if packages:  # every model opens from its package, configurable ones too (but any whose paint couldn't
+            # be kept, which are copied as game files)
             items = again.call("models_query", {"game": game, "limit": 100000})["items"]
             plain = [i for i in items if not i.get("configurable")]
             copied = bool(done.get("collected"))
@@ -156,7 +158,12 @@ def test_borderlands_2_guns_parts_and_skins(home, packages, tmp_path):  # noqa: 
     assert len(gun) > 3 and any(":colour" in (m[1] or "") for o in gun for m in o["materials"]), \
         "a painted skin is in the test"
     assert_same(before, after)
-    if packages:
+    if packages:  # the skins mixed for each part are packages too: how each mixes, and what from on each part
+        folder = Path(plan["folder"])
+        assert not folder.with_name(bl_files.GAME_BL2).exists(), "nothing was copied as game files"
+        kept = [json.loads(p.read_text()) for p in folder.rglob("*.json") if p.name != "package.json"]
+        assert any(k.get("paint", {}).get("kind") == "borderlands-gun-paint" for k in kept)
+        assert any(k.get("paint_uvs") for k in kept)
         return
     folder = Path(plan["folder"])
     assert (folder / "WillowGame" / "CookedPCConsole" / "WeaponTextures.tfc").is_file()
