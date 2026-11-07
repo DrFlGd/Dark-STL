@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from ..collect import RelatedFile
 from ..errors import FormatError
@@ -88,14 +88,25 @@ class Importer:
         animations and low-detail copies kept beside it. Folders stand for everything in them."""
         return [RelatedFile(Path(path), "model")]
 
-    def list_textures(self, folder: Path) -> list[tuple[str, str]]:
+    def list_textures(self, folder: Path, deep: bool = False) -> list[tuple[str, str]]:
         """Every texture a scanned game folder holds, as (its name in the game, a reference to it that
-        :meth:`open_texture` takes), for the texture picker. Empty when the importer can't list them."""
+        :meth:`open_texture` takes), for the texture picker and for keeping every texture of a game. Empty
+        when the importer can't list them. ``deep``: the listing may take a while (reading the game's
+        archives through once), as keeping every texture does; without, only what's at hand is listed."""
         return []
 
     def open_texture(self, folder: Path, ref: str) -> Texture:
         """A texture :meth:`list_textures` listed."""
         raise FormatError(f"{self.name} can't open textures on their own")
+
+    def open_textures(self, folder: Path, refs: list[str]) -> Iterator[tuple[str, Texture | Exception]]:
+        """Each of ``refs`` (as :meth:`list_textures` listed them) opened, in any order: (the ref, its texture,
+        or why it couldn't be opened). An importer whose textures share files reads each file once."""
+        for ref in refs:
+            try:
+                yield ref, self.open_texture(folder, ref)
+            except (FormatError, OSError, ValueError) as exc:
+                yield ref, exc
 
     def shared_files(self, root: Path, game: str, player_animations: bool = False) -> list[RelatedFile]:
         """Files a game folder holds that every model from it may need (a compression library, the

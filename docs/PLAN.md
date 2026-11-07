@@ -50,7 +50,9 @@ welded vertex each glTF vertex is, so it reads back exactly as the importer buil
 JSON sidecar (materials and texture roles, normal-map convention, sockets, notes, animations).
 Textures and animations go into the game's asset store (`assets/` beside the packages), each
 once: textures under their name in the game (kept compressed as the game keeps them, as DDS files,
-where the importer gives them so: FromSoftware and RE Engine; else as the decoded picture, PNG),
+where the importer gives them so: every importer does since 0.34, the Unreal and Cyberpunk ones by
+wrapping the game's mips in a DDS header, `dds.wrap_mips`; else as the decoded picture, PNG: a
+Cyberpunk map blended from layers, a Borderlands V8U8 normal map),
 animations by content (the local matrix each bone takes per frame, sampled for every frame of an
 animation at once), so armour pieces posed by the same animations share them. A whole game's import
 writes four models at a time where the importer allows it (FromSoftware), and lists each of the
@@ -66,6 +68,17 @@ kept as how it mixes (its `PaintRecipe`: the paint's values, and its textures in
 each gun part's package keeps the two sets of texture coordinates the mix reads (`<name>.paintuv.npz`);
 the colour is mixed when it's shown, from the packages alone. An importer whose packages come to hold
 more raises its `package_version`, so packages it wrote before are written again.
+
+**Every texture of a game** (Collect › Model packages › Every texture of the game, offered for a whole
+game; `game_textures.py`) goes into the asset store too, not only those its models use. Each importer
+lists a folder's textures (`list_textures`: FromSoftware's texture files, RE Engine's `.tex` files,
+Borderlands 1/2/TPS's `Texture2D` objects in every package, the Unreal 4/5 games' `T_...` assets,
+Cyberpunk's loose `.xbm` files and those in archives something in the game names) and opens them in
+bulk (`open_textures`: FromSoftware reads each texture pack once). Before anything is written the plan
+lists them, leaves out those stored already (the store's index remembers which listed texture each file
+is), and estimates the size of the rest from a sample of 16. Not listed: FromSoftware textures kept
+only inside model archives (their models store them), Unreal textures not named `T_...`, and Cyberpunk
+textures nothing refers to by name (archives keep hashes only).
 
 The **library overlay** (`overlay.py`) is one file per game in the settings folder
 (`overlays/<game>.json`) holding the user's own changes, keyed by the model's path in the game
@@ -426,6 +439,7 @@ src/darkstl/
   configs.py    configurable models: configuration lists, finding their files, assembling a choice
   collect.py    copies the files chosen models need into the app's own library folder
   package.py    model packages: writing and reading them, the asset store (textures, animations)
+  game_textures.py  every texture of a game kept in its asset store: listed, estimated, stored
   posing.py     posing a mesh from a skeleton and per-vertex weights (packages)
   overlay.py    the library overlay: the user's own changes per game (names, folders, textures)
   variations.py saved variations: enhanced models kept beside the model's package
@@ -538,8 +552,9 @@ The plan in the backlog entry below, built in stages:
 - [x] Package size checked on a real install: Dark Souls 6.26 GB, 1.15 GB of it animations, which
       Jerred found reasonable, so animations stay sampled (keeping the game's Havok files instead isn't needed)
 - [x] Borderlands 2 skins mixed for each part kept in packages, and mixed from them (0.33.0)
-- [ ] The whole asset store: every texture of a game extracted, kept compressed (DDS), with a size
-      estimate first; models from other tools (FModel, UModel, Blender) imported as packages
+- [x] The whole asset store: every texture of a game extracted, kept compressed (DDS, every importer),
+      with a size estimate first (0.34.0)
+- [ ] Models from other tools (FModel, UModel, Blender exports: glTF, OBJ, PSK) imported as packages
 
 ### Backlog (on hold)
 

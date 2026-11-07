@@ -366,7 +366,8 @@ def recipe(paint: GunPaint, dirs=()) -> PaintRecipe:
     values = {"name": paint.name, "vectors": {k: [float(x) for x in v] for k, v in paint.vectors.items()},
               "scalars": dict(paint.scalars), "masks": dict(paint.masks), "details": list(paint.details)}
     textures = {k: Texture(t.name, f"{t.pkg.path.name}: {t.path}", lambda t=t: t.decode(dirs),
-                           lambda t=t: t.describe(dirs)) for k, t in paint.textures.items()}
+                           lambda t=t: t.describe(dirs), raw=lambda t=t: t.dds_bytes(dirs))
+                for k, t in paint.textures.items()}
     return PaintRecipe(RECIPE, values, textures)
 
 

@@ -87,6 +87,27 @@ class Texture4:
         raise FormatError(f"{self.name}: none of its mips could be read" + (f" ({last})" if last else ""))
 
 
+    def dds_bytes(self, _dirs=None) -> bytes:
+        """The texture as a DDS file, still compressed as the game keeps it: the largest mip whose data is
+        present (the one :meth:`decode` shows) and the smaller ones after it."""
+        options = self.available()
+        for i, m in enumerate(options):
+            try:
+                chain = [(m.width, m.height, asset.bulk_payload(self.pkg, m.bulk, m.inline_pos))]
+            except FormatError:
+                continue
+            for n in options[i + 1:]:
+                try:
+                    chain.append((n.width, n.height, asset.bulk_payload(self.pkg, n.bulk, n.inline_pos)))
+                except FormatError:
+                    break
+            data = dds.wrap_mips(self.codec, chain) if self.codec else None
+            if data is None:
+                break
+            return data
+        raise FormatError(f"{self.name} can't be kept as a DDS file")
+
+
 def read_texture(pkg: Package, e: Export) -> Texture4:
     v = pkg.versions
     r = pkg.export_data(e)

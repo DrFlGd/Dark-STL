@@ -128,16 +128,55 @@ def _read_cache(file: Path | None, path: Path) -> dict | None:
 
 
 def _write_cache(file: Path, path: Path, meshes: list[str], names: dict[str, str], complete: bool,
-                 apps: list[str] | None = None) -> None:
+                 apps: list[str] | None = None, textures: list[str] | None = None) -> None:
     try:
         st = path.stat()
         file.parent.mkdir(parents=True, exist_ok=True)
         tmp = file.with_suffix(f".{threading.get_ident()}.tmp")
-        tmp.write_text(json.dumps({"version": VERSION, "size": st.st_size, "mtime": st.st_mtime_ns,
-                                   "meshes": meshes, "names": names, "complete": complete, "apps": apps or []}), "utf-8")
+        data = {"version": VERSION, "size": st.st_size, "mtime": st.st_mtime_ns, "meshes": meshes, "names": names,
+                "complete": complete, "apps": apps or []}
+        if textures is not None:
+            data["textures"] = textures
+        tmp.write_text(json.dumps(data), "utf-8")
         os.replace(tmp, file)
     except OSError:
         pass
+
+
+def referenced_textures(path: Path, cache: Path | None = None, read: bool = True,
+                        progress: Callable[[int, str], None] | None = None) -> list[str]:
+    """The textures (``.xbm`` depot paths) the resources in an archive refer to, wherever they're kept (the
+    game keeps its textures in archives of their own, which name nothing). Kept in the archive's cache; one
+    the scan cached before this was kept is read through again (unless not ``read``: none, then)."""
+    cache_file = _cache_file(cache, path)
+    cached = _read_cache(cache_file, path)
+    if cached is not None and "textures" in cached:
+        return list(cached["textures"])
+    if not read:
+        return []
+    ar = arc.open_archive(path)
+    found: set[str] = set()
+    total, last = len(ar.entries), time.monotonic()
+    for i, e in enumerate(ar.entries.values()):
+        if progress and time.monotonic() - last > 0.5:
+            last = time.monotonic()
+            progress(-1, f"Reading {path.name}: {i + 1:,} of {total:,} files")
+        try:
+            head = ar.read_head(e.hash)
+        except (FormatError, OSError):
+            continue
+        if not cr2w.is_cr2w(head):
+            continue
+        try:
+            f = cr2w.read_cr2w(head, info_only=True)
+        except (FormatError, ValueError, IndexError):
+            continue
+        found.update(p for p in (arc.normalize_path(imp.path) for imp in f.imports) if p.endswith(".xbm"))
+    out = sorted(found)
+    if cache_file is not None and cached is not None:
+        _write_cache(cache_file, path, cached.get("meshes", []), cached.get("names", {}), cached.get("complete", True),
+                     cached.get("apps"), out)
+    return out
 
 
 def index_archive(path: Path, cache: Path | None = None, progress: Callable[[int, str], None] | None = None) \
@@ -154,6 +193,7 @@ def index_archive(path: Path, cache: Path | None = None, progress: Callable[[int
             return ar, meshes
     meshes_set: set[int] = set()
     apps_set: set[int] = set()
+    textures_set: set[str] = set()  # the textures its resources name, wherever they're kept
     names: dict[int, str] = dict(ar.names)
     total = len(ar.entries)
     last = time.monotonic()
@@ -182,6 +222,8 @@ def index_archive(path: Path, cache: Path | None = None, progress: Callable[[int
         weapon_app = f.root_class == "appearanceAppearanceResource"
         for imp in f.imports:
             p = arc.normalize_path(imp.path)
+            if p.endswith(".xbm"):
+                textures_set.add(p)
             if weapon_app and "\\weapons\\" in p and p.endswith((".mesh", ".ent")):
                 apps_set.add(e.hash)
             if p.endswith(_NAMED_REFS):
@@ -192,7 +234,7 @@ def index_archive(path: Path, cache: Path | None = None, progress: Callable[[int
     meshes = sorted(meshes_set)
     if cache_file is not None and complete:
         _write_cache(cache_file, path, [f"{h:016x}" for h in meshes], {f"{h:016x}": n for h, n in names.items()},
-                     complete, [f"{h:016x}" for h in sorted(apps_set)])
+                     complete, [f"{h:016x}" for h in sorted(apps_set)], sorted(textures_set))
     _APPS[str(path)] = sorted(apps_set)
     return ar, meshes
 

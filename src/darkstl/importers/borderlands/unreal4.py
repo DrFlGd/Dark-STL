@@ -7,6 +7,7 @@ in the game's paks or IoStore containers.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -64,7 +65,7 @@ def can_open(path: Path) -> bool:
 
 
 def _texture(tex, dirs) -> Texture:
-    return Texture(tex.name, f"{tex.pkg.name}", lambda: tex.decode(dirs), tex.describe)
+    return Texture(tex.name, f"{tex.pkg.name}", lambda: tex.decode(dirs), tex.describe, raw=tex.dds_bytes)
 
 
 def _materials(mesh: Mesh4, dirs) -> tuple[list[Material], dict[str, Texture], list[str]]:
@@ -128,6 +129,35 @@ def load(importer_key: str, path: Path, dirs: list[Path], game: str | None = Non
         info.append("sockets: " + ", ".join(s.name for s in m.sockets[:12]))
     return SourceModel(name=m.name, path=path, importer=importer_key, build=build, game=game, parts=parts,
                        materials=mats, textures=textures, info=info, notes=notes)
+
+
+# Unreal's naming convention for textures; the paks' indexes give no classes, so textures are found by name
+TEXTURE_NAME = re.compile(r"^(t|tex|tx)_", re.I)
+
+
+def list_textures(root: Path, game: str | None = None) -> list[tuple[str, str]]:
+    """Every texture the game's paks (or extracted files) hold, by Unreal's naming (``T_...``): (its name, its
+    path in the game)."""
+    gf = vfs.game_files(root, game)
+    names = gf.assets() + (gf.zen.assets() if gf.zen is not None else [])
+    out: dict[str, tuple[str, str]] = {}
+    for virtual in names:
+        stem = virtual.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        if TEXTURE_NAME.match(stem) and virtual.lower().endswith(".uasset"):
+            out.setdefault(virtual.lower(), (stem, virtual))
+    return sorted(out.values(), key=lambda t: (t[0].lower(), t[1].lower()))
+
+
+def open_texture(root: Path, virtual: str, game: str | None = None) -> Texture:
+    """A texture :func:`list_textures` listed."""
+    from .ue4.materials import TEXTURE_CLASSES
+    from .ue4.texture import read_texture
+
+    pkg = vfs.game_files(root, game).open_package(virtual)
+    e = pkg.main_export(tuple(TEXTURE_CLASSES))
+    if e is None:
+        raise FormatError(f"{Path(virtual).stem} isn't a texture")
+    return _texture(read_texture(pkg, e), [])
 
 
 def describe(path: Path) -> list[str] | None:

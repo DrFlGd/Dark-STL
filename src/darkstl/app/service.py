@@ -1012,6 +1012,13 @@ class Service:
         what importing the models as model packages would write instead."""
         if args.get("packages"):
             summary = self._package_plan(args)
+            if args.get("all_textures"):  # and every texture of the game: listed, and a sample measured
+                def plan(job: Job | None) -> dict:
+                    return {**summary, "textures": self._texture_plan(summary["game"], job)}
+
+                if not args.get("job"):
+                    return plan(None)
+                return {"job": self.jobs.start(f"Listing the textures of {summary['game']}", plan, stoppable=True).id}
             if not args.get("job"):
                 return summary
             return {"job": self.jobs.start("Listing the models to import", lambda job: summary).id}
@@ -1053,6 +1060,12 @@ class Service:
         """The game, the models to write as packages, the configurable models (collected as game files, as
         packages don't hold configurations yet), the game's folders and where its packages go."""
         entries, roots = self._chosen_entries(args)
+        if not entries and args.get("game") and not args.get("ids"):  # every model of it imported (or collected)
+            game = str(args["game"])
+            with self.lock:
+                roots = [r for r, g in self.library.roots.items() if g == game]
+            if roots:  # (its textures may still be kept: all_textures)
+                return game, [], [], roots, collect.packages_folder(self.config.library_folder, game)
         if not entries:
             raise AppError("Nothing to import: choose a model, a kind or a game.")
         games = sorted({e.game for e in entries})
@@ -1094,6 +1107,50 @@ class Service:
         return {"game": game, "folder": str(root), "packages": True, "models": len(plain) + len(configurable),
                 "to_write": len(plain) - present, "present": present, "configurable": len(configurable),
                 "files": 0, "bytes": 0, "to_copy": len(plain) - present, "kinds": {}}
+
+    def _texture_roots(self, game: str) -> list[Path]:
+        """The folders of ``game`` whose importers list its textures: not its model packages' (their textures
+        are the asset store's)."""
+        store = self._store_root(game)
+        with self.lock:
+            return [r for r, g in self.library.roots.items() if g == game and not _is_under(r, store)]
+
+    def _texture_plan(self, game: str, job: Job | None) -> dict:
+        """What keeping every texture of ``game`` in its asset store would add: the textures its folders hold,
+        those stored already, and the size of the rest, estimated from a sample."""
+        from .. import game_textures
+        from ..importers import IMPORTERS
+
+        if job is not None:
+            job.report(0.0, f"Listing the textures of {game}")
+        found = game_textures.listed(self._texture_roots(game), list(IMPORTERS))
+        todo = game_textures.missing(package.AssetStore(self._store_root(game)), found)
+        if job is not None:
+            job.check()
+            job.report(0.5, f"Measuring a sample of the {len(todo):,} textures to keep")
+        size = game_textures.estimate(todo, job.check if job is not None else None)
+        return {"listed": len(found), "present": len(found) - len(todo), "to_store": len(todo), **size}
+
+    def _keep_textures(self, game: str, store: "package.AssetStore", job: Job) -> dict:
+        """Store every texture of ``game`` that isn't in its asset store yet."""
+        from .. import game_textures
+        from ..importers import IMPORTERS
+
+        job.report(0.0, f"Listing the textures of {game}")
+        found = game_textures.listed(self._texture_roots(game), list(IMPORTERS))
+        todo = game_textures.missing(store, found)
+        n = len(todo)
+
+        def report(i: int, name: str) -> None:
+            job.report(i / max(n, 1), f"Keeping the textures of {game} ({i:,} of {n:,}): {name}")
+
+        try:
+            stored, failed = game_textures.keep(store, todo, report, job.check)
+        finally:
+            with self.lock:
+                self.texture_lists.pop(game, None)  # the picker lists them as stored now
+        return {"listed": len(found), "stored": stored, "present": len(found) - n, "failed": failed[:20],
+                "failures": len(failed)}
 
     @staticmethod
     def _config_refs(config) -> list:
@@ -1252,6 +1309,7 @@ class Service:
         game, plain, configurable, roots, root = self._package_choice(args)
         by_key = {imp.key: imp for imp in IMPORTERS}
         again = bool(args.get("again"))
+        all_textures = bool(args.get("all_textures"))
         options = package.WriteOptions(animations=bool(args.get("animations", True)))
 
         def run(job: Job):
@@ -1260,6 +1318,7 @@ class Service:
             store = package.AssetStore(root)
             size_before = collect.folder_size(root)[1] if root.is_dir() else 0
             written, kept, failed = 0, 0, []
+            textures = None  # with all_textures: what keeping every texture of the game did
             done: set[Path] = set()  # files written as packages now
             n = len(plain)
             todo = []
@@ -1314,12 +1373,19 @@ class Service:
                         packed, raw, more = self._package_configurable(configurable, roots, root, store, options, job,
                                                                        done, again, failed)
                         written += more
+                    if all_textures:
+                        try:
+                            textures = self._keep_textures(game, store, job)
+                        except Stopped:  # the models are imported, and the textures kept so far stay
+                            self._list_collected([(root, game)])
+                            raise
                 finally:
                     store.save()
             result = {"game": game, "folder": str(root), "models": n, "written": written, "present": kept,
                       "failed": failed[:20], "failures": len(failed),
                       "bytes": max(collect.folder_size(root)[1] - size_before, 0),
-                      "copied": written, "configurable": len(configurable), "configurable_packed": len(packed)}
+                      "copied": written, "configurable": len(configurable), "configurable_packed": len(packed),
+                      "textures": textures}
             scanned = [(root, game)]
             if raw:  # a paint that couldn't be kept, or a file that didn't open: copied as game files
                 job.report(1.0, "Collecting the configurable models that couldn't be imported")
@@ -1332,6 +1398,8 @@ class Service:
 
         count = len(plain) + len(configurable)
         label = f"Importing {count:,} model{'s' if count != 1 else ''} from {game}"
+        if all_textures:
+            label = f"{label} and its textures" if count else f"Keeping the textures of {game}"
         return {"job": self._scan_job(label, run).id}
 
     def cmd_models_query(self, args: dict) -> dict:
@@ -1495,13 +1563,13 @@ class Service:
             kept = self.texture_lists.get(game)
             if kept is not None and time.time() - kept[0] < 120:
                 return kept[1]
-            roots = [r for r, g in self.library.roots.items() if g == game]
+        roots = self._texture_roots(game)
         out: dict[str, dict] = {}
         store = self._store_root(game)
         for file in sorted(package.AssetStore(store).stored_textures()):
             name = package.stored_texture_name(file)
-            out.setdefault(name.lower(), {"ref": json.dumps(["store", file]), "name": name, "where": "asset store",
-                                          "stored": True})
+            out.setdefault(_texture_key(name), {"ref": json.dumps(["store", file]), "name": name,
+                                                "where": "asset store", "stored": True})
         for root in roots:
             for imp in IMPORTERS:
                 try:
@@ -1510,9 +1578,9 @@ class Service:
                     log.debug("Texture list of %s by %s failed", root, imp.key, exc_info=True)
                     continue
                 for name, ref in listed:
-                    where = ref.rpartition("|")[0] if "|" in ref else ref
-                    out.setdefault(name.lower(), {"ref": json.dumps(["game", str(root), imp.key, ref]), "name": name,
-                                                  "where": where, "stored": False})
+                    where = _texture_where(ref)
+                    out.setdefault(_texture_key(name), {"ref": json.dumps(["game", str(root), imp.key, ref]),
+                                                        "name": name, "where": where, "stored": False})
         found = sorted(out.values(), key=lambda t: t["name"].lower())
         with self.lock:
             self.texture_lists[game] = (time.time(), found)
@@ -2590,6 +2658,22 @@ class Service:
 def _collection_json(path: Path, data: dict) -> dict:
     return {"path": str(path), "game": str(data["game"]), "models": len(data.get("models") or []),
             "updated": data.get("updated"), "sources": data.get("sources") or []}
+
+
+def _texture_where(ref: str) -> str:
+    """Where a texture an importer listed is, for the picker: the file that holds it (from its reference:
+    ``<file>|<name>``, ``<package>|<object>``, ``ue4|<asset>``, ``archive|<archive>|<hash>|<name>``...)."""
+    parts = ref.split("|")
+    if parts[0] in ("ue4", "archive", "loose"):
+        parts = parts[1:]
+    if len(parts) > 1:
+        return parts[0]
+    return parts[0].replace("\\", "/").rpartition("/")[0] if ref.startswith(("ue4|", "loose|")) else parts[0]
+
+
+def _texture_key(name: str) -> str:
+    """A texture's name, the same however its folders are written (a Cyberpunk depot path)."""
+    return name.lower().replace("\\", "/")
 
 
 def _is_under(path: Path, root: Path) -> bool:

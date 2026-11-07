@@ -364,3 +364,37 @@ def build_dds(codec: str, width: int, height: int, data: bytes, mipmaps: int = 1
         dx10 = struct.pack("<5I", dxgi, 3, 0x4 if cubemap else 0, 1, 0)
     struct.pack_into("<4I", header, 0x6C, caps, caps2, 0, 0)
     return bytes(header) + dx10 + data
+
+
+# codecs a DDS file keeps so that it reads back as the same pixels (see wrap_mips)
+_WRAPPABLE = set(BLOCK_BYTES) - {"BC4S", "BC5S"} | {"R8G8B8A8", "B8G8R8A8"} | set(CODEC_DXGI)
+
+
+def surface_bytes(codec: str, width: int, height: int) -> int:
+    """Bytes of one ``width`` x ``height`` surface in ``codec``."""
+    if codec in BLOCK_BYTES:
+        return max(1, (width + 3) // 4) * max(1, (height + 3) // 4) * BLOCK_BYTES[codec]
+    return width * height * PIXEL_BYTES[codec]
+
+
+def wrap_mips(codec: str, mips: list[tuple[int, int, bytes]]) -> bytes | None:
+    """A DDS file holding ``mips`` (each ``(width, height, surface bytes)``, the largest first), as far as each
+    is half the one before: how a game's texture is kept as it is, still compressed. None when ``codec`` can't
+    be kept in a DDS file, or the largest mip is short of bytes."""
+    if codec not in _WRAPPABLE or not mips:
+        return None
+    w0, h0 = mips[0][0], mips[0][1]
+    if w0 <= 0 or h0 <= 0:
+        return None
+    data, n = [], 0
+    for w, h, raw in mips:
+        if (w, h) != (max(1, w0 >> n), max(1, h0 >> n)):
+            break
+        need = surface_bytes(codec, w, h)
+        if len(raw) < need:
+            break
+        data.append(bytes(raw[:need]))
+        n += 1
+    if not n:
+        return None
+    return build_dds(codec, w0, h0, b"".join(data), n)

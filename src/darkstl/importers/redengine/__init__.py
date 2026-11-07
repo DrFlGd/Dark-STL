@@ -39,7 +39,8 @@ def _texture(ref) -> Texture:
         t = ref.texture()
         return f"{t.width} x {t.height}, {t.codec}, {t.mips} mips"
 
-    return Texture(ref.name, ref.source, ref.decode, describe)
+    # a texture file as it is is kept as a DDS file; a map blended from layers is kept as its picture
+    return Texture(ref.name, ref.source, ref.decode, describe, raw=getattr(ref, "dds_bytes", None))
 
 
 def _material(info: materials.MaterialInfo) -> Material:
@@ -174,6 +175,53 @@ class RedEngineImporter(Importer):
                                  "full-detail chunks; turn off to see every level at once.")],
             info=mesh_summary(m), notes=notes,
         )
+
+    def list_textures(self, folder: Path, deep: bool = False) -> list[tuple[str, str]]:
+        """Every texture (``.xbm``) in the folder: loose ones by their depot path, and those in archives that
+        something in the game refers to by name (an archive keeps no names: a texture nothing names isn't
+        listed). Not ``deep``: only the names an archive's scan kept (one scanned before 0.34 is read
+        through again only when deep)."""
+        folder = Path(folder)
+        if catalog.detect_game(folder) != GAME:
+            return []
+        out: dict[str, tuple[str, str]] = {}
+        archives = []
+        for path in catalog.iter_files(folder):
+            low = path.name.lower()
+            if low.endswith(".xbm"):
+                name = depot.depot_path_of(path) or low
+                out.setdefault(name, (name, "loose|" + path.relative_to(folder).as_posix()))
+            elif low.endswith(".archive") and archive.is_archive_file(path):
+                archives.append(path)
+        if archives:
+            catalog.oodle.add_hint_path(archives[0].parent)
+        opened, named = [], set()
+        for path in archives:
+            try:
+                opened.append(archive.open_archive(path))
+                named.update(catalog.referenced_textures(path, self.cache, read=deep))
+            except (FormatError, OSError):
+                continue
+        for name in sorted(named - set(out)):
+            h = archive.path_hash(name)
+            ar = next((a for a in opened if h in a.entries), None)
+            if ar is not None:
+                out[name] = (name, f"archive|{ar.path.relative_to(folder).as_posix()}|{h:016x}|{name}")
+        return sorted(out.values())
+
+    def open_texture(self, folder: Path, ref: str) -> Texture:
+        kind, _, rest = ref.partition("|")
+        if kind == "loose":
+            path = Path(folder) / rest
+            name = depot.depot_path_of(path) or path.name.lower()
+            where = str(path)
+        else:
+            rel, h, name = rest.split("|", 2)
+            path = depot.member_path(Path(folder) / rel, int(h, 16), ".xbm")
+            where = f"{Path(rel).name} > {name}"
+        if not path.parent.exists():
+            raise FormatError(f"{name} isn't in the game's files any more")
+        return _texture(depot.TextureRef(name, where, lambda: depot._read_file(path)))
 
     def describe(self, path: Path) -> list[str] | None:
         path = Path(path)
