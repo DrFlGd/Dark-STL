@@ -5,10 +5,17 @@ folder or its model packages is touched, and every entry is keyed by the model's
 same for the game's file and for the package made from it), so the changes survive rescans, moving the
 library, and importing the game as packages.
 
-Today it holds texture assignments: per model and material, the texture to use for its colour, normal or
-height map, picked by name from the game's textures in the app (the texture picker). The texture itself
-is kept in the game's asset store (see :mod:`darkstl.package`), so the choice still works once the game
-is uninstalled.
+It holds:
+
+- per model, its name (the one it has in the game, say) and its folder (``Kind/Group``, the user's own:
+  "Bosses", "Weapons/Long swords"), in place of what the importer made of its file names;
+- folder renames: a kind or group of the game's renamed or moved as a whole ("Characters" -> "Bosses");
+- per model and material, the texture to use for its colour, normal or height map, picked by name from
+  the game's textures in the app (the texture picker). The texture itself is kept in the game's asset
+  store (see :mod:`darkstl.package`), so the choice still works once the game is uninstalled.
+
+Models combined into one (face, body and hair) are configurations the user saves (see
+:mod:`darkstl.configs`), filed like any other model.
 """
 
 from __future__ import annotations
@@ -94,16 +101,69 @@ class Overlay:
         else:
             models.pop(key, None)
 
+    def is_empty(self) -> bool:
+        return not self.data["models"] and not self.data.get("folders")
+
+    def set_place(self, key: str, name: str | None = None, folder: str | None = None) -> None:
+        """Name and file a model as the user says; "" or None for either goes back to the game's own."""
+        models = self.data["models"]
+        entry = dict(models.get(key) or {})
+        for field_name, value in (("name", name), ("folder", folder)):
+            value = clean_folder(value) if field_name == "folder" else (value or "").strip()
+            if value:
+                entry[field_name] = value
+            else:
+                entry.pop(field_name, None)
+        if entry:
+            models[key] = entry
+        else:
+            models.pop(key, None)
+
+    def rename_folder(self, old: str, new: str | None) -> None:
+        """Rename or move a kind (``"Characters"``) or a group in it (``"Weapons/IDs 03xx"``) as a whole;
+        ``new`` "" or None undoes it."""
+        folders = dict(self.data.get("folders") or {})
+        old, new = clean_folder(old), clean_folder(new)
+        if not old:
+            raise ValueError("no folder to rename")
+        if new and new != old:
+            folders[old] = new
+        else:
+            folders.pop(old, None)
+        if folders:
+            self.data["folders"] = folders
+        else:
+            self.data.pop("folders", None)
+
+    def place(self, key: str, category: str, group: str) -> tuple[str | None, str | None, str | None]:
+        """(category, group, label) the user gives a model filed by the game under ``category``/``group``;
+        None where the game's own stays."""
+        entry = self.model(key)
+        name = entry.get("name") or None
+        folder = entry.get("folder")
+        if not folder:
+            folders = self.data.get("folders") or {}
+            folder = folders.get(clean_folder(f"{category}/{group}")) if group else None
+            if folder is None and clean_folder(category) in folders:
+                folder = folders[clean_folder(category)] + (f"/{group}" if group else "")
+        if not folder:
+            return None, None, name
+        kind, _, rest = folder.partition("/")
+        return kind, rest.replace("/", " / "), name
+
     def signature_of_file(self, rel: str) -> str:
-        """Changes when what the overlay says about any model of the file at ``rel`` changes."""
+        """Changes when the textures the overlay gives any model of the file at ``rel`` change (what is
+        open, and every result made from it, depends on them; a new name or folder changes neither)."""
         rel = model_key(rel)
-        found = {k: v for k, v in self.data["models"].items() if k == rel or k.startswith(rel + "|")}
+        found = {k: v["textures"] for k, v in self.data["models"].items()
+                 if (k == rel or k.startswith(rel + "|")) and v.get("textures")}
         return json.dumps(found, sort_keys=True) if found else ""
 
-    def signature(self, key: str) -> str:
-        """Changes when what the overlay says about ``key`` changes (so open models and results are redone)."""
-        entry = self.model(key)
-        return json.dumps(entry, sort_keys=True) if entry else ""
+
+def clean_folder(path: str | None) -> str:
+    """A folder path as the overlay keeps it: ``Kind/Group/...``, no empty or padded parts."""
+    parts = [p.strip() for p in str(path or "").replace("\\", "/").replace(" / ", "/").split("/")]
+    return "/".join(p for p in parts if p)
 
 
 def apply(model: SourceModel, assigned: dict[str, dict[str, dict]], store_root: Path) -> SourceModel:
@@ -144,4 +204,4 @@ def apply(model: SourceModel, assigned: dict[str, dict[str, dict]], store_root: 
     return replace(model, materials=materials, textures=textures, notes=notes)
 
 
-__all__ = ["FORMAT", "Overlay", "ROLES", "apply", "model_key"]
+__all__ = ["FORMAT", "Overlay", "ROLES", "apply", "clean_folder", "model_key"]

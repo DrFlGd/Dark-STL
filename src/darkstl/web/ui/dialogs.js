@@ -1,6 +1,8 @@
 // Dialogs: adding a game folder, changing a folder's game, opening one model
 // file, collecting models into the app, unpacking a game's archives, and confirming. Which one is open is
-// `ui.dialog` ({ type: "add-folder" | "change-game" | "open-file" | "collect" | "unpack" | "confirm", ... }).
+// `ui.dialog` ({ type: "add-folder" | "change-game" | "open-file" | "collect" | "unpack" | "confirm" | "texture-picker" |
+// "arrange" | "arrange-folder" | "combine", ... }); the last three keep the user's own names, folders and combined
+// models (the library overlay and the user's configurations).
 import { html, useState, useLayoutEffect, useRef, useEffect } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui } from "./state.js";
@@ -447,6 +449,137 @@ function TexturePicker({ sid, game, material, materialName, role: startRole, cur
   <//>`;
 }
 
+/** The places a game's models are filed under now ("Kind" and "Kind/Group"), for a folder box's suggestions. */
+function placesOf(game) {
+  const g = (ui.get().overview?.games || []).find((x) => x.name === game);
+  if (!g) return [];
+  return g.categories.flatMap((c) => [c.name, ...(c.groups || []).filter((x) => x.name).map((x) => `${c.name}/${x.name.replace(/ \/ /g, "/")}`)]);
+}
+
+const libraryChanged = async () => { await loadOverview(); ui.set({ libRev: (ui.get().libRev || 0) + 1 }); };
+
+/** Rename a model (its in-game name, say) and file it in a folder of one's own: "Kind" or "Kind/Group". */
+function Arrange({ model: m }) {
+  const orig = m.original || { label: m.label, category: m.category, group: m.group };
+  const [name, setName] = useState(m.label);
+  const [folder, setFolder] = useState(m.group ? `${m.category}/${m.group.replace(/ \/ /g, "/")}` : m.category);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const origFolder = orig.group ? `${orig.category}/${orig.group.replace(/ \/ /g, "/")}` : orig.category;
+  const save = async (args) => {
+    setBusy(true); setError(null);
+    try {
+      const r = await api("model_arrange", { id: m.id, ...args });
+      close();
+      await libraryChanged();
+      const e = r.entry;
+      toast(`${e.label} is in ${e.category}${e.group ? ` › ${e.group}` : ""}`, { ms: 5000, action: { label: "Go there", run: () => { location.hash = routeHash(placeRoute(e.game, e.category, e.group || undefined)); } } });
+    } catch (e) {
+      setBusy(false);
+      setError(String(e.message || e));
+    }
+  };
+  const submit = () => save({ name: name.trim() === orig.label ? "" : name.trim(), folder: folder.trim() === origFolder ? "" : folder.trim() });
+  return html`<${Dialog} title="Rename or move" id="arrange-dialog" onSubmit=${submit} busy=${busy} error=${error} submitLabel=${busy ? "Saving…" : "Save"}>
+    <p class="muted">Your own name and folder for <b>${m.stem}</b>. The game's files aren't changed: the choice is kept in Dark STL's settings,
+      and follows the model into its package when it is imported.</p>
+    <label class="field-block"><span>Name</span><input id="arrange-name" value=${name} disabled=${busy} onInput=${(e) => setName(e.target.value)} />
+      <small class="muted">In the game: ${orig.label}</small></label>
+    <label class="field-block"><span>Folder</span><input id="arrange-folder" list="arrange-places" value=${folder} disabled=${busy} onInput=${(e) => setFolder(e.target.value)}
+        placeholder="Kind/Group, e.g. Bosses or Weapons/Long swords" />
+      <datalist id="arrange-places">${placesOf(m.game).map((p) => html`<option key=${p} value=${p} />`)}</datalist>
+      <small class="muted">A kind and a group in it, as Kind/Group; a new name makes a new folder. In the game: ${origFolder.replace("/", " › ")}</small></label>
+    ${m.original ? html`<p><button type="button" class="link-btn" id="arrange-reset" disabled=${busy} onClick=${() => save({ name: "", folder: "" })}>Go back to the game's name and place</button></p>` : null}
+  <//>`;
+}
+
+/** Rename one of a game's kinds or groups, or move it into another, for every model in it. */
+function ArrangeFolder({ game, category, group }) {
+  const here = group ? `${category}/${group.replace(/ \/ /g, "/")}` : category;
+  const [to, setTo] = useState(here);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const save = async (value) => {
+    setBusy(true); setError(null);
+    try {
+      const r = await api("folder_arrange", { game, category, group: group || "", to: value });
+      close();
+      await libraryChanged();
+      const [kind, ...rest] = (r.to || "").split("/");
+      location.hash = routeHash(r.to ? placeRoute(game, kind, rest.length ? rest.join(" / ") : undefined) : placeRoute(game));
+      toast(r.to ? `Moved to ${r.to.replace(/\//g, " › ")}` : "Back to the game's own folders", { ms: 5000 });
+    } catch (e) {
+      setBusy(false);
+      setError(String(e.message || e));
+    }
+  };
+  return html`<${Dialog} title=${`Rename or move ${group || category}`} id="arrange-folder-dialog" onSubmit=${() => save(to.trim())} busy=${busy} error=${error} submitLabel=${busy ? "Saving…" : "Save"}>
+    <p class="muted">Every model in ${group ? `${category} › ${group}` : category} goes to the folder named here (models you moved here by hand go with it).
+      ${group ? "Kind/Group renames the group, or moves it into another kind." : "A new name renames the kind; Kind/Group makes it a group of another kind."}</p>
+    <label class="field-block"><span>Folder</span><input id="arrange-folder-to" list="arrange-folder-places" value=${to} disabled=${busy} onInput=${(e) => setTo(e.target.value)} />
+      <datalist id="arrange-folder-places">${placesOf(game).map((p) => html`<option key=${p} value=${p} />`)}</datalist></label>
+    <p><button type="button" class="link-btn" id="arrange-folder-reset" disabled=${busy} onClick=${() => save("")}>Go back to the game's own folders for these models</button></p>
+  <//>`;
+}
+
+/** Make one model of several (a character's face, body and hair): a configuration with this model as its base
+ * and each model picked as a part, filed and named like any other model. */
+function Combine({ model: base }) {
+  const [q, setQ] = useState("");
+  const [found, setFound] = useState(null);
+  const [picked, setPicked] = useState([]); // the models picked, in that order
+  const [name, setName] = useState(`${base.label} (combined)`);
+  const [folder, setFolder] = useState(base.group ? `${base.category}/${base.group.replace(/ \/ /g, "/")}` : base.category);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    let live = true;
+    const t = setTimeout(() => {
+      api("models_query", { game: base.game, q, limit: 80 }).then((r) => live && setFound(r), (e) => live && setError(String(e.message || e)));
+    }, 200);
+    return () => { live = false; clearTimeout(t); };
+  }, [q]);
+  const isPicked = (i) => picked.some((p) => p.id === i.id);
+  const toggle = (i) => setPicked(isPicked(i) ? picked.filter((p) => p.id !== i.id) : [...picked, i]);
+  const items = (found?.items || []).filter((i) => i.id !== base.id && !i.configurable);
+  const submit = async () => {
+    if (!picked.length) { setError("Choose the models to add to it first."); return; }
+    const [category, ...rest] = folder.replace(/\\/g, "/").split("/").map((x) => x.trim()).filter(Boolean);
+    const label = name.trim() || `${base.label} (combined)`;
+    const configuration = { label, category: category || base.category, group: rest.join(" / "),
+      slots: picked.map((p, n) => ({ id: `part${n + 1}`, label: p.label, required: false, default: "on",
+        options: [{ id: "on", label: p.label, path: p.file }] })) };
+    setBusy(true); setError(null);
+    try {
+      const r = await api("config_save", { base_id: base.id, configuration });
+      close();
+      await libraryChanged();
+      location.hash = routeHash(`model:${r.id}`);
+      toast(`${label} is saved with your models: its Configure tab turns a part off or adds another`, { ms: 6000 });
+    } catch (e) {
+      setBusy(false);
+      setError(String(e.message || e));
+    }
+  };
+  return html`<${Dialog} title=${`Combine ${base.label} with other models`} id="combine-dialog" onSubmit=${submit} busy=${busy} error=${error}
+      submitLabel=${busy ? "Saving…" : picked.length ? `Combine ${picked.length + 1} models` : "Combine"}>
+    <p class="muted">One model made of several, such as a character's face, body and hair. It is listed as a model of its own,
+      made of <b>${base.label}</b> and the models you choose here, each in its place in the game. Nothing of the models themselves is changed.</p>
+    <label class="field-block"><span>Find models of ${base.game}</span>
+      <input type="search" id="combine-search" value=${q} disabled=${busy} placeholder="Part of a name: hair, c1100, body" onInput=${(e) => setQ(e.target.value)} /></label>
+    <ul class="picker-list" id="combine-results" aria-label="Models">${items.map((i) => html`<li key=${i.id}>
+      <label class=${isPicked(i) ? "picker-item selected" : "picker-item"} data-model=${i.stem}>
+        <input type="checkbox" checked=${isPicked(i)} disabled=${busy} onChange=${() => toggle(i)} />
+        <span>${i.label}<small class="muted">${i.category}${i.group ? ` › ${i.group}` : ""} · ${i.name}</small></span></label></li>`)}
+      ${found && !items.length ? html`<li class="muted picker-empty">No models match.</li>` : null}</ul>
+    ${picked.length ? html`<p id="combine-picked">With ${picked.map((p) => p.label).join(", ")}.</p>` : null}
+    <label class="field-block"><span>Name</span><input id="combine-name" value=${name} disabled=${busy} onInput=${(e) => setName(e.target.value)} /></label>
+    <label class="field-block"><span>Folder</span><input id="combine-folder" list="combine-places" value=${folder} disabled=${busy} onInput=${(e) => setFolder(e.target.value)}
+        placeholder="Kind/Group, e.g. Characters/Bosses" />
+      <datalist id="combine-places">${placesOf(base.game).map((p) => html`<option key=${p} value=${p} />`)}</datalist></label>
+  <//>`;
+}
+
 export function Dialogs() {
   const dialog = useStore(ui, (s) => s.dialog);
   if (!dialog) return null;
@@ -455,6 +588,9 @@ export function Dialogs() {
   if (dialog.type === "open-file") return html`<${OpenFile} />`;
   if (dialog.type === "confirm") return html`<${ConfirmDialog} ...${dialog} />`;
   if (dialog.type === "collect") return html`<${Collect} ...${dialog} />`;
+  if (dialog.type === "arrange") return html`<${Arrange} key=${dialog.model.id} model=${dialog.model} />`;
+  if (dialog.type === "combine") return html`<${Combine} key=${dialog.model.id} model=${dialog.model} />`;
+  if (dialog.type === "arrange-folder") return html`<${ArrangeFolder} key=${`${dialog.category}/${dialog.group || ""}`} ...${dialog} />`;
   if (dialog.type === "texture-picker") return html`<${TexturePicker} key=${`${dialog.sid}:${dialog.material}:${dialog.role}`} ...${dialog} />`;
   if (dialog.type === "unpack") return html`<${Unpack} key=${dialog.path} path=${dialog.path} game=${dialog.game} added=${dialog.added} />`;
   return null;

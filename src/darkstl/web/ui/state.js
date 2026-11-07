@@ -37,6 +37,7 @@ export const ui = createStore({
   configChoices: null,     // per configurable model id: the part chosen in each slot { slot: option }
   configEdit: null,        // the configurable model whose configuration is being edited (Configure tab)
   configRev: 0,            // counts the configurations saved, so the model page opens its model again
+  libRev: 0,               // counts the user's renames and moves, so the lists are read again
   thumbGen: 0,             // counts the times every preview was let go (a rescan): see thumbs.js
 });
 

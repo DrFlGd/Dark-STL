@@ -753,3 +753,55 @@ def test_the_texture_picker_assigns_a_texture_by_name(page, app, weapon_dir):  #
     page.wait_for_selector("#texture-reset")
     page.click("#texture-reset")
     page.wait_for_function("!document.querySelector('#materials')?.textContent.includes('(chosen)')", timeout=30000)
+
+
+def test_models_are_renamed_moved_and_combined(page, app, weapon_dir):  # noqa: F811
+    """Rename or move… gives a model a name and a folder of one's own, a whole kind is renamed from its
+    summary, and Combine with other models… makes one model of two."""
+    from test_app import wait
+
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    wait(app.service, app.service.call("folder_add", {"path": str(weapon_dir)})["job"])
+    items = {i["stem"]: i for i in app.service.call("models_query", {"game": "Dark Souls III", "limit": 100})["items"]}
+    page.goto(app.url + "#/browse/Dark%20Souls%20III/Weapons")
+    page.reload()  # the game was added behind the page's back
+    page.click(f'.results [data-model="{items["wp_a_0300"]["id"]}"]')
+    page.click("#summary-arrange")
+    page.wait_for_selector("#arrange-dialog")
+    page.fill("#arrange-name", "Longsword")
+    page.fill("#arrange-folder", "Weapons/Long swords")
+    if shots:
+        page.screenshot(path=os.path.join(shots, "rename-or-move.png"))
+    page.click("#arrange-dialog-ok")
+    page.wait_for_function("!document.querySelector('#arrange-dialog')")
+    page.wait_for_selector('#group-chips >> text=Long swords')
+    page.click(f'.results [data-model="{items["wp_a_0300"]["id"]}"]')
+    page.wait_for_selector("#summary-original")
+    assert "Weapon 0300" in page.inner_text("#summary-original")
+    assert "Longsword" in page.inner_text("#model-summary")
+    # the characters, as a whole, become "Bosses"
+    page.goto(app.url + "#/browse/Dark%20Souls%20III/Characters")
+    page.wait_for_selector("#place-rename")
+    page.click("#place-rename")
+    page.fill("#arrange-folder-to", "Bosses")
+    page.click("#arrange-folder-dialog-ok")
+    page.wait_for_function("location.hash.endsWith('/Bosses')")  # it goes to the folder under its new name
+    page.wait_for_selector(f'.results [data-model="{items["c1100"]["id"]}"]')
+    assert app.service.call("models_query", {"game": "Dark Souls III", "category": "Bosses"})["total"] >= 1
+    # combine the character with the sword, from the model's page
+    page.goto(app.url + f"#/model/{items['c1100']['id']}")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    page.click("#mp-more")
+    page.click('[data-action="combine"]')
+    page.wait_for_selector("#combine-dialog")
+    page.fill("#combine-search", "longsword")
+    page.wait_for_selector('#combine-results [data-model="wp_a_0300"]')
+    page.click('#combine-results [data-model="wp_a_0300"] input')
+    page.fill("#combine-name", "Knight with sword")
+    if shots:
+        page.screenshot(path=os.path.join(shots, "combine.png"))
+    page.click("#combine-dialog-ok")
+    page.wait_for_function("!document.querySelector('#combine-dialog')")
+    page.wait_for_selector("#mp-name >> text=Knight with sword", timeout=30000)
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    assert "Longsword" in page.inner_text("#inspector")

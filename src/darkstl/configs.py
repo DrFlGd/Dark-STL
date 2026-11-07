@@ -337,11 +337,21 @@ class Resolver:
         self.roots = [Path(r) for r in roots]
         self.by_path: dict[str, CatalogEntry] = {}
         self.by_name: dict[str, list[CatalogEntry]] = {}
+        # a model package stands for the game's file it was made from, found by that file's path and name
+        # when the file itself isn't there (a game file, or a collected copy, is what configurations open)
+        self.by_source: dict[str, CatalogEntry] = {}
+        self.seen_as: dict[int, str] = {}
         for e in entries:
             if e.config is not None:
                 continue
+            names = {e.path.name.lower(), e.stem.lower()}
             self.by_path[_norm(e.path)] = e
-            for key in {e.path.name.lower(), e.stem.lower()}:
+            if e.importer == "package" and e.path.parent.name.lower().endswith(".darkpkg"):
+                source = e.path.parent.with_name(e.path.parent.name[:-len(".darkpkg")])
+                self.seen_as[id(e)] = _norm(source)
+                self.by_source[_norm(source)] = e
+                names.add(source.name.lower())
+            for key in names:
                 self.by_name.setdefault(key, []).append(e)
 
     def find(self, ref: ModelRef) -> Path | None:
@@ -353,21 +363,26 @@ class Resolver:
             hit = self.by_path.get(_norm(p))
             if hit is not None:
                 return hit.path
-            return p if p.is_file() else None
+            if p.is_file():
+                return p
+            hit = self.by_source.get(_norm(p))
+            return hit.path if hit is not None else None
         low = f.lower().lstrip("./")
-        for r in self.roots:
-            hit = self.by_path.get(_norm(r / low))
-            if hit is not None:
-                return hit.path
+        for found in (self.by_path, self.by_source):
+            for r in self.roots:
+                hit = found.get(_norm(r / low))
+                if hit is not None:
+                    return hit.path
         name = low.rsplit("/", 1)[-1]
         cands = self.by_name.get(name, [])
         if "/" in low:
-            cands = [e for e in cands if _norm(e.path).endswith("/" + low) or _norm(e.path) == low]
+            cands = [e for e in cands if any(q.endswith("/" + low) or q == low
+                                             for q in (_norm(e.path), self.seen_as.get(id(e), "")))]
         if not cands and "/" not in low:  # 'w_rifle_mag' for 'w_rifle_mag.mesh'
             cands = self.by_name.get(name.split(".", 1)[0], [])
         if not cands:
             return None
-        cands.sort(key=lambda e: (e.is_lod, len(str(e.path))))
+        cands.sort(key=lambda e: (e.importer == "package", e.is_lod, len(str(e.path))))
         return cands[0].path
 
 

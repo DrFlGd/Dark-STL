@@ -249,6 +249,9 @@ def entry_json(e: CatalogEntry) -> dict:
     if e.config is not None:
         out["configurable"] = {"slots": len(e.config.slots), "options": sum(len(s.options) for s in e.config.slots),
                                "guessed": e.config.guessed}
+    original = e.__dict__.get("_original")
+    if original and original != (e.category, e.group, e.label):  # renamed or moved by the user
+        out["original"] = {"category": original[0], "group": original[1], "label": original[2]}
     return out
 
 
@@ -317,6 +320,7 @@ class Service:
         self.part_models: OrderedDict[tuple, SourceModel] = OrderedDict()  # models opened to assemble configurations
         configs.set_user_folder((config.path.parent if config.path else config_dir()) / "configurations")
         self.overlays: dict[str, overlay.Overlay] = {}  # each game's library overlay, by game
+        self.library.arrange = self._arrange  # models filed under the user's own names and folders
         self.texture_lists: dict[str, tuple[float, list]] = {}  # each game's textures for the picker, by game
         if config.oodle:
             self._use_oodle(config.oodle)
@@ -1249,7 +1253,7 @@ class Service:
         """The game's asset store (beside its model packages)."""
         return collect.packages_folder(self.config.library_folder, game)
 
-    def _overlay_rel(self, entry: CatalogEntry) -> str | None:
+    def _overlay_rel(self, entry: CatalogEntry, lib: Library | None = None) -> str | None:
         """The model's path in the game, which the overlay files it under: the same for the game's file, a
         collected copy and the package made from it."""
         if entry.importer == "package":
@@ -1258,13 +1262,29 @@ class Service:
             except FormatError:
                 return None
         with self.lock:
-            root = self.library.root_of(entry)
+            root = (lib or self.library).root_of(entry)
         if root is None:
             return None
         try:
             return entry.path.relative_to(root).as_posix()
         except ValueError:
             return None
+
+    def _arrange(self, lib: Library, e: CatalogEntry) -> None:
+        """File a model of ``lib`` by the user's own name and folder for it, if the overlay gives any."""
+        from ..library import original_place, place_entry
+
+        ov = self._overlay(e.game)
+        if ov.is_empty():
+            if "_original" in e.__dict__:
+                place_entry(e, None, None, None)
+            return
+        rel = e.__dict__.get("_overlay_rel")
+        if rel is None:
+            rel = self._overlay_rel(e, lib) or ""
+            e.__dict__["_overlay_rel"] = rel
+        category, group, _label = original_place(e)
+        place_entry(e, *ov.place(overlay.model_key(rel) if rel else "", category, group))
 
     def _overlay_key(self, session: Session) -> tuple[overlay.Overlay, str]:
         entry = session.entry
@@ -1333,6 +1353,61 @@ class Service:
             return imp.open_texture(Path(root), iref), None
         except FormatError as exc:
             raise AppError(str(exc)) from exc
+
+    def cmd_model_arrange(self, args: dict) -> dict:
+        """Name a library model (``name``) and file it in a folder of the user's own (``folder``,
+        ``Kind/Group``); "" for either goes back to the game's own. Kept in the game's library overlay."""
+        entry = self._entry(str(args.get("id") or ""))
+        if entry is None or entry.config is not None:
+            raise AppError("Only models in the library can be renamed or moved (configurable ones are named in "
+                           "the Configure tab).")
+        rel = self._overlay_rel(entry)
+        if rel is None:
+            raise AppError("That model isn't in one of the game's folders.")
+        ov = self._overlay(entry.game)
+        key = overlay.model_key(rel)
+        current = ov.model(key)
+        name = args["name"] if "name" in args else current.get("name")
+        folder = args["folder"] if "folder" in args else current.get("folder")
+        with self.lock:
+            ov.set_place(key, name, folder)
+            ov.save()
+            self.library.rearrange()
+        return {"entry": entry_json(entry)}
+
+    def cmd_folder_arrange(self, args: dict) -> dict:
+        """Rename or move one of a game's kinds (``category``) or a group in it (``group``) as a whole, to
+        ``to`` (``Kind`` or ``Kind/Group``); "" undoes it. Models filed elsewhere by hand stay there."""
+        game = str(args.get("game") or "")
+        category = str(args.get("category") or "")
+        if not game or not category:
+            raise AppError("Choose a kind of model first.")
+        group = str(args.get("group") or "")
+        from ..library import original_place
+
+        with self.lock:
+            # the place as the game has it: the user's folder names lead back to the game's ones
+            shown = [e for e in self.library.entries if e.game == game and e.category == category
+                     and (not group or e.group == group)]
+        if not shown:
+            raise AppError(f"There's no {category}{f' / {group}' if group else ''} in {game}.")
+        ov = self._overlay(game)
+        to = overlay.clean_folder(args.get("to"))
+        by_hand, olds = [], set()
+        for e in shown:
+            key = overlay.model_key(e.__dict__.get("_overlay_rel") or self._overlay_rel(e) or "")
+            if ov.model(key).get("folder"):  # filed here by hand: it moves with the folder
+                by_hand.append((key, f"{to}/{e.group}" if to and not group and e.group else to))
+            else:
+                olds.add((original_place(e)[0], original_place(e)[1] if group else ""))
+        with self.lock:
+            for key, folder in by_hand:
+                ov.set_place(key, ov.model(key).get("name"), folder)
+            for cat, grp in olds:
+                ov.rename_folder(f"{cat}/{grp}" if grp else cat, to)
+            ov.save()
+            self.library.rearrange()
+        return {"renamed": len(olds) + len(by_hand), "to": to}
 
     def cmd_textures_search(self, args: dict) -> dict:
         """The game's textures whose names hold ``q`` (all words, any case), best matches first."""
@@ -1447,11 +1522,16 @@ class Service:
                 "folder": str(configs.USER_DIRS[0]) if configs.USER_DIRS else None}
 
     def _relative(self, path: str) -> str:
-        """A model file as a configuration list names it: below its game folder when it's in one."""
+        """A model file as a configuration list names it: below its game folder when it's in one (a model
+        package by the game's file it was made from, so the list holds for the game and its packages)."""
         p = Path(path)
         with self.lock:
             root = next((r for r in self.library.roots if _is_under(p, r)), None)
-        return p.relative_to(root).as_posix() if root is not None else str(p)
+        if root is None:
+            return str(p)
+        if package.is_package_index(p):
+            p = p.parent.with_name(p.parent.name[:-len(package.SUFFIX)])
+        return p.relative_to(root).as_posix()
 
     def cmd_config_save(self, args: dict) -> dict:
         """Keep a configuration in the user's own list (in place of one of the same id, whichever list
