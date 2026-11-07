@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any, Callable
 
@@ -28,6 +29,14 @@ class Importer:
     # Collect opens each model while recording what it reads (see darkstl.access) and copies that too. An importer
     # whose related_files already name everything a model reads turns it off, as it would only read the model twice.
     record_reads = True
+    # Whether several of its models may be loaded at once, in threads, as a whole game's import does: true for an
+    # importer whose reading shares nothing between loads that isn't safe so (open files, unguarded caches).
+    parallel = False
+
+    def bulk(self) -> AbstractContextManager:
+        """Within: a whole game's models are being loaded one after another, from folders that don't change
+        meanwhile, so what the importer looks up in them (folder listings) may be kept."""
+        return nullcontext()
 
     def detect_game(self, folder: Path) -> str | None:
         """Name of the game a folder of extracted files belongs to, if this importer recognises it."""

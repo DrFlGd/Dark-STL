@@ -30,7 +30,7 @@ GAME_TO_EXPORT = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
 
 
 def _texture(ref: files.TexRef) -> Texture:
-    return Texture(ref.name, ref.source, ref.decode, ref.describe)
+    return Texture(ref.name, ref.source, ref.decode, ref.describe, raw=lambda: ref.tex().to_dds())
 
 
 def mesh_summary(mesh: meshfmt.ReMesh, name: str = "") -> list[str]:

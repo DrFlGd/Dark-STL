@@ -8,6 +8,8 @@ requests here, so the commands can be tested without a browser. Long work
 
 from __future__ import annotations
 
+import contextlib
+import dataclasses
 import hashlib
 import io
 import json
@@ -1158,11 +1160,57 @@ class Service:
                 log.debug("Import: %s failed", path, exc_info=True)
                 failed.append(f"{entry.label}: {exc}")
             finally:
-                store.save()
+                store.save(every=10.0)
         if packed:
             game = packed[0].game
             collect.write_configurations(root, game, [collect.moved_config(e.config, {}, roots, root) for e in packed])
         return packed, raw, written
+
+    def _list_collected(self, folders: list[tuple[Path, str]]) -> int:
+        """Add folders of collected copies or packages (and the game each is of) to the library; the models listed."""
+        lib = Library()
+        for folder, g in folders:
+            if folder.is_dir():
+                lib.add_root(folder, g)
+        with self.lock:
+            self.library.merge(lib)
+            self._save_folders()
+        return len(lib.entries)
+
+    IMPORT_THREADS = 4
+
+    def _import_each(self, todo: list[tuple], write: Callable, finished: Callable) -> None:
+        """``write(entry, rel, importer)`` each of ``todo``, then ``finished(entry, the exception or None)``
+        (in this thread). The models of an importer that allows it are written several at once (see
+        :attr:`Importer.parallel`): loading leaves Python now and then (decompressing, numpy), and while
+        one model waits on its files another is worked on."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        threads = min(self.IMPORT_THREADS, os.cpu_count() or 1)
+        together = [t for t in todo if t[2].parallel] if threads > 1 else []
+        alone = [t for t in todo if not (threads > 1 and t[2].parallel)]
+        if together:
+            with ThreadPoolExecutor(threads, thread_name_prefix="import") as pool:
+                futures = {pool.submit(write, *t): t[0] for t in together}
+                try:
+                    for future in as_completed(futures):
+                        exc = future.exception()
+                        if isinstance(exc, Stopped):
+                            raise exc
+                        finished(futures[future], exc)
+                except BaseException:
+                    for future in futures:
+                        future.cancel()
+                    raise
+        for t in alone:
+            try:
+                write(*t)
+            except Stopped:
+                raise
+            except Exception as exc:  # noqa: BLE001 - reported by finished
+                finished(t[0], exc)
+            else:
+                finished(t[0], None)
 
     def _package_run(self, args: dict) -> dict:
         from ..importers import IMPORTERS, importer_for
@@ -1180,38 +1228,60 @@ class Service:
             written, kept, failed = 0, 0, []
             done: set[Path] = set()  # files written as packages now
             n = len(plain)
-            with self.thumbs.foreground():
-                for i, e in enumerate(plain):
+            todo = []
+            for e in plain:
+                job.check()
+                rel = collect.relative_path(e.path, roots).as_posix()
+                if not again and self._package_present(root, rel, e.path):
+                    kept += 1
+                else:
+                    todo.append((e, rel, by_key.get(e.importer) or importer_for(e.path)))
+            seen = [kept]  # models looked at so far, for the progress shown
+
+            def write(e: CatalogEntry, rel: str, imp) -> None:
+                job.check()
+                job.report(seen[0] / max(n, 1), f"Importing {e.label} ({seen[0] + 1:,} of {n:,})")
+                these = dataclasses.replace(
+                    options, progress=lambda m: job.report(seen[0] / max(n, 1), f"Importing {e.label}: {m}"))
+                variants = imp.variants(e.path)[:self.MAX_PACKAGE_VARIANTS] or [None]
+                models = []
+                for v in variants:
                     job.check()
-                    rel = collect.relative_path(e.path, roots).as_posix()
-                    if not again and self._package_present(root, rel, e.path):
-                        kept += 1
-                        continue
-                    job.report(i / max(n, 1), f"Importing {e.label} ({i + 1:,} of {n:,})")
-                    options.progress = lambda m, i=i, e=e: job.report(i / max(n, 1), f"Importing {e.label}: {m}")
-                    imp = by_key.get(e.importer) or importer_for(e.path)
+                    models.append(imp.load(e.path, v, tuple(self.config.texture_dirs)))
+                package.write_package(root, e, rel, models, store, these)
+
+            def finished(e: CatalogEntry, exc: BaseException | None) -> None:
+                nonlocal written
+                seen[0] += 1
+                if exc is None:
+                    written += 1
+                    done.add(e.path)
+                else:  # one model that won't open doesn't stop the rest
+                    log.debug("Import: %s failed", e.path, exc_info=exc)
+                    failed.append(f"{e.label}: {exc}")
+                store.save(every=10.0)
+
+            with self.thumbs.foreground(), contextlib.ExitStack() as bulk:
+                for imp in IMPORTERS:
+                    bulk.enter_context(imp.bulk())
+                try:
                     try:
-                        variants = imp.variants(e.path)[:self.MAX_PACKAGE_VARIANTS] or [None]
-                        models = []
-                        for v in variants:
-                            job.check()
-                            models.append(imp.load(e.path, v, tuple(self.config.texture_dirs)))
-                        package.write_package(root, e, rel, models, store, options)
-                        written += 1
-                        done.add(e.path)
-                    except Stopped:
+                        self._import_each(todo, write, finished)
+                    except Stopped:  # what was written so far is kept and listed; importing again carries on
+                        if done:
+                            collect.write_manifest(root, game, sorted({e.stem for e in plain if e.path in done}),
+                                                   sorted({str(r) for r in roots}), packages=True)
+                            self._list_collected([(root, game)])
                         raise
-                    except Exception as exc:  # noqa: BLE001 - one model that won't open doesn't stop the rest
-                        log.debug("Import: %s failed", e.path, exc_info=True)
-                        failed.append(f"{e.label}: {exc}")
-                    finally:
-                        store.save()
-            collect.write_manifest(root, game, [e.stem for e in plain], sorted({str(r) for r in roots}), packages=True)
-            packed, raw = [], list(configurable)
-            if configurable:
-                packed, raw, more = self._package_configurable(configurable, roots, root, store, options, job, done,
-                                                               again, failed)
-                written += more
+                    collect.write_manifest(root, game, [e.stem for e in plain], sorted({str(r) for r in roots}),
+                                           packages=True)
+                    packed, raw = [], list(configurable)
+                    if configurable:
+                        packed, raw, more = self._package_configurable(configurable, roots, root, store, options, job,
+                                                                       done, again, failed)
+                        written += more
+                finally:
+                    store.save()
             result = {"game": game, "folder": str(root), "models": n, "written": written, "present": kept,
                       "failed": failed[:20], "failures": len(failed),
                       "bytes": max(collect.folder_size(root)[1] - size_before, 0),
@@ -1223,14 +1293,7 @@ class Service:
                 result["collected"] = collect.run(plan)
                 scanned.append((plan.folder, game))
             job.report(1.0, f"Reading {root.name}")
-            lib = Library()
-            for folder, g in scanned:
-                if folder.is_dir():
-                    lib.add_root(folder, g)
-            with self.lock:
-                self.library.merge(lib)
-                self._save_folders()
-            result["count"] = len(lib.entries)
+            result["count"] = self._list_collected(scanned)
             return result
 
         count = len(plain) + len(configurable)

@@ -3,6 +3,7 @@ open a model in the 3D view, even it out, upscale its textures, displace and exp
 installed (pip install playwright && python -m playwright install chromium)."""
 
 import os
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -643,6 +644,50 @@ def test_collect_dialog_works_out_its_plan_in_a_job(page, app, weapon_dir):  # n
     page.wait_for_selector("#collect-plan-text", timeout=30000)
     assert not jobs or all(j.state != "running" for j in jobs)
     assert any(j.label.startswith("Working out what to copy") for j in app.service.jobs._jobs.values())
+
+
+def test_cancel_stops_an_import_and_it_can_run_in_the_background(page, app, weapon_dir, monkeypatch):  # noqa: F811
+    from darkstl import package
+    from darkstl.app.service import Service
+
+    real = package.write_package
+
+    def slow(*args, **kw):  # each model takes a while, so there's time to press the buttons
+        time.sleep(0.8)
+        return real(*args, **kw)
+
+    monkeypatch.setattr(package, "write_package", slow)
+    monkeypatch.setattr(Service, "IMPORT_THREADS", 1)
+    app.service.call("folder_add", {"path": str(weapon_dir)})
+    root = Path(os.environ["DARKSTL_HOME"])
+
+    def start():
+        page.goto(app.url + "#/browse/Dark%20Souls%20III")
+        page.wait_for_selector("#place-collect", timeout=30000)
+        page.click("#place-collect")
+        page.wait_for_selector("#collect-plan-text", timeout=30000)
+        page.click("#collect-dialog-ok")
+        page.wait_for_selector("#collect-dialog-background")
+
+    # Cancel: the import stops (what was written is kept), and the dialog closes
+    start()
+    page.click("#collect-dialog-cancel")
+    page.wait_for_selector("#collect-dialog", state="detached", timeout=30000)
+    page.wait_for_selector("#toast :text('Import stopped')")
+    (job,) = [j for j in app.service.jobs._jobs.values() if j.label.startswith("Importing")]
+    assert job.state == "stopped"
+    written = list(root.rglob("package.json"))
+    assert len(written) < 4
+    listed = [e for e in app.service.library.entries if e.importer == "package"]
+    assert len(listed) == len(written)  # those written before it stopped are listed
+    # Run in background: the dialog closes, the import goes on to the end
+    start()
+    page.click("#collect-dialog-background")
+    page.wait_for_selector("#collect-dialog", state="detached")
+    page.wait_for_selector("#status-job")
+    page.wait_for_selector("#toast :text('as packages')", timeout=60000)
+    jobs = [j for j in app.service.jobs._jobs.values() if j.label.startswith("Importing")]
+    assert jobs[-1].state == "done" and len(list(root.rglob("package.json"))) > len(written)
 
 
 def test_export_a_painted_3mf(page, app, tmp_path):

@@ -8,12 +8,14 @@ import { useStore } from "../lib/store.js";
 import { ui } from "./state.js";
 import { routeHash, placeRoute } from "./context.js";
 import { Icon } from "./icons.js";
-import { api, binUrl, info, followJob, loadOverview, pickFolder, showInFolder, toast, plural, bytesText } from "./api.js";
+import { api, binUrl, info, followJob, loadOverview, pickFolder, showInFolder, stopJob, toast, plural, bytesText } from "./api.js";
 
 export const close = () => ui.set({ dialog: null });
 
-/** A dialog (from Model Library): Esc or Cancel closes it; `danger` makes the button red. */
-export function Dialog({ title, id, onSubmit, busy, error, submitLabel, danger = false, cancelLabel = "Cancel", children }) {
+/** A dialog (from Model Library): Esc or Cancel closes it; `danger` makes the button red. For one whose work is
+ *  under way, `onCancel` stops the work, and `onBackground` (also Esc and the close button) leaves it running. */
+export function Dialog({ title, id, onSubmit, busy, error, submitLabel, danger = false, cancelLabel = "Cancel", onCancel = null,
+  onBackground = null, children }) {
   const form = useRef(null);
   useLayoutEffect(() => {
     const key = (e) => { if (e.key === "Escape") close(); };
@@ -30,7 +32,9 @@ export function Dialog({ title, id, onSubmit, busy, error, submitLabel, danger =
       <div class="dialog-foot">
         ${error ? html`<p class="form-error" role="alert">${error}</p>` : null}
         <div class="dialog-actions">
-          <button type="button" class="ghost" id=${id ? `${id}-cancel` : null} onClick=${close}>${cancelLabel}</button>
+          ${onBackground ? html`<button type="button" class="ghost" id=${id ? `${id}-background` : null} title="Close this; the work goes on, shown at the bottom right"
+            onClick=${onBackground}>Run in background</button>` : null}
+          <button type="button" class="ghost" id=${id ? `${id}-cancel` : null} onClick=${onCancel || close}>${cancelLabel}</button>
           ${submitLabel ? html`<button type="submit" id=${id ? `${id}-ok` : null} class=${danger ? "primary danger" : "primary"} disabled=${busy}>${submitLabel}</button>` : null}
         </div>
       </div>
@@ -205,6 +209,9 @@ function Collect({ game, category, group, model }) {
   const [error, setError] = useState(null);
   const [progress, setProgress] = useState("");
   const seq = useRef(0);
+  const running = useRef(null); // the import or copy under way
+  const shown = useRef(true);
+  useEffect(() => () => { shown.current = false; }, []);
   const args = { ...(scopes.find((s) => s.key === scope) || scopes[0]).args, textures: opts.textures, animations: opts.animations,
     player_animations: opts.player_animations, lod: opts.lod, lod_copies: opts.lod, packages };
   const argsKey = JSON.stringify(args);
@@ -233,19 +240,30 @@ function Collect({ game, category, group, model }) {
     setBusy(true); setError(null);
     try {
       const { job } = await api("collect_run", args);
+      running.current = job;
       const r = await followJob(job, `${packages ? "Importing" : "Collecting"} from ${plan.game}`, (j) => setProgress(j.message || ""));
       await loadOverview();
-      close();
+      if (shown.current) close(); // (run in the background: the dialog is gone already, and another may be open)
       const failed = r.failures ? ` · ${plural(r.failures, "model")} couldn't be read` : "";
       toast(packages ? (r.written ? `Imported ${plural(r.written, "model")} as packages (${bytesText(r.bytes)})${failed}`
           : `Everything was imported already${failed}`)
         : r.copied ? `Copied ${plural(r.copied, "file")} (${bytesText(r.bytes)}) into the app's library`
         : "Everything was already in the app's library", { ms: 6000, action: { label: "Show in folder", run: () => showInFolder(r.folder) } });
     } catch (e) {
+      if (e.stopped) {
+        loadOverview();
+        if (shown.current) close();
+        toast(packages ? "Import stopped. The models imported so far are kept; importing again carries on from there."
+          : "Stopped. The files copied so far are kept; collecting again carries on from there.", 6000);
+        return;
+      }
       setBusy(false);
       setError(String(e.message || e));
+    } finally {
+      running.current = null;
     }
   };
+  const stop = () => { if (running.current) { setProgress("Stopping…"); stopJob(running.current); } };
   const kinds = plan ? Object.entries(plan.kinds).filter(([, v]) => v.files).map(([k, v]) => `${plural(v.files, k === "other" ? "other file" : `${k} file`)}`) : [];
   const check = (key, label, sub) => html`<label class="check-row">
     <input type="checkbox" data-collect=${key} checked=${!!opts[key]} disabled=${busy} onChange=${(e) => setOpts({ ...opts, [key]: e.target.checked })} />
@@ -254,7 +272,7 @@ function Collect({ game, category, group, model }) {
     : packages ? (plan && !plan.to_write && !plan.configurable ? "Already imported" : "Import")
     : plan && !plan.to_copy && plan.files ? "Already collected" : "Copy";
   return html`<${Dialog} title="Collect into the app" id="collect-dialog" onSubmit=${submit} busy=${busy || !plan} error=${error}
-      submitLabel=${submitLabel}>
+      submitLabel=${submitLabel} onCancel=${busy ? stop : null} onBackground=${busy ? close : null}>
     <p class="muted">${packages
       ? html`Writes each model as a model package in Dark STL's own library folder: its mesh, skeleton and animations as a
         glTF file, with its textures stored under their names in the game. Packages open without the game, so it can be
@@ -308,6 +326,9 @@ function Unpack({ path, game, added }) {
   const [error, setError] = useState(null);
   const [progress, setProgress] = useState("");
   const [fetching, setFetching] = useState("");
+  const running = useRef(null); // the unpacking under way
+  const shown = useRef(true);
+  useEffect(() => () => { shown.current = false; }, []);
   const read = async (where) => {
     setPlanError(null); setReading("Reading the game's archives…");
     try {
@@ -343,20 +364,33 @@ function Unpack({ path, game, added }) {
     setBusy(true); setError(null);
     try {
       const { job } = await api("unpack_run", { path, game: plan.game, dest, groups: chosen.map((g) => g.id) });
+      running.current = job;
       const r = await followJob(job, `Unpacking ${plan.game}`, (j) => setProgress(`${j.message || "Unpacking…"}${j.progress ? ` · ${Math.round(j.progress * 100)}%` : ""}`));
       await loadOverview();
-      close();
-      location.hash = routeHash(placeRoute(plan.game));
+      if (shown.current) {
+        close();
+        location.hash = routeHash(placeRoute(plan.game));
+      }
       toast(`${r.written ? `Unpacked ${plural(r.written, "file")} (${bytesText(r.bytes)})` : "Everything was unpacked already"}: ${plural(r.count, "model")} listed for ${plan.game}${r.failed_count ? `; ${plural(r.failed_count, "file")} couldn't be read` : ""}`,
         { ms: 8000, action: { label: "Show in folder", run: () => showInFolder(r.dest) } });
     } catch (e) {
+      if (e.stopped) {
+        loadOverview();
+        if (shown.current) close();
+        toast("Unpacking stopped. The files written so far are kept; unpacking again carries on from there.", 6000);
+        return;
+      }
       setBusy(false);
       setError(String(e.message || e));
+    } finally {
+      running.current = null;
     }
   };
+  const stop = () => { if (running.current) { setProgress("Stopping…"); stopJob(running.current); } };
   const toggle = (id, on) => setGroups((g) => (on ? [...new Set([...(g || []), id])] : (g || []).filter((x) => x !== id)));
   return html`<${Dialog} title=${`Unpack ${plan?.game || game || "the game"}`} id="unpack-dialog" onSubmit=${submit} busy=${busy || !plan || !!reading || !chosen.length}
-      error=${error} submitLabel=${busy ? "Unpacking…" : plan && chosen.length && !files ? "Unpacked already" : "Unpack"}>
+      error=${error} submitLabel=${busy ? "Unpacking…" : plan && chosen.length && !files ? "Unpacked already" : "Unpack"}
+      onCancel=${busy ? stop : null} onBackground=${busy ? close : null}>
     ${added != null ? html`<p id="unpack-why">${added ? `Only ${plural(added, "model")} were found loose in this folder:` : "No models were found loose in this folder:"} the game keeps them in its archives.</p>` : null}
     <p class="muted">Dark STL reads the game's archives and writes out the models you choose, with their textures and animations,
       laid out the way the game names them. The game's folder isn't changed; the files go into the app's library and are listed from there.</p>
