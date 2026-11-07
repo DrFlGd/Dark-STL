@@ -190,6 +190,19 @@ class PackageBuilder:
 # --------------------------------------------------------------------------- objects
 
 
+def fully_compressed(data: bytes, compress: str = "lzo", block: int = 4096, per_chunk: int = 3) -> bytes:
+    """A package compressed as a whole, as Borderlands 2 ships Core/Engine/Startup: a run of compressed chunks
+    (header, block sizes, blocks) and nothing else."""
+    blocks = [data[i:i + block] for i in range(0, len(data), block)]
+    out = b""
+    for i in range(0, len(blocks), per_chunk):
+        group = blocks[i:i + per_chunk]
+        packed = [lzo_literal(b) if compress == "lzo" else zlib.compress(b) for b in group]
+        out += struct.pack("<Iiii", TAG, block, sum(map(len, packed)), sum(map(len, group)))
+        out += b"".join(struct.pack("<ii", len(p), len(b)) for p, b in zip(packed, group)) + b"".join(packed)
+    return out
+
+
 def bulk_inline(data: bytes, flags: int = 0) -> callable:
     """A bulk data header with its data inline; the absolute offset is filled in when the export is placed."""
     def at(offset: int) -> bytes:

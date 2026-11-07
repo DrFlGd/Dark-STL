@@ -200,6 +200,7 @@ class Package:
     _cache: OrderedDict = field(default_factory=OrderedDict, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _plain: bool = True
+    _method: int = 0  # a fully compressed package's compression (its own summary says none)
 
     # -- names and objects ------------------------------------------------
 
@@ -319,7 +320,7 @@ class Package:
         with open(self.path, "rb") as f:
             f.seek(b.coff)
             raw = f.read(b.csize)
-        data = raw if b.stored else decompress_block(raw, b.usize, self.summary.compression)
+        data = raw if b.stored else decompress_block(raw, b.usize, self._method or self.summary.compression)
         with self._lock:
             self._cache[b.uoff] = data
             while len(self._cache) > 64:
@@ -417,9 +418,67 @@ def open_package(path: str | os.PathLike) -> Package:
     return pkg
 
 
+def _fully_compressed(path: Path) -> tuple[list[_Block], int, bytes] | None:
+    """A package compressed as a whole (Borderlands 2's Core, Engine, Startup... with a ``.uncompressed_size``
+    file beside them): the file is a run of compressed chunks, each a header (tag, block size, sizes), its
+    blocks' sizes and the blocks. Returns the blocks, the compression and the first block decompressed."""
+    size = os.path.getsize(path)
+    blocks: list[_Block] = []
+    pos = u = 0
+    with open(path, "rb") as f:
+        while pos + 16 <= size:
+            f.seek(pos)
+            tag, block_size, _csize, usize = struct.unpack("<Iiii", f.read(16))
+            if tag != TAG or block_size <= 0 or usize < 0:
+                if blocks:
+                    break  # padding after the last chunk
+                return None
+            count = max(1, (usize + block_size - 1) // block_size)
+            raw = f.read(8 * count)
+            if len(raw) != 8 * count:
+                raise FormatError(f"{path.name} ends early")
+            table = struct.unpack(f"<{2 * count}i", raw)
+            p = pos + 16 + 8 * count
+            for i in range(count):
+                bc, bu = table[2 * i], table[2 * i + 1]
+                if bc < 0 or bu < 0:
+                    raise FormatError(f"{path.name}: bad compressed block sizes")
+                blocks.append(_Block(u, bu, p, bc))
+                p += bc
+                u += bu
+            pos = p
+        if not blocks:
+            return None
+        first = blocks[0]
+        f.seek(first.coff)
+        raw = f.read(first.csize)
+    for method in (COMPRESS_LZO, COMPRESS_ZLIB):
+        try:
+            data = decompress_block(raw, first.usize, method)
+        except (FormatError, zlib.error, IndexError, ValueError):
+            continue
+        if len(data) == first.usize:
+            return blocks, method, data
+    raise FormatError(f"{path.name} is compressed in a way Dark STL can't read")
+
+
 def _read_package(path: Path) -> Package:
     with open(path, "rb") as f:
         head = f.read(64 * 1024)
+    whole = None
+    if len(head) >= 16:
+        tag, fv = struct.unpack("<II", head[:8])
+        if tag == TAG and fv >= 1024 and fv & (fv - 1) == 0:  # a block size, not a version: compressed whole
+            whole = _fully_compressed(path)
+    if whole is not None:
+        blocks, method, first = whole
+        try:
+            s = _summary(Reader(first))
+        except (struct.error, IndexError):
+            raise FormatError(f"{path.name} is not an Unreal package") from None
+        pkg = Package(path, s, _blocks=blocks, _plain=False, _method=method)
+        pkg._cache[0] = first
+        return _read_tables(pkg)
     try:
         s = _summary(Reader(head))
     except (struct.error, IndexError):
@@ -448,6 +507,11 @@ def _read_package(path: Path) -> Package:
                     pkg._blocks.append(_Block(u, bu, pos, bc))
                     pos += bc
                     u += bu
+    return _read_tables(pkg)
+
+
+def _read_tables(pkg: Package) -> Package:
+    s = pkg.summary
     v = s.version
     table_end = _table_end(pkg)
     tables = pkg.read(s.name_offset, max(0, min(table_end, pkg.stream_size) - s.name_offset))
