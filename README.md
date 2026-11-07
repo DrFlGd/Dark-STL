@@ -32,7 +32,8 @@ Importing is modular: each game family has its own importer, and everything afte
 (the explorer, the three steps, export) is shared. FromSoftware files (Dark Souls, Bloodborne,
 Dark Souls III, Sekiro, Elden Ring), Cyberpunk 2077 files, Capcom RE Engine files (Resident Evil
 2, 3, 4, 7 and Village, Devil May Cry 5), Borderlands (Borderlands, Borderlands 2, The
-Pre-Sequel, Borderlands 3, Tiny Tina's Wonderlands, Borderlands 4) and Wavefront OBJ are supported today.
+Pre-Sequel, Borderlands 3, Tiny Tina's Wonderlands, Borderlands 4), Returnal and Wavefront OBJ are
+supported today.
 
 ## Install
 
@@ -123,6 +124,12 @@ neither.
   mappings file for the installed version of the game, added the same way, because it cooks
   its objects without property names. Guns are configurable from their part meshes, the slots
   guessed from the part names.
+
+- **Returnal (Unreal Engine 4):** add the game's install folder as it is. Models are read from the
+  `.pak` files in `Returnal\Content\Paks`, sorted into weapons, characters (Selene, creatures),
+  map pieces and objects by their folders. Dark STL doesn't include Returnal's AES key: if the
+  paks are encrypted, paste the key in *Settings > Unreal games* (or `unreal-keys.txt` in the game
+  folder) and rescan.
 
 ## Using the app
 

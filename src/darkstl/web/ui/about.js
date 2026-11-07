@@ -27,6 +27,7 @@ export function About() {
         Resident Evil models (RE Engine .mesh files with their .mdf2 materials and .tex textures) are read extracted or inside .pak archives with a file list.
         Borderlands, Borderlands 2 and The Pre-Sequel models are read straight from the game's .upk packages, with the large textures from its .tfc caches; their guns can be put together from their parts.
         Borderlands 3 and Tiny Tina's Wonderlands (Unreal 4) are read from their .pak files and Borderlands 4 (Unreal 5) from its .utoc and .ucas containers, and their guns too can be put together from the part meshes, sorted into slots by their names.
+        Returnal (Unreal 4) is read from its .pak files the same way.
         Each game is read by its own importer, so more games can be added; generating and exporting work the same for all of them.</p>
       <p class="muted">Dark STL needs your own copies of the games. It contains no code or data from them.</p>
     </section>

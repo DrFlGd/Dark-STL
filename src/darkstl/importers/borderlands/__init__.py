@@ -76,6 +76,29 @@ def _materials(refs: list[ObjectRef], dirs: list[Path]) -> tuple[list[Material],
     return mats, textures, notes
 
 
+def _another_importers_game(game: str | None) -> bool:
+    """Whether ``game`` is one another importer reads (an Unreal game that isn't Borderlands)."""
+    if not game or game in GAMES:
+        return False
+    from .. import IMPORTERS
+
+    return any(game in imp.games for imp in IMPORTERS if imp.key != BorderlandsImporter.key)
+
+
+def _another_importers_folder(folder: Path) -> bool:
+    """Whether another importer recognises ``folder`` as its game's."""
+    from .. import IMPORTERS
+
+    for imp in IMPORTERS:
+        if imp.key != BorderlandsImporter.key:
+            try:
+                if _another_importers_game(imp.detect_game(Path(folder))):
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 class BorderlandsImporter(Importer):
     key = "borderlands"
     name = "Borderlands (Unreal Engine)"
@@ -86,6 +109,8 @@ class BorderlandsImporter(Importer):
         return files.detect_game(folder)
 
     def scan(self, folder: Path, game: str, progress: ScanProgress | None = None) -> list[CatalogEntry]:
+        if _another_importers_game(game):
+            return []  # another Unreal game (Returnal): its own importer lists it
         if game in unreal4.UE4_GAMES or (game not in files.UE3_GAMES and files.is_unreal4_folder(folder)):
             from .ue4 import catalog4
             return catalog4.scan(folder, game, progress)
@@ -94,6 +119,8 @@ class BorderlandsImporter(Importer):
 
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
         ours = [e for e in found if e.importer == self.key]
+        if not ours and _another_importers_folder(folder):
+            return []
         game = ours[0].game if ours else files.detect_game(folder)
         if game in unreal4.UE4_GAMES or (not ours and files.is_unreal4_folder(folder)):
             from .ue4 import catalog4

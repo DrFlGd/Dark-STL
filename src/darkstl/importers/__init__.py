@@ -16,9 +16,11 @@ from .borderlands import BorderlandsImporter
 from .fromsoft import FromSoftwareImporter
 from .redengine import RedEngineImporter
 from .reengine import REEngineImporter
+from .returnal import ReturnalImporter
 from .wavefront import WavefrontImporter
 
-IMPORTERS: list[Importer] = [FromSoftwareImporter(), RedEngineImporter(), REEngineImporter(), BorderlandsImporter(),
+IMPORTERS: list[Importer] = [FromSoftwareImporter(), RedEngineImporter(), REEngineImporter(), ReturnalImporter(),
+                             BorderlandsImporter(),
                              WavefrontImporter()]
 
 
