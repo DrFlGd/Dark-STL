@@ -158,7 +158,7 @@ def plan(library: Path, game: str, entries: list[CatalogEntry], roots: list[Path
         for root in roots:
             for f in extras(root):
                 add(f, "")
-    out.configurations = [_moved_config(c, moved, roots, folder) for c in configurations]
+    out.configurations = [moved_config(c, moved, roots, folder) for c in configurations]
     return out
 
 
@@ -172,7 +172,7 @@ def collected_path(path: str | Path, moved: dict[Path, str], roots: list[Path], 
     return relative_path(p, roots).as_posix()
 
 
-def _moved_config(config, moved: dict[Path, str], roots: list[Path], folder: Path):
+def moved_config(config, moved: dict[Path, str], roots: list[Path], folder: Path):
     """``config`` naming the collected copies (paths below the copy's folder), its variants' files too
     (a Borderlands 2 skin's ``...|<package file>``)."""
     import dataclasses

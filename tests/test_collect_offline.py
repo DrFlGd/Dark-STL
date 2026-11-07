@@ -84,11 +84,17 @@ def collect_and_uninstall(home, game_dir: Path, game: str | None = None,  # noqa
         again = _service(home, "cache2")  # a fresh start, with nothing kept from the game
         wait(again, again.load_folders().id)
         after = _everything(again, game)
-        if packages:  # every model that isn't configurable opens from its package
+        if packages:  # every model opens from its package, configurable ones too (but those with a skin of
+            # Borderlands 2's, mixed for each part when it's shown, which are copied as game files)
             items = again.call("models_query", {"game": game, "limit": 100000})["items"]
             plain = [i for i in items if not i.get("configurable")]
-            assert plain and all(i["importer"] == "package" for i in plain if not _is_part(i, items)), \
+            copied = bool(done.get("collected"))
+            assert plain and all(i["importer"] == "package" for i in plain if not (copied and _is_part(i, items))), \
                 [(i["label"], i["importer"]) for i in plain if i["importer"] != "package"]
+            configurable = [i for i in items if i.get("configurable")]
+            if not copied:
+                assert done["configurable_packed"] == done["configurable"]
+                assert all(i["importer"] == "package" for i in configurable)
     finally:
         shutil.move(str(gone), str(game_dir))
     return before, after, plan

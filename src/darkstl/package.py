@@ -62,7 +62,7 @@ _WIDTH = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16}
 
 
 def _safe(part: str) -> str:
-    keep = "".join("_" if c in '<>:"\\|?*' or ord(c) < 32 else c for c in part).strip(" .")
+    keep = "".join("_" if c in '<>:"/\\|?*' or ord(c) < 32 else c for c in part).strip(" .")
     return keep or "_"
 
 
@@ -530,21 +530,24 @@ def package_folder(root: Path, source_rel: str) -> Path:
 
 
 def write_package(root: Path, entry: CatalogEntry, source_rel: str, models: list[SourceModel], store: AssetStore,
-                  options: WriteOptions | None = None) -> Path:
-    """Write the package of the file ``entry`` lists (``models``: each model it holds) below ``root``."""
+                  options: WriteOptions | None = None, hidden: set | frozenset = frozenset()) -> Path:
+    """Write the package of the file ``entry`` lists (``models``: each model it holds) below ``root``. Models
+    whose variant is in ``hidden`` are ones the file doesn't list itself but configurations name (a Cyberpunk
+    part's appearance): kept, opened by name, not listed."""
     options = options or WriteOptions()
     folder = package_folder(root, source_rel)
     folder.mkdir(parents=True, exist_ok=True)
     written = []
     used: set[str] = set()
     for model in models:
-        stem = _safe((model.variant if len(models) > 1 else None) or model.name or entry.stem)
+        stem = _safe((model.variant if len(models) > 1 else None) or model.name or entry.stem)[:120]
         name, n = stem, 2
         while name.lower() in used:
             name, n = f"{stem} ({n})", n + 1
         used.add(name.lower())
         _write_model(folder, name, model, store, options)
-        written.append({"variant": model.variant, "name": model.name, "file": f"{name}.json"})
+        written.append({"variant": model.variant, "name": model.name, "file": f"{name}.json",
+                        **({"hidden": True} if model.variant is not None and model.variant in hidden else {})})
     index = {
         "format": FORMAT, "version": VERSION, "game": entry.game, "category": entry.category, "group": entry.group,
         "stem": entry.stem, "label": entry.label, "importer": entry.importer, "is_lod": bool(entry.is_lod),
@@ -702,6 +705,12 @@ class PackageAnimations:
         return read_animation(self._files[name])
 
 
+def listed_variants(models: list[dict]) -> list[str]:
+    """The models a package lists (as its file did: the hidden ones only configurations name are left out)."""
+    shown = [m for m in models if not m.get("hidden")]
+    return [m.get("variant") or m.get("name") for m in shown] if len(shown) > 1 else []
+
+
 def load_package(path: str | os.PathLike, variant: str | None = None) -> SourceModel:
     """Open a package (its ``package.json``) as a :class:`SourceModel`, as ``variant`` when it holds several."""
     index_file = Path(path)
@@ -780,7 +789,7 @@ def load_package(path: str | os.PathLike, variant: str | None = None) -> SourceM
     return SourceModel(
         name=str(data.get("name") or index.get("stem")), path=index_file, importer="package", build=build,
         variant=chosen.get("variant"),
-        variants=[m.get("variant") or m.get("name") for m in models] if len(models) > 1 else [],
+        variants=listed_variants(models),
         game=data.get("game") or index.get("game"), parts=parts, materials=materials, textures=textures,
         info=info, notes=notes, animations=anims, sockets=sockets, rig=rig,
     )

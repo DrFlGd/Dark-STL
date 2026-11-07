@@ -50,8 +50,7 @@ class PackageImporter(Importer):
         return pkg.is_package_index(Path(path)) or Path(path).name.endswith(pkg.SUFFIX) and Path(path).is_dir()
 
     def variants(self, path: Path) -> list[str]:
-        models = pkg.read_index(self._index(path)).get("models") or []
-        return [m.get("variant") or m.get("name") for m in models] if len(models) > 1 else []
+        return pkg.listed_variants(pkg.read_index(self._index(path)).get("models") or [])
 
     def load(self, path: Path, variant: str | None = None, texture_dirs: tuple[str, ...] = ()) -> SourceModel:
         return pkg.load_package(self._index(path), variant)
