@@ -163,10 +163,15 @@ def test_collected_files_open_loose(tmp_path):
         dest = out / r.save_as
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(r.extract())
+    import shutil
+    shutil.rmtree(root)  # the game is uninstalled: the collected files are all the app has
+    vfs.forget(root)
     vfs.forget(out)
     assert catalog.detect_game(out) == GAME
     loose = {e.stem: e for e in imp.scan(out, GAME)}
     assert set(loose) == {"SK_Carbine"} and not loose["SK_Carbine"].packed
     m = open_model(loose["SK_Carbine"].path)
     assert importer_for(loose["SK_Carbine"].path).key == "returnal"
-    assert len(m.build(MeshOptions()).faces) == 4 and m.materials[0].albedo is not None
+    assert len(m.build(MeshOptions()).faces) == 4
+    mat = m.materials[0]
+    assert m.textures[mat.albedo].load()[0, 0, 0] > 240 and m.textures[mat.normal].load().shape[:2] == (8, 8)
