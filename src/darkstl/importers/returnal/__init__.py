@@ -51,6 +51,20 @@ class ReturnalImporter(Importer):
     def describe(self, path: Path) -> list[str] | None:
         return unreal4.describe(Path(path)) if catalog.is_returnal_path(path) else None
 
+    def shared_files(self, root: Path, game: str, player_animations: bool = False) -> list[RelatedFile]:
+        """What every Returnal model needs besides its own files: the game's type mappings (.usmap) and the
+        engine release, which a collected copy can't read from the game's executable."""
+        from ..borderlands.ue4 import unversioned, usmap
+
+        root = catalog.root_for(Path(root))
+        engine = catalog.engine_version(root)
+        out = [RelatedFile(root / catalog.ENGINE_FILE, "other", save_as=catalog.ENGINE_FILE,
+                           extract=lambda: f"{engine // 100}.{engine % 100}\n".encode(), size=5)]
+        found = usmap.find_mappings_file(root, GAME, unversioned._settings_dir())
+        if found is not None:
+            out.append(RelatedFile(found, "other", save_as=catalog.MAPPINGS_FILE))
+        return out
+
     def related_files(self, path: Path, textures: bool = True, animations: bool = True,
                       lod: bool = False) -> list[RelatedFile]:
         return unreal4.related_files(Path(path), textures)
