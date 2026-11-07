@@ -187,14 +187,14 @@ def _unversioned_files() -> dict[str, bytes]:
     out = {}
     tex_dir = "/Game/Gameplay/Weapons/Player_KineticRifle/Textures/"
     pk = {}
-    for tex, color, normal in (("T_KineticRifle_D", RED, False), ("T_KineticRifle_N", FLAT_NORMAL, True)):
+    for tex, color, normal in (("T_KineticRifle_A", RED, False), ("T_KineticRifle_N", FLAT_NORMAL, True)):
         b = S.Ue4Package(tex_dir + tex, 426, unversioned=True)
         e = b.add_export("Texture2D", tex)
         b.set_data(e, S.texture_data(b, 8, 8, S.bc1_solid(8, 8, color), normal=normal))
         pk[f"Gameplay/Weapons/Player_KineticRifle/Textures/{tex}"] = b
     mi = "/Game/Gameplay/Weapons/Player_KineticRifle/Materials/MI_KineticRifle"
     b = S.Ue4Package(mi, 426, unversioned=True)
-    refs = [b.import_object(tex_dir + t, "Texture2D", t) for t in ("T_KineticRifle_D", "T_KineticRifle_N")]
+    refs = [b.import_object(tex_dir + t, "Texture2D", t) for t in ("T_KineticRifle_A", "T_KineticRifle_N")]
     elems = b""
     for name, ref in zip(("BaseColor", "Normal"), refs):
         info = _header([(0, True), (1, True)]) + b.fname(name) + b"\x02"
@@ -276,6 +276,7 @@ def test_unversioned_packages_open_with_the_type_mappings(tmp_path, monkeypatch)
         assert len(m.build(MeshOptions()).faces) == 4 and len(m.parts) == parts
         mat = m.materials[0]
         assert mat.name == "MI_KineticRifle" and mat.albedo and mat.normal and mat.guessed, mat.details
+        assert "parameter BaseColor: T_KineticRifle_A" in mat.details  # its colour map isn't named as one
         assert m.textures[mat.albedo].load()[0, 0, 0] > 240
 
     (paks / "Mappings.usmap").write_bytes(_mappings())
@@ -302,3 +303,16 @@ def test_mappings_named_for_another_game_are_left_alone(tmp_path):
     assert usmap.find_mappings(tmp_path, GAME, settings) is None
     (settings / "Returnal.usmap").write_bytes(_mappings())
     assert usmap.find_mappings(tmp_path, GAME, settings) is not None
+
+
+def test_generic_textures_of_master_materials_are_not_taken_for_a_models_own():
+    from darkstl.importers.borderlands.materials import _NAME_RULES
+    from darkstl.importers.borderlands.ue4.materials import _shared_texture
+
+    assert _shared_texture("/Game/Materials/_TextureLibrary/Noise/T_GrungeNoise_C")
+    assert _shared_texture("/Engine/EngineMaterials/DefaultDiffuse")
+    assert not _shared_texture("/Game/Gameplay/Weapons/Player_Pinpointer/Textures/T_Pinpointer_BaseColor")
+    roles = {n: next((r for rx, r in _NAME_RULES if rx.search(n)), None)
+             for n in ("T_Pinpointer_BaseColor", "T_Pinpointer_BC", "T_Pinpointer_ORM", "T_Pinpointer_Normal")}
+    assert roles == {"T_Pinpointer_BaseColor": "albedo", "T_Pinpointer_BC": "albedo",
+                     "T_Pinpointer_ORM": "specular", "T_Pinpointer_Normal": "normal"}

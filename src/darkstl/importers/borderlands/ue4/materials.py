@@ -9,9 +9,12 @@ base material uses directly, the textures its package imports are taken.
 
 from __future__ import annotations
 
+import re
+
 from ....errors import FormatError
 from ..formats.props import ObjectRef
 from ..materials import ALBEDO, NORMAL, OTHER, SPECULAR, ResolvedMaterial, role_from_param, role_from_texture
+from . import guess
 from .asset import Export, Package
 from .mesh import object_props
 from .props import Array4, Struct4
@@ -74,6 +77,16 @@ def _imported_textures(pkg: Package) -> list[ObjectRef]:
     return out
 
 
+_SHARED = re.compile(r"/engine/|texturelibrary|noise|grunge|/(dirt|scratch|smudge|tiling|detail|utility|util)"
+                     r"[^/]*/[^/]*$", re.I)
+
+
+def _shared_texture(path: str) -> bool:
+    """A generic texture a master material layers over everything (noise, grunge, detail tiles, the engine's
+    defaults): never one model's colour or normal map, so not taken for one by its name."""
+    return bool(_SHARED.search(path or ""))
+
+
 def resolve_material(ref: ObjectRef) -> ResolvedMaterial:
     out = ResolvedMaterial(ref.name if ref else "None")
     if not ref:
@@ -92,6 +105,16 @@ def resolve_material(ref: ObjectRef) -> ResolvedMaterial:
             props = object_props(pkg, pkg.export_data(e), e)
         except FormatError as err:
             out.details.append(str(err))
+            if e.class_name.startswith("MaterialInstance"):
+                # the texture parameters can still be picked out: a texture reference after each one's name
+                try:
+                    found = guess.texture_parameters(pkg, pkg.export_data(e).data)
+                except FormatError:
+                    found = []
+                for name, ref_t in found:
+                    params.append((name, ref_t))
+                    out.details.append(f"parameter {name or '(no name)'}: {ref_t.name}")
+                    out.guessed = True
             leftovers += _imported_textures(pkg)
             # its parameters can't be read (no type mappings): take the textures it and the material it
             # imports (its parent, most likely) use, sorted into roles by their names
@@ -125,6 +148,8 @@ def resolve_material(ref: ObjectRef) -> ResolvedMaterial:
         role = role_from_param(name)
         if role in out.roles:
             continue
+        if role == OTHER and _shared_texture(ref_t.path):
+            continue
         tex = texture(ref_t)
         if tex is None:
             continue
@@ -139,7 +164,7 @@ def resolve_material(ref: ObjectRef) -> ResolvedMaterial:
         if all(r in out.roles for r in (ALBEDO, NORMAL, SPECULAR)):
             break
         key = ref_t.path.lower()
-        if key in seen:
+        if key in seen or _shared_texture(key):
             continue
         seen.add(key)
         tex = texture(ref_t)
