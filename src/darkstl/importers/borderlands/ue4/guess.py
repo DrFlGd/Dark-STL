@@ -10,7 +10,9 @@ where it reads the way that class's data must begin (cooked flags, sane
 bounds, material references that are the package's own imports...).
 
 A static mesh keeps its material slots among its properties; they are picked
-out of the values as the references to materials they hold, in order.
+out of the values as the references to materials they hold, in order. A
+material instance's texture parameters are picked out the same way: each
+reference to a texture there follows the parameter's name.
 """
 
 from __future__ import annotations
@@ -156,6 +158,49 @@ def _material_refs(pkg, values: bytes) -> list[ObjectRef]:
     return out
 
 
+TEXTURE_CLASSES = ("Texture2D", "VirtualTexture2D", "LightMapTexture2D", "TextureCube", "Texture2DArray")
+_NAME_BACK = (13, 9, 12, 8)  # name, association byte, index (each left out when zero) before the texture
+
+
+def texture_parameters(pkg, data: bytes) -> list[tuple[str, ObjectRef]]:
+    """A material instance's texture parameters (name, texture) from its unversioned property values, in order.
+
+    Each ``TextureParameterValue`` holds its ``ParameterInfo`` (the name, then the association and index) and
+    then the texture: so every texture reference among the values is taken, with the name just before it.
+    A texture with no name in front of it is kept with an empty name."""
+    wanted = {-(i + 1) for i, imp in enumerate(pkg.imports) if imp.class_name in TEXTURE_CLASSES}
+    wanted |= {e.index + 1 for e in pkg.exports if e.class_name in TEXTURE_CLASSES}
+    if not wanted:
+        return []
+    try:
+        p = _header_end(data)
+    except FormatError:
+        p = 0
+    texture_names = {pkg.object_name(r).lower() for r in wanted}
+    out, seen = [], set()
+    while p + 4 <= len(data):
+        ref = struct.unpack_from("<i", data, p)[0]
+        if ref not in wanted:
+            p += 1
+            continue
+        name = ""
+        for back in _NAME_BACK:
+            q = p - back
+            if q < 0:
+                continue
+            idx, num = struct.unpack_from("<ii", data, q)
+            if 0 <= idx < len(pkg.names) and num == 0:
+                cand = str(pkg.names[idx])
+                if cand and cand != "None" and "/" not in cand and cand.lower() not in texture_names:
+                    name = cand
+                    break
+        if (name, ref) not in seen:
+            seen.add((name, ref))
+            out.append((name, ObjectRef(pkg, ref)))
+        p += 4
+    return out
+
+
 def skip_properties(pkg, r: Reader, e) -> Props:
     """Step over ``e``'s unversioned properties without the type mappings, leaving ``r`` at its object GUID
     flag; raises :class:`FormatError` when its own data can't be found (or its class has none worth reading)."""
@@ -175,4 +220,4 @@ def skip_properties(pkg, r: Reader, e) -> Props:
                       "mappings)")
 
 
-__all__ = ["GuessedProps", "skip_properties"]
+__all__ = ["GuessedProps", "skip_properties", "texture_parameters"]
