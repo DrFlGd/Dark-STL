@@ -338,10 +338,10 @@ def folder_notes(folder: Path, found: list[CatalogEntry]) -> list[str]:
     for err in gf.errors[:3]:
         notes.append(err)
     if found and _needs_mappings(gf, found):
-        notes.append("Returnal is cooked without property names, so its models open only with the game's type "
-                     "mappings: a .usmap file made for the installed version of the game. Dump one from the running "
-                     "game with UE4SS (its \"Dump .usmap\" key, Ctrl+Numpad 6) or Dumper-7, then add it in Settings "
-                     f"under Unreal games, or put it in the game's folder or in {PROJECT}\\Content\\Paks.")
+        notes.append("Returnal is cooked without property names. Its models open without them, with each "
+                     "material's textures picked by their names; the game's type mappings (a .usmap file for the "
+                     "installed version, added in Settings under Unreal games or put in the game's folder) let "
+                     "Dark STL read the materials' own settings instead.")
     if not found and not gf.locked:
         if gf.paks or gf.zen is not None:
             notes.append("No meshes were found in Returnal's files.")

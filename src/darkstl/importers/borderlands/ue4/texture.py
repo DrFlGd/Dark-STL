@@ -55,6 +55,8 @@ class Texture4:
     def is_normal_map(self) -> bool:
         cs = str(self.props.get("CompressionSettings", ""))
         lod = str(self.props.get("LODGroup", ""))
+        if getattr(self.props, "material_refs", None) is not None:  # its properties couldn't be read
+            return self.pixel_format == "PF_BC5"  # two-channel compression: what normal maps are cooked as
         return "Normal" in cs or "Normal" in lod
 
     def describe(self) -> str:

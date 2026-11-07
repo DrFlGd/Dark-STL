@@ -92,7 +92,17 @@ def resolve_material(ref: ObjectRef) -> ResolvedMaterial:
             props = object_props(pkg, pkg.export_data(e), e)
         except FormatError as err:
             out.details.append(str(err))
-            break
+            leftovers += _imported_textures(pkg)
+            # its parameters can't be read (no type mappings): take the textures it and the material it
+            # imports (its parent, most likely) use, sorted into roles by their names
+            parent = next((ObjectRef(pkg, -(i + 1)) for i, imp in enumerate(pkg.imports)
+                           if imp.class_name.startswith("Material") and imp.class_name != "MaterialFunction"
+                           and "Parameter" not in imp.class_name), None)
+            nxt = resolve(parent) if parent is not None and e.class_name.startswith("MaterialInstance") else None
+            if nxt is None:
+                break
+            pkg, e = nxt
+            continue
         values = props.get("TextureParameterValues")
         if isinstance(values, Array4):
             try:
