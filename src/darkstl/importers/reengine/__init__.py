@@ -228,6 +228,23 @@ class REEngineImporter(Importer):
             return []
         return animation.REAnimations(mesh.bones, found, self.cache / "motions" if self.cache else None).files_used()
 
+    def list_textures(self, folder: Path) -> list[tuple[str, str]]:
+        index = files.index_for(Path(folder))
+        if index is None or files._norm(index.root) != files._norm(Path(folder)):
+            return []
+        out = []
+        for key, rels in sorted(index.by_name.items()):
+            if key.endswith(".tex") and rels:
+                rel = sorted(rels, key=lambda r: (not files.is_streaming(r), r.lower()))[0]
+                out.append((key[:-4], rel))
+        return out
+
+    def open_texture(self, folder: Path, ref: str) -> Texture:
+        index = files.index_for(Path(folder))
+        path = index.path(ref) if index is not None else Path(folder) / ref
+        stem = files.file_stem(Path(ref).name)
+        return _texture(files.TexRef(stem, path, ref))
+
     @staticmethod
     def texture_file(path: Path) -> dict[str, Texture]:
         """The texture in a .tex file, for showing texture files on their own."""

@@ -29,6 +29,7 @@ import numpy as np
 from .. import __version__
 from .. import collect
 from .. import configs
+from .. import overlay
 from .. import package
 from ..errors import FormatError
 from ..export import FORMATS, ExportOptions, export_mesh, write_palette_png
@@ -276,7 +277,7 @@ def mesh_stats(mesh: TriMesh) -> dict:
 # ------------------------------------------------------------------ service
 
 class Service:
-    BYTES = {"model_mesh", "texture", "thumb", "texture_crop", "paint_texture"}
+    BYTES = {"model_mesh", "texture", "thumb", "texture_crop", "paint_texture", "texture_preview"}
     # opening a model and what its page shows first: library previews pause while these run
     FOREGROUND = {"model_open", "model_mesh", "model_stats", "model_animations", "texture", "texture_info",
                   "texture_maps", "texture_crop"}
@@ -315,6 +316,8 @@ class Service:
         self.unpack_plans: dict[tuple, Any] = {}  # unpack.Plan by (game folder, destination), the last few
         self.part_models: OrderedDict[tuple, SourceModel] = OrderedDict()  # models opened to assemble configurations
         configs.set_user_folder((config.path.parent if config.path else config_dir()) / "configurations")
+        self.overlays: dict[str, overlay.Overlay] = {}  # each game's library overlay, by game
+        self.texture_lists: dict[str, tuple[float, list]] = {}  # each game's textures for the picker, by game
         if config.oodle:
             self._use_oodle(config.oodle)
 
@@ -1182,11 +1185,15 @@ class Service:
                 raise AppError("That model isn't in the library any more (was its folder removed?)")
         variant = args.get("variant") or None
         config = entry.config if entry is not None else None
+        rel = self._overlay_rel(entry) if entry is not None and config is None else None
         if config is not None:
             chosen = config.choose(args.get("choices") if isinstance(args.get("choices"), dict) else None)
             sid = f"{model_id}|config|{configs.choices_key(chosen)}"
         else:
             sid = f"{model_id}|{variant or ''}"
+            changed = self._overlay(entry.game).signature_of_file(rel) if rel is not None else ""
+            if changed:  # what the overlay says is part of what is open (and of every result made from it)
+                sid += "|o:" + hashlib.sha1(changed.encode("utf-8")).hexdigest()[:12]
         with self.lock:
             session = self.sessions.get(sid)
         if session is None:
@@ -1197,6 +1204,9 @@ class Service:
                     raise AppError(f"{config.label} couldn't be put together: {exc}") from exc
             else:
                 model = open_model(path, variant, tuple(self.config.texture_dirs))
+                if rel is not None:
+                    key = overlay.model_key(rel, model.variant if model.variants else None)
+                    model = overlay.apply(model, self._overlay(entry.game).textures(key), self._store_root(entry.game))
             session = Session(sid, model, entry)
             self._show_kept(session)
             with self.lock:
@@ -1212,8 +1222,192 @@ class Service:
                     "enhanced": self._result_json(session) if session.result is not None else None,
                     "cut": self._cut_json(session) if session.cut is not None else None,
                     "finished": self._finished_json(session) if session.finished is not None else None,
-                    "configurable_as": self._configurable_as(path) if config is None else []})
+                    "configurable_as": self._configurable_as(path) if config is None else [],
+                    "assigned": self._assigned_json(session)})
         return out
+
+    def _assigned_json(self, session: Session) -> dict:
+        """The textures the overlay assigns to the open model's materials: {material: {role: name}}."""
+        try:
+            ov, key = self._overlay_key(session)
+        except AppError:
+            return {}
+        return {i: {r: t.get("name") for r, t in roles.items()} for i, roles in ov.textures(key).items()}
+
+    # ------------------------------------------------------------ the library overlay and the texture picker
+
+    def _overlay(self, game: str) -> overlay.Overlay:
+        with self.lock:
+            ov = self.overlays.get(game)
+            if ov is None:
+                folder = (self.config.path.parent if self.config.path else config_dir()) / "overlays"
+                ov = overlay.Overlay(folder / f"{collect._folder_name(game)}.json", game)
+                self.overlays[game] = ov
+            return ov
+
+    def _store_root(self, game: str) -> Path:
+        """The game's asset store (beside its model packages)."""
+        return collect.packages_folder(self.config.library_folder, game)
+
+    def _overlay_rel(self, entry: CatalogEntry) -> str | None:
+        """The model's path in the game, which the overlay files it under: the same for the game's file, a
+        collected copy and the package made from it."""
+        if entry.importer == "package":
+            try:
+                return str(package.read_index(entry.path).get("source") or "") or None
+            except FormatError:
+                return None
+        with self.lock:
+            root = self.library.root_of(entry)
+        if root is None:
+            return None
+        try:
+            return entry.path.relative_to(root).as_posix()
+        except ValueError:
+            return None
+
+    def _overlay_key(self, session: Session) -> tuple[overlay.Overlay, str]:
+        entry = session.entry
+        rel = self._overlay_rel(entry) if entry is not None and entry.config is None else None
+        if rel is None:
+            raise AppError("Textures can be chosen for models in the library (not files opened on their own or "
+                           "configurable models) for now.")
+        m = session.model
+        return self._overlay(entry.game), overlay.model_key(rel, m.variant if m.variants else None)
+
+    def _game_textures(self, game: str) -> list[dict]:
+        """Every texture of ``game`` the picker offers, by name: those in its asset store, then those its
+        folders hold (listed by their importers), one per name."""
+        from ..importers import IMPORTERS
+
+        with self.lock:
+            kept = self.texture_lists.get(game)
+            if kept is not None and time.time() - kept[0] < 120:
+                return kept[1]
+            roots = [r for r, g in self.library.roots.items() if g == game]
+        out: dict[str, dict] = {}
+        store = self._store_root(game)
+        for file in sorted(package.AssetStore(store).stored_textures()):
+            name = package.stored_texture_name(file)
+            out.setdefault(name.lower(), {"ref": json.dumps(["store", file]), "name": name, "where": "asset store",
+                                          "stored": True})
+        for root in roots:
+            for imp in IMPORTERS:
+                try:
+                    listed = imp.list_textures(root)
+                except Exception:  # noqa: BLE001 - one importer's listing failing leaves the others
+                    log.debug("Texture list of %s by %s failed", root, imp.key, exc_info=True)
+                    continue
+                for name, ref in listed:
+                    where = ref.rpartition("|")[0] if "|" in ref else ref
+                    out.setdefault(name.lower(), {"ref": json.dumps(["game", str(root), imp.key, ref]), "name": name,
+                                                  "where": where, "stored": False})
+        found = sorted(out.values(), key=lambda t: t["name"].lower())
+        with self.lock:
+            self.texture_lists[game] = (time.time(), found)
+        return found
+
+    def _picked_texture(self, game: str, ref: str):
+        """(the texture a picker reference names, its file in the asset store if it is stored)."""
+        from ..importers import IMPORTERS
+        from ..model import Texture
+
+        try:
+            kind, *rest = json.loads(ref)
+        except (ValueError, TypeError) as exc:
+            raise AppError("That texture can't be found any more.") from exc
+        if kind == "store":
+            path = self._store_root(game) / rest[0]
+            if not path.is_file():
+                raise AppError(f"{rest[0]} isn't in the asset store any more.")
+            return Texture(package.stored_texture_name(rest[0]), rest[0],
+                           load=lambda: package._decode_image(path)), rest[0]
+        root, key, iref = rest
+        with self.lock:
+            if Path(root) not in self.library.roots:
+                raise AppError("That texture's game folder isn't in the library any more.")
+        imp = next((i for i in IMPORTERS if i.key == key), None)
+        if imp is None:
+            raise AppError("That texture can't be found any more.")
+        try:
+            return imp.open_texture(Path(root), iref), None
+        except FormatError as exc:
+            raise AppError(str(exc)) from exc
+
+    def cmd_textures_search(self, args: dict) -> dict:
+        """The game's textures whose names hold ``q`` (all words, any case), best matches first."""
+        session = self._session(args) if args.get("sid") else None
+        game = str(args.get("game") or (session.entry.game if session and session.entry else "") or "")
+        if not game:
+            raise AppError("Choose a game first.")
+        words = [w for w in str(args.get("q") or "").lower().split() if w]
+        found = [t for t in self._game_textures(game) if all(w in t["name"].lower() for w in words)]
+        if words:
+            found.sort(key=lambda t: (not t["name"].lower().startswith(words[0]), len(t["name"]), t["name"].lower()))
+        limit = max(1, min(int(args.get("limit") or 60), 500))
+        offset = max(0, int(args.get("offset") or 0))
+        return {"game": game, "total": len(found), "items": found[offset:offset + limit],
+                "listed": len(self._game_textures(game))}
+
+    def cmd_texture_preview(self, args: dict) -> bytes:
+        game = str(args.get("game") or "")
+        ref = str(args.get("ref") or "")
+        size = int(args.get("max") or 128)
+        cache_key = ("picker", game, ref, size)
+        with self.lock:
+            if cache_key in self.textures_png:
+                return self.textures_png[cache_key]
+        tex, _file = self._picked_texture(game, ref)
+        try:
+            data = texture_png(tex.decode(), size)
+        except Exception as exc:  # noqa: BLE001 - a texture that can't be decoded says so
+            raise AppError(f"{tex.name} couldn't be read: {exc}") from exc
+        with self.lock:
+            self.textures_png[cache_key] = data
+            while len(self.textures_png) > 48:
+                self.textures_png.popitem(last=False)
+        return data
+
+    def cmd_texture_assign(self, args: dict) -> dict:
+        """Use a texture the picker found (``ref``) for ``role`` of material ``material`` of the open model, or
+        (no ``ref``) go back to the model's own. The texture is kept in the game's asset store, and the choice
+        in the game's library overlay; the model is opened again with it (a new ``sid``)."""
+        session = self._session(args)
+        ov, key = self._overlay_key(session)
+        game = session.entry.game
+        role = str(args.get("role") or "")
+        if role not in overlay.ROLES:
+            raise AppError("Choose colour, normal or height map.")
+        try:
+            material = int(args.get("material"))
+        except (TypeError, ValueError) as exc:
+            raise AppError("Choose a material.") from exc
+        if not 0 <= material < len(session.model.materials):
+            raise AppError("That material isn't in this model.")
+        ref = args.get("ref")
+        picked = None
+        if ref:
+            tex, file = self._picked_texture(game, str(ref))
+            if file is None:
+                root = self._store_root(game)
+                store = package.AssetStore(root)
+                try:
+                    file = store.add_texture(tex)
+                except Exception as exc:  # noqa: BLE001 - a texture that can't be decoded isn't assigned
+                    raise AppError(f"{tex.name} couldn't be read: {exc}") from exc
+                store.save()
+                if collect.read_manifest(root) is None:
+                    collect.write_manifest(root, game, packages=True)
+                with self.lock:
+                    self.texture_lists.pop(game, None)
+            picked = {"file": file, "name": tex.name}
+        with self.lock:
+            ov.assign(key, material, role, picked)
+            ov.save()
+            stale = [sid for sid in self.sessions if sid.split("|", 1)[0] == session.sid.split("|", 1)[0]]
+            for sid in stale:
+                self.sessions.pop(sid, None)
+        return {"key": key, "material": material, "role": role, "texture": picked}
 
     def _configurable_as(self, path: Path) -> list[dict]:
         """The configurable models this model is the base or a part of (a gun part -> the gun to configure)."""
