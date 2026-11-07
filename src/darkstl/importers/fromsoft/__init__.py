@@ -16,7 +16,7 @@ import numpy as np
 
 from ...collect import RelatedFile
 from ...errors import FormatError
-from ...model import BuildOption, CatalogEntry, Material, MeshOptions, Part, SourceModel, Texture
+from ...model import BuildOption, CatalogEntry, Material, MeshOptions, Part, Rig, SourceModel, Texture, frame_matrix
 from ...textures import dds
 from ..base import Importer, ScanProgress
 from . import catalog, files, materials, texindex
@@ -187,6 +187,7 @@ class FromSoftwareImporter(Importer):
                                  "Moves non-skinned meshes (blades, guards, armour plates) to where their bone "
                                  "holds them. Turn off if parts end up out of place.")],
             info=flver_summary(f), notes=notes, animations=animations,
+            rig=_rig(f, animations) if animations is not None else None,
         )
 
     def describe(self, path: Path) -> list[str] | None:
@@ -235,6 +236,25 @@ class FromSoftwareImporter(Importer):
         refs: dict[str, files.TextureRef] = {}
         files.add_texture_file(refs, Path(path))
         return {k: _texture(r) for k, r in refs.items()}
+
+
+def _rig(f, animations) -> Rig:
+    """The FLVER's bones in the export frame, posed by name from the model's animation set."""
+    from .animation import qs_to_matrices
+    from .mesh import GAME_TO_EXPORT
+
+    g = frame_matrix(GAME_TO_EXPORT)
+    gi = np.linalg.inv(g)
+    local = np.array([b.local_matrix() for b in f.bones], np.float64).reshape(-1, 4, 4)
+    world = f.bone_world_matrices().reshape(-1, 4, 4)
+
+    def pose_locals(anim: str, frame: int):
+        names = list(animations.skeleton.names)
+        m = qs_to_matrices(animations.local_pose(anim, animations.clamp(anim, frame)))
+        return names, g @ m @ gi
+
+    return Rig([b.name for b in f.bones], np.array([b.parent for b in f.bones], np.int64), g @ local @ gi,
+               g @ world @ gi, pose_locals)
 
 
 __all__ = ["FromSoftwareImporter", "flver_summary"]

@@ -69,6 +69,25 @@ def _skin(flver: Flver, mesh, skin: np.ndarray, p: np.ndarray, n: np.ndarray | N
     return p, n
 
 
+def _skin_weights(flver: Flver, mesh) -> tuple[np.ndarray, np.ndarray] | None:
+    """Bones (global indices, -1 for none) and normalised weights (n, 4) a skinned mesh's vertices
+    follow, as :func:`_skin` uses them."""
+    bones = _vertex_bones(flver, mesh)
+    if bones is None:
+        return None
+    vd = mesh.vertices
+    if vd.bone_weights is not None:
+        w = vd.bone_weights.astype(np.float64)
+    else:
+        w = np.zeros(bones.shape, np.float64)
+        w[:, 0] = 1.0
+    w = np.where(bones >= 0, w, 0.0)
+    total = w.sum(axis=1)
+    w = np.where(total[:, None] > 1e-6, w / np.where(total > 1e-6, total, 1.0)[:, None], 0.0)
+    w[total <= 1e-6, 0] = 1.0
+    return bones.astype(np.int32), w.astype(np.float32)
+
+
 def _static_vertex_bones(flver: Flver, mesh) -> np.ndarray | None:
     """Global bone index for each vertex of a non-skinned mesh, or None."""
     n_bones = len(flver.bones)
@@ -98,6 +117,7 @@ def flver_to_trimesh(flver: Flver, options: FlverMeshOptions | None = None) -> T
         skin = world @ np.linalg.pinv(bind)
 
     positions, normals, faces, uvs, mats, groups = [], [], [], [], [], []
+    joints, weights = [], []  # per vertex: the bones it follows in a pose (kept as metadata["skin"])
     offset = 0
     for mi, mesh in enumerate(flver.meshes):
         if options.include_meshes is not None and mi not in options.include_meshes:
@@ -108,6 +128,16 @@ def flver_to_trimesh(flver: Flver, options: FlverMeshOptions | None = None) -> T
         vd = mesh.vertices
         p = vd.positions.astype(np.float64)
         n = vd.normals.astype(np.float64) if vd.normals is not None else None
+        jw = np.full((vd.count, 4), -1, np.int32), np.zeros((vd.count, 4), np.float32)
+        if mesh.dynamic:
+            jw = _skin_weights(flver, mesh) or jw
+        elif world is not None:
+            bones = _static_vertex_bones(flver, mesh)
+            if bones is not None:
+                jw[0][:, 0] = np.where(bones >= 0, bones, -1)
+                jw[1][:, 0] = (bones >= 0).astype(np.float32)
+        joints.append(jw[0])
+        weights.append(jw[1])
         if world is not None and not mesh.dynamic:  # rigid parts sit where their bone is (posed or bind)
             bones = _static_vertex_bones(flver, mesh)
             if bones is not None and (bones >= 0).any():
@@ -142,6 +172,8 @@ def flver_to_trimesh(flver: Flver, options: FlverMeshOptions | None = None) -> T
     n = n / np.where(length > 0, length, 1)  # missing normals stay zero
     mesh = TriMesh(p, f, corner_uvs, np.concatenate(mats), np.concatenate(groups),
                    corner_normals=n[f].astype(np.float32))
+    if flver.bones and not posed:
+        mesh.metadata["skin"] = (np.concatenate(joints), np.concatenate(weights))
 
     if options.fix_orientation:
         flip = np.einsum("ij,ij->i", mesh.face_cross(), mesh.corner_normals.sum(axis=1)) < 0

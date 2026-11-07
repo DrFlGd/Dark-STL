@@ -126,12 +126,40 @@ class SourceModel:
     # ``paint_for(target)`` returns the colour texture it gives ``target`` (made when it's first decoded),
     # or None. configs.assemble uses it for material and finish slots.
     paint_for: Callable[["SourceModel"], Texture | None] | None = field(default=None, repr=False)
+    rig: Rig | None = field(default=None, repr=False)  # the skeleton animations pose, for model packages
 
     def build_mesh(self, options: MeshOptions | None = None) -> TriMesh:
         options = options or MeshOptions()
         flags = {o.key: o.default for o in self.options}
         flags.update(options.flags)
         return self.build(MeshOptions(options.parts, flags, options.pose))
+
+
+@dataclass
+class Rig:
+    """A posable model's skeleton, so a model package can pose it without the game's files.
+
+    Matrices are 4x4, column vectors, in the export frame (metres, Z up). The mesh the model builds in
+    its bind pose carries ``metadata["skin"]``: ``(joints, weights)``, (V, k) per vertex, joints indexing
+    ``names`` (-1: none). A vertex then poses as the weighted sum of ``world @ inv(bind_world)`` of its
+    bones, where ``world`` composes ``bind_local`` with the local matrices an animation gives bones of
+    the same name (:func:`darkstl.posing.pose_world`).
+    """
+
+    names: list[str]
+    parents: np.ndarray  # (B,) int, -1 for a root
+    bind_local: np.ndarray  # (B, 4, 4)
+    bind_world: np.ndarray  # (B, 4, 4): where the bind-pose mesh was placed with
+    # (animation, frame) -> (bone names, (n, 4, 4) local matrices of those bones at that frame)
+    pose_locals: Callable[[str, int], tuple[list[str], np.ndarray]] = field(repr=False)
+
+
+def frame_matrix(game_to_export: np.ndarray) -> np.ndarray:
+    """A 3x3 axis change as a 4x4 matrix, for carrying an importer's bone matrices into the export frame
+    (``M4 @ m @ inv(M4)``)."""
+    m = np.eye(4)
+    m[:3, :3] = np.asarray(game_to_export, np.float64)
+    return m
 
 
 class Animations(Protocol):

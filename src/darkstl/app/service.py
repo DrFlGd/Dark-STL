@@ -29,6 +29,7 @@ import numpy as np
 from .. import __version__
 from .. import collect
 from .. import configs
+from .. import package
 from ..errors import FormatError
 from ..export import FORMATS, ExportOptions, export_mesh, write_palette_png
 from ..geometry.mesh import TriMesh
@@ -863,7 +864,7 @@ class Service:
     # ------------------------------------------------------------ collecting into the app's library
 
     COLLECT_ARGS = ("ids", "game", "category", "group", "q", "lod", "textures", "animations", "player_animations",
-                    "lod_copies", "extras")
+                    "lod_copies", "extras", "packages")
     KEEP_PLAN_SECONDS = 600  # a plan worked out for the Collect dialog is used by its Copy button
 
     def _plan_key(self, args: dict) -> str:
@@ -886,7 +887,9 @@ class Service:
                 self.collect_plans.popitem(last=False)
         return plan
 
-    def _make_collect_plan(self, args: dict, job: Job | None) -> collect.Plan:
+    def _chosen_entries(self, args: dict) -> tuple[list[CatalogEntry], list[Path]]:
+        """The models Collect is asked for (``ids``, or a game/category/group/search), leaving out those that
+        are copies already, and every game folder in the library."""
         from ..importers import importer_for
         from ..importers.fromsoft.files import file_stem
 
@@ -905,6 +908,12 @@ class Service:
                                              str(args.get("q") or ""), bool(args.get("lod")))
             roots = [r for r, g in self.library.roots.items()]
         entries = [e for e in entries if not self._is_collection(self.library.root_of(e) or e.path.parent)]
+        return entries, roots
+
+    def _make_collect_plan(self, args: dict, job: Job | None) -> collect.Plan:
+        from ..importers import importer_for
+
+        entries, roots = self._chosen_entries(args)
         found_configs = [e.config for e in entries if e.config is not None]
         entries, variants = self._expand_configs(entries)
         if not entries:
@@ -988,14 +997,23 @@ class Service:
 
     def cmd_collect_plan(self, args: dict) -> dict:
         """What collecting would copy. With ``job``, worked out in a job (stoppable, with progress), whose
-        result is the summary: the page asks this way, as a whole game can take minutes."""
+        result is the summary: the page asks this way, as a whole game can take minutes. With ``packages``,
+        what importing the models as model packages would write instead."""
+        if args.get("packages"):
+            summary = self._package_plan(args)
+            if not args.get("job"):
+                return summary
+            return {"job": self.jobs.start("Listing the models to import", lambda job: summary).id}
         if not args.get("job"):
             return self._collect_plan(args).summary()
         label = f"Working out what to copy from {args.get('game') or 'the game'}"
         return {"job": self.jobs.start(label, lambda job: self._collect_plan(args, job).summary(), stoppable=True).id}
 
     def cmd_collect_run(self, args: dict) -> dict:
-        """Copy the chosen models' files into the app's library and list them from there."""
+        """Copy the chosen models' files into the app's library and list them from there (with ``packages``,
+        write each as a model package instead)."""
+        if args.get("packages"):
+            return self._package_run(args)
         plan = self._collect_plan(args)
 
         def run(job: Job):
@@ -1015,6 +1033,108 @@ class Service:
 
         return {"job": self._scan_job(f"Collecting {len(plan.models)} model{'s' if len(plan.models) != 1 else ''} "
                                       f"from {plan.game}", run).id}
+
+    # ------------------------------------------------------------ importing as model packages
+
+    MAX_PACKAGE_VARIANTS = 64
+
+    def _package_choice(self, args: dict) -> tuple[str, list[CatalogEntry], list[CatalogEntry], list[Path], Path]:
+        """The game, the models to write as packages, the configurable models (collected as game files, as
+        packages don't hold configurations yet), the game's folders and where its packages go."""
+        entries, roots = self._chosen_entries(args)
+        if not entries:
+            raise AppError("Nothing to import: choose a model, a kind or a game.")
+        games = sorted({e.game for e in entries})
+        if len(games) > 1:
+            raise AppError("Import one game at a time.")
+        game = games[0]
+        plain = [e for e in entries if e.config is None]
+        configurable = [e for e in entries if e.config is not None]
+        with self.lock:
+            game_roots = [r for r in roots if self.library.roots.get(r) == game]
+        return game, plain, configurable, game_roots, collect.packages_folder(self.config.library_folder, game)
+
+    @staticmethod
+    def _package_present(root: Path, rel: str, source: Path) -> bool:
+        index = package.package_folder(root, rel) / package.INDEX
+        try:
+            return index.stat().st_mtime >= source.stat().st_mtime
+        except OSError:
+            return False
+
+    def _package_plan(self, args: dict) -> dict:
+        game, plain, configurable, roots, root = self._package_choice(args)
+        present = sum(1 for e in plain if self._package_present(root, collect.relative_path(e.path, roots).as_posix(),
+                                                                  e.path))
+        return {"game": game, "folder": str(root), "packages": True, "models": len(plain) + len(configurable),
+                "to_write": len(plain) - present, "present": present, "configurable": len(configurable),
+                "files": 0, "bytes": 0, "to_copy": len(plain) - present, "kinds": {}}
+
+    def _package_run(self, args: dict) -> dict:
+        from ..importers import IMPORTERS, importer_for
+
+        game, plain, configurable, roots, root = self._package_choice(args)
+        by_key = {imp.key: imp for imp in IMPORTERS}
+        again = bool(args.get("again"))
+        options = package.WriteOptions(animations=bool(args.get("animations", True)))
+
+        def run(job: Job):
+            with self.lock:
+                self.collect_plans.clear()
+            store = package.AssetStore(root)
+            size_before = collect.folder_size(root)[1] if root.is_dir() else 0
+            written, kept, failed = 0, 0, []
+            n = len(plain)
+            with self.thumbs.foreground():
+                for i, e in enumerate(plain):
+                    job.check()
+                    rel = collect.relative_path(e.path, roots).as_posix()
+                    if not again and self._package_present(root, rel, e.path):
+                        kept += 1
+                        continue
+                    job.report(i / max(n, 1), f"Importing {e.label} ({i + 1:,} of {n:,})")
+                    options.progress = lambda m, i=i, e=e: job.report(i / max(n, 1), f"Importing {e.label}: {m}")
+                    imp = by_key.get(e.importer) or importer_for(e.path)
+                    try:
+                        variants = imp.variants(e.path)[:self.MAX_PACKAGE_VARIANTS] or [None]
+                        models = []
+                        for v in variants:
+                            job.check()
+                            models.append(imp.load(e.path, v, tuple(self.config.texture_dirs)))
+                        package.write_package(root, e, rel, models, store, options)
+                        written += 1
+                    except Stopped:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - one model that won't open doesn't stop the rest
+                        log.debug("Import: %s failed", e.path, exc_info=True)
+                        failed.append(f"{e.label}: {exc}")
+                    finally:
+                        store.save()
+            collect.write_manifest(root, game, [e.stem for e in plain], sorted({str(r) for r in roots}), packages=True)
+            result = {"game": game, "folder": str(root), "models": n, "written": written, "present": kept,
+                      "failed": failed[:20], "failures": len(failed),
+                      "bytes": max(collect.folder_size(root)[1] - size_before, 0),
+                      "copied": written, "configurable": len(configurable)}
+            scanned = [(root, game)]
+            if configurable:  # weapons and their parts and skins stay game files for now (see darkstl.package)
+                job.report(1.0, "Collecting the configurable models")
+                plan = self._make_collect_plan({**args, "ids": [e.id for e in configurable], "packages": False}, None)
+                result["collected"] = collect.run(plan)
+                scanned.append((plan.folder, game))
+            job.report(1.0, f"Reading {root.name}")
+            lib = Library()
+            for folder, g in scanned:
+                if folder.is_dir():
+                    lib.add_root(folder, g)
+            with self.lock:
+                self.library.merge(lib)
+                self._save_folders()
+            result["count"] = len(lib.entries)
+            return result
+
+        count = len(plain) + len(configurable)
+        label = f"Importing {count:,} model{'s' if count != 1 else ''} from {game}"
+        return {"job": self._scan_job(label, run).id}
 
     def cmd_models_query(self, args: dict) -> dict:
         with self.lock:
