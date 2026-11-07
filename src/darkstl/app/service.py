@@ -31,6 +31,7 @@ from .. import collect
 from .. import configs
 from .. import overlay
 from .. import package
+from .. import variations
 from ..errors import FormatError
 from ..export import FORMATS, ExportOptions, export_mesh, write_palette_png
 from ..geometry.mesh import TriMesh
@@ -280,7 +281,7 @@ def mesh_stats(mesh: TriMesh) -> dict:
 # ------------------------------------------------------------------ service
 
 class Service:
-    BYTES = {"model_mesh", "texture", "thumb", "texture_crop", "paint_texture", "texture_preview"}
+    BYTES = {"model_mesh", "texture", "thumb", "texture_crop", "paint_texture", "texture_preview", "variation_thumb"}
     # opening a model and what its page shows first: library previews pause while these run
     FOREGROUND = {"model_open", "model_mesh", "model_stats", "model_animations", "texture", "texture_info",
                   "texture_maps", "texture_crop"}
@@ -1781,6 +1782,9 @@ class Service:
                 progress = (lambda f, m: job.report(0.2 + 0.8 * f, m)) if made else job.report
                 result = enhance(session.model, settings, progress, mesh=mesh, on_mesh=keep_mesh, prepared=prepared)
             job.check()  # stopped in its last step: not kept
+            if getattr(result, "made_with", None) is None:  # what it was made with, kept with it as a variation
+                result.made_with = {"settings": dict(args.get("settings") or {}), "step": args.get("step") or "both",
+                                    "parts": args.get("parts"), "flags": args.get("flags") or {}, "pose": args.get("pose")}
             self._keep(key, result)
             session.result, session.result_id = result, _key_id(key)
             return {**self._result_json(session), "kept": kept is not None, "mesh_reused": mesh is not None}
@@ -1948,15 +1952,136 @@ class Service:
 
     def _result_json(self, session: Session) -> dict:
         r = session.result
+        saved = getattr(r, "saved", None)
+        if saved:  # a kept variation: as it was shown when it was made
+            return {"id": session.result_id, "stats": {**r.stats(), **(saved.get("stats") or {})},
+                    "size_mm": ((r.displaced.bounds()[1] - r.displaced.bounds()[0]) * 1000).round(2).tolist(),
+                    "fields": list(saved.get("fields") or []), "warnings": list(r.warnings),
+                    "displaced": r.displaced_by_textures, "variation": r.variation}
         st = r.stats()
         model = session.model
-        return {"id": session.result_id, "stats": st,
+        return {"id": session.result_id, "stats": st, "variation": getattr(r, "variation", None),
                 "size_mm": ((r.displaced.bounds()[1] - r.displaced.bounds()[0]) * 1000).round(2).tolist(),
                 "fields": [{"material": model.materials[m].name if m < len(model.materials) else str(m),
                             "texture": model.textures[f.texture].name if f.texture in model.textures else f.texture,
                             "convention": f.field.convention, "texel_mm": f.texel_size * 1000, "steps": f.steps}
                            for m, f in r.fields.items()],
                 "warnings": list(r.warnings), "displaced": r.displaced_by_textures}
+
+    # ------------------------------------------------------------ saved variations
+
+    def _variations_place(self, args: dict) -> tuple[Path, str | None, Session | None]:
+        """Where the variations of the model open as ``sid`` (or of the library model ``model``, file model
+        ``variant``) are kept, which model of the file they belong to, and the open model if any."""
+        session = self._session(args) if args.get("sid") else None
+        if session is not None:
+            entry = session.entry
+            variant = session.model.variant if session.model.variants else None
+        else:
+            entry = self._entry(str(args.get("model") or ""))
+            variant = str(args.get("variant") or "") or None
+        if entry is None or entry.config is not None:
+            raise AppError("Variations are kept for models in the library (not for configurable ones yet).")
+        if entry.importer == "package":
+            folder = entry.path.parent
+        else:
+            rel = self._overlay_rel(entry)
+            if rel is None:
+                raise AppError("That model isn't in one of the game's folders.")
+            folder = package.package_folder(self._store_root(entry.game), rel)
+        return variations.folder_of(folder), variant, session
+
+    def _variations_json(self, folder: Path, variant: str | None) -> list[dict]:
+        return variations.listed(folder, variant)
+
+    def cmd_variations(self, args: dict) -> dict:
+        """The variations kept of a model, newest first."""
+        try:
+            folder, variant, _session = self._variations_place(args)
+        except AppError as exc:
+            return {"items": [], "folder": None, "why": str(exc)}
+        return {"items": self._variations_json(folder, variant), "folder": str(folder)}
+
+    def cmd_variation_save(self, args: dict) -> dict:
+        """Keep the enhanced model shown as a variation named ``name`` (a job), with the settings, parts,
+        options and pose it was made with."""
+        from ..thumbnails import albedo_textures, png_bytes, render
+
+        folder, variant, session = self._variations_place(args)
+        if session is None or session.result is None:
+            raise AppError("Generate the enhanced model first (Mesh or Displace tab).")
+        result, shown = session.result, self._result_json(session)
+        name = str(args.get("name") or "").strip() or f"{shown['stats']['vertices']:,} vertices"
+        made = getattr(result, "made_with", None) or {}
+        info = {"variant": variant, "model": {"label": session.entry.label, "stem": session.entry.stem},
+                "settings": made.get("settings") or {}, "step": made.get("step") or "both",
+                "mesh": {"parts": made.get("parts"), "flags": made.get("flags") or {}, "pose": made.get("pose")},
+                "result": {k: shown[k] for k in ("stats", "size_mm", "fields", "warnings", "displaced")},
+                "from": getattr(result, "variation", None)}
+
+        def run(job: Job):
+            job.report(0.1, "Drawing its picture")
+            try:
+                thumb = png_bytes(render(result.displaced, albedo_textures(session.model, result.displaced), 256))
+            except Exception:  # noqa: BLE001 - a variation without a picture is still kept
+                thumb = None
+            job.report(0.4, "Writing the mesh")
+            try:
+                row = variations.save(folder, name, result.displaced, info, thumb)
+            except (OSError, FormatError) as exc:
+                raise AppError(f"The variation couldn't be saved: {exc}") from exc
+            session.result.variation = row["id"]
+            return {"variation": row, "items": self._variations_json(folder, variant)}
+
+        return {"job": self.jobs.start(f"Saving {name}", run).id}
+
+    def cmd_variation_open(self, args: dict) -> dict:
+        """Show a kept variation as the model's enhanced model (to view, export, finish or cut it)."""
+        from ..pipeline import EnhanceResult
+
+        folder, _variant, session = self._variations_place(args)
+        if session is None:
+            raise AppError("This model was closed; open it again.")
+        vid = str(args.get("id") or "")
+        try:
+            row = variations.read(folder, vid)
+            mesh = variations.mesh_of(folder, vid)
+        except FormatError as exc:
+            raise AppError(str(exc)) from exc
+        made = row.get("result") or {}
+        result = EnhanceResult(mesh, mesh, mesh, {}, list(session.model.materials), list(made.get("warnings") or []),
+                               bool(made.get("displaced", True)))
+        result.saved, result.variation = made, vid
+        result.made_with = {"settings": row.get("settings") or {}, "step": row.get("step") or "both",
+                            **{k: (row.get("mesh") or {}).get(k) for k in ("parts", "flags", "pose")}}
+        session.result, session.result_id = result, f"var-{vid}"
+        return {**self._result_json(session), "saved": row}
+
+    def cmd_variation_rename(self, args: dict) -> dict:
+        folder, variant, _session = self._variations_place(args)
+        try:
+            row = variations.rename(folder, str(args.get("id") or ""), str(args.get("name") or ""))
+        except (OSError, ValueError, FormatError) as exc:
+            raise AppError(f"It couldn't be renamed: {exc}") from exc
+        return {"variation": row, "items": self._variations_json(folder, variant)}
+
+    def cmd_variation_delete(self, args: dict) -> dict:
+        folder, variant, session = self._variations_place(args)
+        vid = str(args.get("id") or "")
+        try:
+            variations.delete(folder, vid)
+        except (OSError, FormatError) as exc:
+            raise AppError(f"It couldn't be deleted: {exc}") from exc
+        if session is not None and getattr(session.result, "variation", None) == vid:
+            session.result.variation = None  # still shown, but kept no more
+        return {"items": self._variations_json(folder, variant)}
+
+    def cmd_variation_thumb(self, args: dict) -> bytes | None:
+        try:
+            folder, _variant, _session = self._variations_place(args)
+        except AppError:
+            return None
+        return variations.thumb_of(folder, str(args.get("id") or ""))
 
     def cmd_export(self, args: dict) -> dict:
         session = self._session(args)

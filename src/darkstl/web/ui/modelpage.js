@@ -16,6 +16,7 @@ import { Icon } from "./icons.js";
 import { collectModelItem, arrangeModel, combineModels } from "./games.js";
 import { api, binUrl, info, plural, bytesText, followJob, stopJob, toast, showInFolder, pickFolder, pickFile } from "./api.js";
 import { CommandBar } from "./layout.js";
+import { openMenu } from "./actions.js";
 import { Inspector, useWidth } from "./inspector.js";
 import { Viewer, PIECE_COLORS } from "../viewer.js";
 import { ConfigureTab } from "./configure.js";
@@ -237,6 +238,53 @@ function Workspace({ m, variant, switching }) {
     return r;
   };
   const cutting = { cuts, setCuts, cutSel, setCutSel, pieces, explode, setExplode, bounds, viewer };
+  // saved variations: enhanced models kept with the model under a name, and what they were made with
+  const [vars, setVars] = useState(null); // { items, folder } or { why } when this model can't keep any
+  useEffect(() => {
+    let live = true;
+    call("variations", { sid: m.sid }).then((r) => live && setVars(r), () => live && setVars(null));
+    return () => { live = false; };
+  }, [m.sid]);
+  const listed = (items) => setVars((v) => ({ ...(v || {}), items }));
+  const meshKeyOf = (mesh) => JSON.stringify([mesh?.parts ?? null, mesh?.flags || {}, mesh?.pose ?? null]);
+  const variation = {
+    vars,
+    save: async (label) => {
+      const r = await follow("save", () => call("variation_save", { sid: m.sid, name: label }), `Saving ${label || "the variation"}`);
+      listed(r.items);
+      setResult((x) => (x ? { ...x, variation: r.variation.id } : x));
+      return r;
+    },
+    /** Show it as the enhanced model (made with its own parts, options and pose, which may differ from those chosen). */
+    show: async (v) => {
+      const r = await call("variation_open", { sid: m.sid, id: v.id });
+      setResult({ ...r, rev: (result?.rev || 0) + 1 });
+      setResultKey(meshKeyOf(v.mesh));
+      setWhich("enhanced");
+      return r;
+    },
+    /** Its settings, parts, options and pose chosen again, to start from them. */
+    useSettings: (v) => {
+      const st = v.settings || {};
+      const known = Object.fromEntries(Object.keys(ENHANCE).filter((k) => k in st).map((k) => [k, st[k] ?? ENHANCE[k]]));
+      setPref({ enhance: { ...s, ...known, max_displacement_mm: st.max_displacement_mm || 0 } });
+      if (st.texture_overrides) setOver(Object.fromEntries(Object.entries(st.texture_overrides).map(([k, x]) => [k, x || ""])));
+      setStrengths({ ...(st.material_strength || {}) });
+      if (st.imported_maps && Object.keys(st.imported_maps).length) setPref({ imports: { ...(ui.get().imports || {}), [m.id]: st.imported_maps } });
+      const mesh = v.mesh || {};
+      setOff(new Set(mesh.parts ? m.parts.map((_, i) => i).filter((i) => !mesh.parts.includes(i)) : []));
+      setFlags({ ...Object.fromEntries(m.options.map((o) => [o.key, o.default])), ...(mesh.flags || {}) });
+      setPose(mesh.pose ? { anim: mesh.pose[0], frame: mesh.pose[1] } : null);
+      toast(`Set to what ${v.name} was made with: change what you like and generate again`, { ms: 5000 });
+    },
+    rename: async (v, label) => listed((await call("variation_rename", { sid: m.sid, id: v.id, name: label })).items),
+    remove: (v) => ui.set({ dialog: { type: "confirm", title: `Delete ${v.name}?`, button: "Delete",
+      text: `Its mesh and picture are deleted from ${m.entry?.label || m.name}'s package folder. The model itself, and the enhanced model shown now, stay.`,
+      run: async () => {
+        listed((await call("variation_delete", { sid: m.sid, id: v.id })).items);
+        setResult((x) => (x && x.variation === v.id ? { ...x, variation: null } : x));
+      } } }),
+  };
   /** Make the model watertight (Finish tab); the result is shown at once. */
   const finishModel = async (request) => {
     const r = await follow("finish", () => call("finish", { sid: m.sid, ...args.json, ...request }), `Making ${name} watertight`);
@@ -257,7 +305,7 @@ function Workspace({ m, variant, switching }) {
       ...(m.animated ? [{ id: "pose", label: "Pose", icon: "play", body: html`<${PoseTab} m=${m} pose=${pose} setPose=${setPose} busy=${busy} call=${call} />` }] : []),
       { id: "mesh", label: "Mesh", icon: "grid", body: html`<${MeshTab} ...${shared} result=${result} generate=${generate} />` },
       { id: "displace", label: "Displace", icon: "stack", body: html`<${DisplaceTab} ...${shared} result=${result} stale=${!!result && !!resultKey && resultKey !== args.key}
-        over=${over} setOver=${setOver} strengths=${strengths} setStrengths=${setStrengths} generate=${generate} />` },
+        over=${over} setOver=${setOver} strengths=${strengths} setStrengths=${setStrengths} generate=${generate} variation=${variation} />` },
       { id: "finish", label: "Finish", icon: "drop", body: html`<${FinishTab} ...${shared} result=${result} finished=${finished} which=${which} setWhich=${setWhich} finishModel=${finishModel} />` },
       { id: "cut", label: "Cut", icon: "scissors", body: html`<${CutTab} ...${shared} ...${cutting} result=${result} finished=${finished} which=${which} setWhich=${setWhich} setOpen=${setCutOpen} cutModel=${cutModel} />` },
       { id: "export", label: "Export", icon: "download", body: html`<${ExportTab} m=${m} args=${args} result=${result} finished=${finished} which=${which} pose=${pose} call=${call} pieces=${pieces} />` },
@@ -740,7 +788,7 @@ function NumberField({ id, label, value, step, min, max, unit, title, onChange }
   return html`<label class="field-block" title=${title}><span>${label}</span>
     <span class="field-row"><input type="number" id=${id} value=${shown} step=${step} min=${min} max=${max}
       onInput=${(e) => setTyped({ over: value, text: e.target.value })}
-      onChange=${(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onChange(v); else setTyped(null); }} />${unit ? html`<span class="muted unit">${unit}</span>` : null}</span></label>`;
+      onChange=${(e) => { const v = parseFloat(e.target.value); setTyped(null); if (Number.isFinite(v)) onChange(v); }} />${unit ? html`<span class="muted unit">${unit}</span>` : null}</span></label>`;
 }
 
 /** Whether step 1's mesh for the mesh settings as they are is kept by the engine: { kept, vertices, triangles }. */
@@ -799,7 +847,7 @@ function MeshTab({ m, args, stats, s, set, run, setRun, call, result, generate }
 }
 
 /** Displace: step 2, the evened-out mesh's vertices pushed by the detail in the textures. */
-function DisplaceTab({ m, args, stats, s, set, run, setRun, call, sendSettings, result, stale, over, setOver, strengths, setStrengths, generate }) {
+function DisplaceTab({ m, args, stats, s, set, run, setRun, call, sendSettings, result, stale, over, setOver, strengths, setStrengths, generate, variation }) {
   const [error, setError] = useState(null);
   const kept = useMeshKept(call, m, args, s, run);
   const maps = useTextureMaps(call, m, args, s, over, run, sendSettings);
@@ -873,7 +921,71 @@ function DisplaceTab({ m, args, stats, s, set, run, setRun, call, sendSettings, 
         <span class="muted" title="One texture pixel covers this much of the model">${f.texel_mm.toFixed(2)} mm/px</span></li>`)}</ul>` : null}
       ${result.warnings.map((w, i) => html`<p class="insp-note" key=${i}>${w}</p>`)}
     </section>` : null}
+    <${Variations} m=${m} result=${result} run=${run} setRun=${setRun} variation=${variation} />
   </div>`;
+}
+
+/** When a variation was saved, as a short date and time in the system's own way. */
+const madeText = (iso) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso || "" : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+};
+
+/** Saved variations: the enhanced model shown kept under a name of one's own, with what it was made with, and those
+ *  kept before, each shown again, started from again, renamed or deleted. */
+function Variations({ m, result, run, setRun, variation }) {
+  const { vars } = variation;
+  const [name, setName] = useState("");
+  const [error, setError] = useState(null);
+  const [renaming, setRenaming] = useState(null); // { id, name }
+  if (!vars) return null;
+  if (vars.why) return html`<section class="insp-section" id="variations"><h3>Saved variations</h3><p class="muted">${vars.why}</p></section>`;
+  const items = vars.items || [];
+  const savedAs = result?.variation ? items.find((v) => v.id === result.variation) : null;
+  const act = async (p) => { setError(null); try { await p; } catch (e) { if (!e.stopped) setError(msg(e)); } };
+  const save = () => act(variation.save(name.trim()).then((r) => { setName(""); toast(`Saved as ${r.variation.name}`); }));
+  const rename = (v) => {
+    const label = (renaming?.name || "").trim();
+    setRenaming(null);
+    if (label && label !== v.name) act(variation.rename(v, label));
+  };
+  return html`<section class="insp-section" id="variations"><h3>Saved variations</h3>
+    <p class="muted">Keep the enhanced model under a name, with what it was made with, beside the model in its package folder:
+      show, export, finish or cut it again later, or start from its settings.</p>
+    ${!result ? html`<p class="muted" id="variation-none">Generate the enhanced model first, then save it here.</p>`
+      : savedAs ? html`<p class="insp-note" id="variation-shown">${Icon.check(14)} The enhanced model shown is saved as <b>${savedAs.name}</b>.</p>`
+      : html`<div class="variation-save"><input id="variation-name" value=${name} disabled=${!!run} aria-label="Name for the variation"
+          placeholder=${`${num(result.stats.vertices)} vertices`} onInput=${(e) => setName(e.target.value)}
+          onKeyDown=${(e) => { if (e.key === "Enter") { e.preventDefault(); save(); } }} />
+        <button type="button" class="primary compact" id="variation-save" disabled=${!!run} onClick=${save}>${run?.kind === "save" ? "Saving…" : "Save as variation"}</button></div>`}
+    <${JobProgress} run=${run?.kind === "save" ? run : null} setRun=${setRun} id="variation-progress" />
+    ${error ? html`<p class="warn-note" role="alert" id="variation-error">${error}</p>` : null}
+    ${items.length ? html`<ul class="variation-list" id="variation-list">${items.map((v) => {
+      const shown = result?.variation === v.id;
+      const st = v.result?.stats || {};
+      return html`<li key=${v.id} data-variation=${v.id} class=${shown ? "shown" : ""}>
+        ${v.thumb ? html`<img alt="" width="56" height="56" loading="lazy" src=${binUrl("variation_thumb", { model: m.entry.id, id: v.id })} />` : html`<span class="variation-nothumb"></span>`}
+        <div class="variation-text">
+          ${renaming?.id === v.id ? html`<input class="variation-rename" value=${renaming.name} aria-label="New name" ref=${(el) => el && document.activeElement !== el && el.focus()}
+              onInput=${(e) => setRenaming({ id: v.id, name: e.target.value })} onBlur=${() => rename(v)}
+              onKeyDown=${(e) => { if (e.key === "Enter") { e.preventDefault(); rename(v); } else if (e.key === "Escape") { e.stopPropagation(); setRenaming(null); } }} />`
+            : html`<b class="variation-name" title=${v.name}>${v.name}</b>`}
+          <small class="muted">${madeText(v.made)} · ${num(st.vertices || 0)} vertices${v.result?.displaced === false ? ", evened out only" : `, relief up to ${(st.max_displacement_mm || 0).toFixed(2)} mm`}</small>
+          <span class="variation-actions">
+            <button type="button" class="ghost compact" data-act="show" disabled=${!!run || shown} title="Show it as the enhanced model, to look at, export, finish or cut"
+              onClick=${() => act(variation.show(v))}>${shown ? "Shown" : "Show"}</button>
+            <button type="button" class="ghost compact" data-act="settings" disabled=${!!run} title="Choose the settings, parts, options and pose it was made with again, to start from them"
+              onClick=${() => variation.useSettings(v)}>Use its settings</button>
+            <button type="button" class="ghost compact icon-btn" data-act="more" aria-label=${`More for ${v.name}`} title="More"
+              onClick=${(e) => openMenu(e.currentTarget, [
+                { id: "rename", label: "Rename…", icon: "edit", run: () => setRenaming({ id: v.id, name: v.name }) },
+                { id: "show-folder", label: "Show in folder", icon: "folder", run: () => showInFolder(`${vars.folder}/${v.id}/variation.json`) },
+                { sep: true },
+                { id: "delete", label: "Delete…", icon: "trash", danger: true, run: () => variation.remove(v) },
+              ])}>${Icon.more(15)}</button>
+          </span></div></li>`;
+    })}</ul>` : null}
+  </section>`;
 }
 
 /** Finish: post-processing for printing. Make watertight wraps the whole model into one solid: every part made
