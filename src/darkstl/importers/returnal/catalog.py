@@ -55,6 +55,8 @@ _OBJECTS = ("props", "prop", "pickups", "pickup", "items", "item", "interactable
             "artifacts", "artefacts", "parasites", "ship", "helios", "house", "vehicles", "objects", "gameplay")
 
 
+ENGINE_FILE = f"{PROJECT}/Binaries/engine-version.txt"  # in a collected copy: the release, as 4.26
+MAPPINGS_FILE = "Returnal.usmap"  # where a collected copy keeps the game's type mappings
 DEFAULT_ENGINE = 425  # if the game's executable doesn't say: Returnal's PS5 release came out on Unreal 4.25/4.26
 _BRANCH = re.compile(rb"\+\+UE4\+Release-4\.(\d\d)|\+\x00\+\x00U\x00E\x004\x00\+\x00R\x00e\x00l\x00e\x00a\x00s\x00e\x00"
                      rb"-\x004\x00\.\x00(\d)\x00(\d)\x00")  # the engine writes it as UTF-16 (TCHAR) on Windows
@@ -65,6 +67,13 @@ def engine_version(root: Path) -> int:
     writes into the game's executable (``++UE4+Release-4.25``). Returnal cooks its packages unversioned, so
     this is what says their layouts."""
     root = root_for(Path(root))
+    try:  # a collected copy has no executable: Collect writes down what it said
+        text = (root / ENGINE_FILE).read_text("utf-8").strip()
+        major, minor = text.split(".")[:2]
+        if major == "4" and 400 + int(minor) in asset.UE4_FILE_VERSIONS:
+            return 400 + int(minor)
+    except (OSError, ValueError):
+        pass
     for exe in (root / PROJECT / "Binaries" / "Win64" / "Returnal-Win64-Shipping.exe",
                 *sorted((root / PROJECT / "Binaries" / "Win64").glob("*-Shipping.exe"))):
         found = _branch_in(exe)

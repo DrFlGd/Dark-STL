@@ -179,3 +179,23 @@ def test_returnal_from_paks(home, tmp_path):  # noqa: F811
     root = _game(tmp_path)
     before, after, _plan = collect_and_uninstall(home, root)
     assert_same(before, after)
+
+
+def test_returnal_unversioned_keeps_its_mappings_and_engine(home, tmp_path):  # noqa: F811
+    import synth_ue4 as S
+    from darkstl.importers.borderlands.ue4 import unversioned
+    from test_returnal import _mappings, _unversioned_files
+
+    root = tmp_path / "Returnal"
+    paks = root / "Returnal" / "Content" / "Paks"
+    paks.mkdir(parents=True)
+    win64 = root / "Returnal" / "Binaries" / "Win64"
+    win64.mkdir(parents=True)
+    (win64 / "Returnal-Win64-Shipping.exe").write_bytes(b"MZ" + "++UE4+Release-4.26".encode("utf-16-le"))
+    (paks / "pakchunk0-WindowsNoEditor.pak").write_bytes(S.build_pak(_unversioned_files(), compress=True))
+    (paks / "Mappings.usmap").write_bytes(_mappings())
+    vfs.forget(root)
+    unversioned.forget_mappings()
+    before, after, _plan = collect_and_uninstall(home, root)
+    assert before and any(m["materials"][0][1] for shown in before.values() for v in shown for m in v)
+    assert_same(before, after)

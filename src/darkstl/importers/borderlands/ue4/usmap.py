@@ -257,7 +257,13 @@ def _project_paks(root: Path) -> list[Path]:
 
 def find_mappings(root: Path, game: str, settings_dir: Path | None = None) -> Mappings | None:
     """The type mappings for a game: the newest .usmap in the game folder (or its Paks folder) or in Dark STL's
-    settings folder."""
+    settings folder that fits the game."""
+    path = find_mappings_file(root, game, settings_dir)
+    return load(path) if path is not None else None
+
+
+def find_mappings_file(root: Path, game: str, settings_dir: Path | None = None) -> Path | None:
+    """The .usmap :func:`find_mappings` reads."""
     candidates: list[Path] = []
     for d in [root, root / "OakGame", root / "OakGame" / "Content" / "Paks", *_project_paks(root), settings_dir]:
         if d is not None and Path(d).is_dir():
@@ -272,9 +278,9 @@ def find_mappings(root: Path, game: str, settings_dir: Path | None = None) -> Ma
                 continue
             fit = _fits(m, game)
             if fit is True:
-                return m
+                return c
             if fit is None and fallback is None:
-                fallback = m
+                fallback = c
     return fallback
 
 
@@ -296,4 +302,4 @@ def _fits(m: Mappings, game: str) -> bool | None:
     return None if mine else True
 
 
-__all__ = ["Mappings", "PropInfo", "PropType", "StructInfo", "find_mappings", "load", "parse"]
+__all__ = ["Mappings", "PropInfo", "PropType", "StructInfo", "find_mappings", "find_mappings_file", "load", "parse"]
