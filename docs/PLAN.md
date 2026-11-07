@@ -465,6 +465,27 @@ differs:
       appearance files) are still fixed there. Start with the Unreal 4/5 games (Returnal,
       Borderlands 3, Wonderlands, Borderlands 4) and a generic Unreal fallback, then the other
       engines. Raised by Jerred on 2026-11-07, held for now.
+- [ ] **Model packages between the importers and the editor.** Importers convert a game model
+      into a self-contained package (glTF for mesh, skeleton and animations; a JSON sidecar for
+      texture roles, normal-map convention, sockets and configurations), and the editing side
+      only reads packages. Collect becomes "write the package", which keeps the game uninstallable;
+      models from other tools (FModel, UModel, Blender) could come in the same way. Cost: what
+      importers do lazily now (Borderlands skins painted on request, Configure options over
+      hundreds of parts, posing from game animations) has to be baked up front. Three layers:
+  - **Game content**: read-only, never changed.
+  - **Asset store**: every model and texture extracted once under its original name and path
+      (textures kept in their compressed form, with a size estimate shown before a full
+      extraction), so anything the game has stays available after uninstalling, even what no
+      importer linked to a model.
+  - **Library overlay** (a mapping file per game, never touching the stored files): the user's
+      own folders and hierarchy (e.g. "Bosses", "Long swords"), in-game display names, models
+      combined into one (face, body and hair in RE Engine games; generalises today's
+      configurations), and texture assignments per material slot picked by original name from
+      the asset store in the app. Entries are keyed by the model's path in the game, so they
+      survive rescans; a model that disappears shows as missing instead of being dropped.
+      A texture picker (search every texture by name, preview, assign to a slot and role) could
+      come first on its own, since it also fixes models the importers guess wrong.
+      Raised by Jerred on 2026-11-07, held for now.
 
 ## Known limits today
 
