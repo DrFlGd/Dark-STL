@@ -126,6 +126,7 @@ function FirstRun({ error }) {
         its <code>.pak</code> archives, named through the file lists that come with Dark STL (Ekey's). A folder a pak tool (REtool, ree-pak) extracted works too.
         For Borderlands, Borderlands 2 and The Pre-Sequel, choose the install folder as it is: the models are read from the packages in <code>WillowGame\CookedPCConsole</code> (the first scan reads through them once).
         For Borderlands 3, Tiny Tina's Wonderlands and Borderlands 4, choose the install folder as it is: the models are read from the files in <code>OakGame\Content\Paks</code>.
+        For Returnal, choose its install folder as it is: the models are read from the files in <code>Returnal\Content\Paks</code>. If its paks are encrypted, add the game's AES key in Settings under <i>Unreal games</i>.
         Borderlands 4 also needs its type mappings (a .usmap file), and the AES key if its containers are encrypted; add them in Settings under <i>Unreal games</i>.</p>
       <p><b>Or any folder of extracted files</b>, such as .partsbnd, .chrbnd, .objbnd, .flver, .mesh or .obj files you've pulled out with other tools.</p>
       <p><b>Or models Dark STL collected before</b> (on this computer or another): choose its library folder, or one game's folder in it, with <i>Add collected files</i>. Each game can come from either its own folder or its collected files.</p>

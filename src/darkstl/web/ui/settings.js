@@ -136,7 +136,7 @@ function UnrealGames({ s, busy, save }) {
   };
   return html`<section class="ls-section" id="settings-unreal">
     <h2>Unreal games</h2>
-    <p class="muted">Borderlands 3, Tiny Tina's Wonderlands and Borderlands 4 keep their models packed (.pak, or .utoc and .ucas).
+    <p class="muted">Borderlands 3, Tiny Tina's Wonderlands, Borderlands 4 and Returnal keep their models packed (.pak, or .utoc and .ucas).
       Encrypted ones need the game's AES key: Borderlands 3's comes with Dark STL; for the others, paste the key (0x followed by 64 hexadecimal digits), one per line.
       A file named unreal-keys.txt in the game's folder works too. Rescan the game's folder after adding one.</p>
     <form class="inline-form" onSubmit=${(e) => { e.preventDefault(); save({ unreal_keys: keys }, keys.trim() ? "Saved the keys. Rescan the game's folder to use them." : "Cleared the keys."); }}>
