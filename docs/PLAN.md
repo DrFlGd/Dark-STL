@@ -71,6 +71,14 @@ importing. It holds:
   them as it lists it (`Library.arrange`), keeping the game's own place (`original_place`), which
   the model's summary shows. They don't change what a model opens as, so nothing generated is redone.
 
+**Saved variations** (`variations.py`): the Displace tab's Saved variations keep the enhanced model
+shown under a name, beside the model's package (`<path in the game>.darkpkg/variations/<id>/`, made
+before the game is imported too, and kept when it is): `variation.json` (the name, the settings,
+parts, options and pose it was made with, recorded with each Generate result, and what was shown of
+it), `mesh.npz` (the mesh, positions as 32-bit floats) and `thumb.png`. Shown again it is the
+model's enhanced model, so it is exported, made watertight or cut like a fresh one; "Use its
+settings" chooses what it was made with again.
+
 Models combined into one (Combine with other models…: a character's face, body and hair) are
 configurations of the user's own (`configs.py`) whose base is the model and whose parts are the
 others, each part a slot that is on by default. Configurations name their models by the path in
@@ -410,6 +418,7 @@ src/darkstl/
   package.py    model packages: writing and reading them, the asset store (textures, animations)
   posing.py     posing a mesh from a skeleton and per-vertex weights (packages)
   overlay.py    the library overlay: the user's own changes per game (names, folders, textures)
+  variations.py saved variations: enhanced models kept beside the model's package
   thumbnails.py preview pictures for the library's cards, cached on disk
   pipeline.py   the three steps with their settings
   cut.py        the model made solid and cut into pieces with joints (manifold3d)
@@ -508,8 +517,8 @@ The plan in the backlog entry below, built in stages:
       in the game's library overlay (0.28.0)
 - [x] Library overlay per game: own folders and hierarchy, in-game names, models combined into one
       (face, body and hair), keyed by the model's path in the game (0.29.0)
-- [ ] Saved variations: Generate results kept beside the model's package, listed, exported again or
-      used as a starting point
+- [x] Saved variations: Generate results kept beside the model's package, listed, exported again or
+      used as a starting point (0.30.0)
 - [ ] Configurable models as packages (configurations, Borderlands skins baked per part)
 - [ ] The whole asset store: every texture of a game extracted, kept compressed (DDS), with a size
       estimate first; models from other tools (FModel, UModel, Blender) imported as packages

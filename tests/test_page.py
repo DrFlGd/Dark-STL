@@ -805,3 +805,57 @@ def test_models_are_renamed_moved_and_combined(page, app, weapon_dir):  # noqa: 
     page.wait_for_selector("#mp-name >> text=Knight with sword", timeout=30000)
     page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
     assert "Longsword" in page.inner_text("#inspector")
+
+
+def test_an_enhanced_model_is_saved_as_a_variation(page, app, weapon_dir):  # noqa: F811
+    """Displace tab: the enhanced model saved under a name, listed with its picture, shown again after another
+    Generate, its settings chosen again, renamed and deleted."""
+    from test_app import wait
+
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    wait(app.service, app.service.call("folder_add", {"path": str(weapon_dir)})["job"])
+    item = next(i for i in app.service.call("models_query", {"game": "Dark Souls III", "limit": 100})["items"]
+                if i["stem"] == "wp_a_0300")
+    page.goto(app.url + f"#/model/{item['id']}")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    page.click("#rail-mesh")
+    page.fill("#target-vertices", "3000")
+    page.press("#target-vertices", "Tab")
+    page.click("#rail-displace")
+    page.wait_for_selector("#variation-none")
+    page.fill("#strength", "3")
+    page.press("#strength", "Tab")
+    page.click("#displace-run")
+    page.wait_for_selector("#enhance-result h3:text('Enhanced')", timeout=60000)
+    first = page.inner_text("#enhance-result")
+    page.fill("#variation-name", "Deep relief")
+    page.click("#variation-save")
+    page.wait_for_selector("#variation-shown >> text=Deep relief", timeout=30000)
+    page.wait_for_selector('#variation-list li.shown img')
+    assert page.locator("#variation-list li").count() == 1
+    # another Generate replaces the enhanced model; the saved one comes back, and its settings too
+    page.fill("#strength", "0.5")
+    page.press("#strength", "Tab")
+    page.click("#displace-run")
+    page.wait_for_selector("text=Displaced:", timeout=60000)
+    page.wait_for_selector("#variation-save")
+    assert page.locator("#variation-list li.shown").count() == 0
+    page.click('#variation-list [data-act="show"]')
+    page.wait_for_selector("#variation-shown")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    assert page.inner_text("#enhance-result").split("Relief")[1] == first.split("Relief")[1]
+    page.click('#variation-list [data-act="settings"]')
+    assert page.input_value("#strength") == "3"
+    if shots:
+        page.screenshot(path=os.path.join(shots, "variations.png"))
+    # renamed, then deleted
+    page.click('#variation-list [data-act="more"]')
+    page.click('[data-action="rename"]')
+    page.fill(".variation-rename", "Best so far")
+    page.press(".variation-rename", "Enter")
+    page.wait_for_selector("#variation-list >> text=Best so far")
+    page.click('#variation-list [data-act="more"]')
+    page.click('[data-action="delete"]')
+    page.click("#confirm-dialog-ok")
+    page.wait_for_function("!document.querySelector('#variation-list')")
+    page.wait_for_selector("#variation-save")
