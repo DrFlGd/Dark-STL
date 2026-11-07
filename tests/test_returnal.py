@@ -2,6 +2,8 @@
 whose names don't say it), grouping them, opening them with their textures, Collect, and keeping the Borderlands
 importer out of the folder."""
 
+import struct
+
 import numpy as np
 import pytest
 
@@ -175,3 +177,114 @@ def test_collected_files_open_loose(tmp_path):
     assert len(m.build(MeshOptions()).faces) == 4
     mat = m.materials[0]
     assert m.textures[mat.albedo].load()[0, 0, 0] > 240 and m.textures[mat.normal].load().shape[:2] == (8, 8)
+
+
+# -- packages cooked unversioned, as the real game's are ----------------------------------
+
+def _unversioned_files() -> dict[str, bytes]:
+    from test_borderlands_ue5 import _header
+
+    out = {}
+    tex_dir = "/Game/Gameplay/Weapons/Player_KineticRifle/Textures/"
+    pk = {}
+    for tex, color, normal in (("T_KineticRifle_D", RED, False), ("T_KineticRifle_N", FLAT_NORMAL, True)):
+        b = S.Ue4Package(tex_dir + tex, 426, unversioned=True)
+        e = b.add_export("Texture2D", tex)
+        b.set_data(e, S.texture_data(b, 8, 8, S.bc1_solid(8, 8, color), normal=normal))
+        pk[f"Gameplay/Weapons/Player_KineticRifle/Textures/{tex}"] = b
+    mi = "/Game/Gameplay/Weapons/Player_KineticRifle/Materials/MI_KineticRifle"
+    b = S.Ue4Package(mi, 426, unversioned=True)
+    refs = [b.import_object(tex_dir + t, "Texture2D", t) for t in ("T_KineticRifle_D", "T_KineticRifle_N")]
+    elems = b""
+    for name, ref in zip(("BaseColor", "Normal"), refs):
+        info = _header([(0, True), (1, True)]) + b.fname(name) + b"\x02"
+        elems += _header([(0, True), (1, True)]) + info + struct.pack("<i", ref)
+    e = b.add_export("MaterialInstanceConstant", "MI_KineticRifle")
+    b.set_data(e, _header([(4, True)]) + struct.pack("<i", 2) + elems + struct.pack("<i", 0))
+    pk["Gameplay/Weapons/Player_KineticRifle/Materials/MI_KineticRifle"] = b
+    b = S.Ue4Package("/Game/Gameplay/Weapons/Player_KineticRifle/SK_KineticRifle", 426, unversioned=True)
+    m = b.import_object(mi, "MaterialInstanceConstant", "MI_KineticRifle")
+    e = b.add_export("SkeletalMesh", "SK_KineticRifle")
+    b.set_data(e, S.skeletal_data(b, [m], POS, NRM, UV, IDX, [(0, 0, 4)]))
+    pk["Gameplay/Weapons/Player_KineticRifle/SK_KineticRifle"] = b
+    for path, b in pk.items():
+        uasset, uexp, ubulk = b.build()
+        out[f"Returnal/Content/{path}.uasset"] = uasset
+        out[f"Returnal/Content/{path}.uexp"] = uexp
+        if ubulk:
+            out[f"Returnal/Content/{path}.ubulk"] = ubulk
+    return out
+
+
+def _mappings() -> bytes:
+    from test_borderlands_ue5 import _usmap
+
+    return _usmap(
+        [("Object", "", []), ("Texture", "Object", []), ("Texture2D", "Texture", []),
+         ("SkeletalMesh", "Object", []),
+         ("MaterialInterface", "Object", [(0, 1, "SubsurfaceProfile", ("ObjectProperty",))]),
+         ("MaterialInstance", "MaterialInterface", [
+             (0, 1, "Parent", ("ObjectProperty",)), (1, 1, "bHasStaticPermutationResource", ("BoolProperty",)),
+             (2, 1, "ScalarParameterValues", ("ArrayProperty", ("StructProperty", "ScalarParameterValue"))),
+             (3, 1, "TextureParameterValues", ("ArrayProperty", ("StructProperty", "TextureParameterValue")))]),
+         ("MaterialInstanceConstant", "MaterialInstance", []),
+         ("MaterialParameterInfo", "", [(0, 1, "Name", ("NameProperty",)),
+                                        (1, 1, "Association",
+                                         ("EnumProperty", ("ByteProperty",), "EMaterialParameterAssociation")),
+                                        (2, 1, "Index", ("IntProperty",))]),
+         ("TextureParameterValue", "", [(0, 1, "ParameterInfo", ("StructProperty", "MaterialParameterInfo")),
+                                        (1, 1, "ParameterValue", ("ObjectProperty",)),
+                                        (2, 1, "ExpressionGUID", ("StructProperty", "Guid"))])],
+        {"EMaterialParameterAssociation": ["LayerParameter", "BlendParameter", "GlobalParameter"]})
+
+
+def test_unversioned_packages_open_with_the_type_mappings(tmp_path, monkeypatch):
+    from darkstl.errors import FormatError
+    from darkstl.importers.borderlands.ue4 import unversioned
+
+    monkeypatch.setattr(unversioned, "_settings_dir", lambda: None)
+    root = tmp_path / "Returnal"
+    paks = root / "Returnal" / "Content" / "Paks"
+    paks.mkdir(parents=True)
+    win64 = root / "Returnal" / "Binaries" / "Win64"
+    win64.mkdir(parents=True)
+    (win64 / "Returnal-Win64-Shipping.exe").write_bytes(b"MZ" + bytes(5000) + "++UE4+Release-4.26".encode("utf-16-le"))
+    (paks / "pakchunk0-WindowsNoEditor.pak").write_bytes(S.build_pak(_unversioned_files(), version=8, compress=True))
+    vfs.forget(root)
+    unversioned.forget_mappings()
+    assert catalog.engine_version(root) == 426
+
+    imp = ReturnalImporter()
+    imp.cache = tmp_path / "cache"
+    found = {e.stem: e for e in imp.scan(root, GAME)}
+    assert set(found) == {"SK_KineticRifle"}
+    assert found["SK_KineticRifle"].category == "Weapons"
+    notes = imp.folder_notes(root, list(found.values()))
+    assert any(".usmap" in n and "UE4SS" in n for n in notes)
+    with pytest.raises(FormatError, match="usmap.*Settings"):
+        open_model(found["SK_KineticRifle"].path)
+
+    (paks / "Mappings.usmap").write_bytes(_mappings())
+    vfs.forget(root)
+    unversioned.forget_mappings()
+    assert not imp.folder_notes(root, list(found.values()))
+    m = open_model(found["SK_KineticRifle"].path)
+    assert len(m.build(MeshOptions()).faces) == 4
+    mat = m.materials[0]
+    assert mat.name == "MI_KineticRifle" and mat.albedo and mat.normal
+    assert m.textures[mat.albedo].load()[0, 0, 0] > 240
+    with pytest.raises(FormatError):  # without the game's release, an unversioned package can't be read
+        from darkstl.importers.borderlands.ue4 import asset
+        asset.read_package("/Game/X", _unversioned_files()[
+            "Returnal/Content/Gameplay/Weapons/Player_KineticRifle/SK_KineticRifle.uasset"])
+
+
+def test_mappings_named_for_another_game_are_left_alone(tmp_path):
+    from darkstl.importers.borderlands.ue4 import usmap
+
+    settings = tmp_path / "settings"
+    settings.mkdir()
+    (settings / "BL4.usmap").write_bytes(_mappings())
+    assert usmap.find_mappings(tmp_path, GAME, settings) is None
+    (settings / "Returnal.usmap").write_bytes(_mappings())
+    assert usmap.find_mappings(tmp_path, GAME, settings) is not None

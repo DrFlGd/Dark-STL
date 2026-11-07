@@ -28,10 +28,13 @@ def fstring(s: str) -> bytes:
 class Ue4Package:
     """``engine`` 420 (Borderlands 3, file version 516) or 426 (Wonderlands, 522)."""
 
-    def __init__(self, name: str, engine: int = 426, custom: dict | None = None):
+    def __init__(self, name: str, engine: int = 426, custom: dict | None = None, unversioned: bool = False):
         self.pkg_name = name  # /Game/...
         self.engine = engine
         self.ue4 = 522 if engine >= 426 else 516
+        # cooked unversioned (Returnal): no versions in the summary, a blank engine version, properties without
+        # names (props() writes an empty unversioned header; write others with an unversioned header yourself)
+        self.unversioned = unversioned
         self.custom = custom or {}
         self.names: list[str] = []
         self._ni: dict[str, int] = {}
@@ -119,6 +122,8 @@ class Ue4Package:
 
     def props(self, *items: bytes) -> bytes:
         """Tagged properties, the list's end, and the object GUID flag UE4 writes after them."""
+        if self.unversioned:
+            return struct.pack("<H", 0x100) + struct.pack("<i", 0)
         return b"".join(items) + self.end() + struct.pack("<i", 0)
 
     # -- build
@@ -146,12 +151,18 @@ class Ue4Package:
         custom = struct.pack("<i", len(self.custom)) + b"".join(
             struct.pack("<4I", *g) + struct.pack("<i", n) for g, n in self.custom.items())
 
+        if self.unversioned:
+            v, custom = 0, struct.pack("<i", 0)
+
         def engine_version() -> bytes:
+            if self.unversioned:
+                return struct.pack("<HHHI", 0, 0, 0, 0) + fstring("")
             return struct.pack("<HHHI", self.engine // 100, self.engine % 100, 0, 0) + fstring("")
 
         def head(name_off, imp_off, exp_off) -> bytes:
             h = struct.pack("<Iiiii", TAG, -7, 864, v, 0) + custom
-            h += struct.pack("<i", header_size) + fstring("None") + struct.pack("<I", 0x80000000)
+            flags = 0x80000000 | (0x2000 if self.unversioned else 0)
+            h += struct.pack("<i", header_size) + fstring("None") + struct.pack("<I", flags)
             h += struct.pack("<ii", len(self.names), name_off)
             h += struct.pack("<ii", 0, 0)  # gatherable text
             h += struct.pack("<ii", len(self.exports), exp_off) + struct.pack("<ii", len(self.imports), imp_off)

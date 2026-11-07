@@ -55,6 +55,44 @@ _OBJECTS = ("props", "prop", "pickups", "pickup", "items", "item", "interactable
             "artifacts", "artefacts", "parasites", "ship", "helios", "house", "vehicles", "objects", "gameplay")
 
 
+DEFAULT_ENGINE = 425  # if the game's executable doesn't say: Returnal's PS5 release came out on Unreal 4.25/4.26
+_BRANCH = re.compile(rb"\+\+UE4\+Release-4\.(\d\d)|\+\x00\+\x00U\x00E\x004\x00\+\x00R\x00e\x00l\x00e\x00a\x00s\x00e\x00"
+                     rb"-\x004\x00\.\x00(\d)\x00(\d)\x00")  # the engine writes it as UTF-16 (TCHAR) on Windows
+
+
+def engine_version(root: Path) -> int:
+    """The Unreal Engine release Returnal was built with (425 for 4.25), read from the branch name the engine
+    writes into the game's executable (``++UE4+Release-4.25``). Returnal cooks its packages unversioned, so
+    this is what says their layouts."""
+    root = root_for(Path(root))
+    for exe in (root / PROJECT / "Binaries" / "Win64" / "Returnal-Win64-Shipping.exe",
+                *sorted((root / PROJECT / "Binaries" / "Win64").glob("*-Shipping.exe"))):
+        found = _branch_in(exe)
+        if found:
+            return found
+    return DEFAULT_ENGINE
+
+
+def _branch_in(exe: Path) -> int | None:
+    try:
+        with open(exe, "rb") as f:
+            tail = b""
+            while True:
+                block = f.read(1 << 24)
+                if not block:
+                    return None
+                m = _BRANCH.search(tail + block)
+                if m:
+                    minor = int(m.group(1) or (m.group(2) + m.group(3)))
+                    return 400 + minor if 20 <= minor <= 27 else None
+                tail = block[-128:]
+    except OSError:
+        return None
+
+
+vfs.ENGINE_OF_GAME[GAME] = engine_version
+
+
 def _label(folder: str) -> str:
     return folder.replace("_", " ").strip()
 
@@ -163,7 +201,7 @@ def _class_of(gf: vfs.GameFiles, virtual: str) -> str | None:
         return gf.zen.class_of(virtual)
     data = gf.read(virtual)
     name = vfs.package_name(virtual) or virtual
-    pkg = asset.read_package(name, data)
+    pkg = asset.read_package(name, data, assume_engine=gf.assumed_engine)
     stem = virtual.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
     best = None
     for e in pkg.exports:
@@ -264,6 +302,21 @@ def scan(folder: Path, progress: Callable[[int, str], None] | None = None,
     return out
 
 
+def _needs_mappings(gf: vfs.GameFiles, found: list[CatalogEntry]) -> bool:
+    """Whether the game's packages are cooked without property names and no type mappings for it were found."""
+    from ..borderlands.ue4 import unversioned, usmap
+
+    try:
+        virtual = Path(found[0].path).relative_to(gf.root).as_posix()
+        pkg = asset.read_package(vfs.package_name(virtual) or virtual, gf.read(virtual),
+                                 assume_engine=gf.assumed_engine)
+    except (FormatError, OSError, ValueError):
+        return False
+    if not pkg.package_flags & asset.PKG_UNVERSIONED_PROPERTIES:
+        return False
+    return usmap.find_mappings(gf.root, GAME, unversioned._settings_dir()) is None
+
+
 def folder_notes(folder: Path, found: list[CatalogEntry]) -> list[str]:
     gf = vfs.game_files(root_for(Path(folder)), GAME)
     notes = []
@@ -275,6 +328,11 @@ def folder_notes(folder: Path, found: list[CatalogEntry]) -> list[str]:
                      "game's folder, then rescan.")
     for err in gf.errors[:3]:
         notes.append(err)
+    if found and _needs_mappings(gf, found):
+        notes.append("Returnal is cooked without property names, so its models open only with the game's type "
+                     "mappings: a .usmap file made for the installed version of the game. Dump one from the running "
+                     "game with UE4SS (its \"Dump .usmap\" key, Ctrl+Numpad 6) or Dumper-7, then add it in Settings "
+                     f"under Unreal games, or put it in the game's folder or in {PROJECT}\\Content\\Paks.")
     if not found and not gf.locked:
         if gf.paks or gf.zen is not None:
             notes.append("No meshes were found in Returnal's files.")

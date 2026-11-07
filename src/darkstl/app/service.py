@@ -420,7 +420,10 @@ class Service:
             except (FormatError, ValueError) as e:
                 raise AppError(f"{src.name} isn't a type mappings file Dark STL can read: {e}") from e
             d.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(src, d / (src.stem + ".usmap"))
+            dest, n = d / (src.stem + ".usmap"), 2
+            while dest.is_file() and dest.read_bytes() != src.read_bytes():  # another game's Mappings.usmap
+                dest, n = d / f"{src.stem}-{n}.usmap", n + 1
+            shutil.copyfile(src, dest)
             self._forget_unreal()
         if args.get("usmap_remove"):
             target = d / Path(str(args["usmap_remove"])).name

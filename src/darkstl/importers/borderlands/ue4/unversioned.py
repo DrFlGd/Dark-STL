@@ -334,8 +334,9 @@ def reader_for(pkg, root, game: str | None):
     if m is None:
         def missing(r, e):
             raise FormatError(f"{pkg.stem} is cooked without property names, so Dark STL needs the game's type "
-                              f"mappings: put a .usmap file made for this version of the game in the game folder "
-                              f"or in Dark STL's settings folder")
+                              f"mappings: a .usmap file made for this version of the game (dump one from the running "
+                              f"game with UE4SS or Dumper-7). Add it in Settings under Unreal games, or put it in the "
+                              f"game folder, then open the model again")
         return missing
     reader = UnversionedReader(m, pkg.versions.ue5 >= 1004, pkg.versions.ue5 >= 1007)
     return lambda r, e: read_unversioned(reader, r, e.class_name)

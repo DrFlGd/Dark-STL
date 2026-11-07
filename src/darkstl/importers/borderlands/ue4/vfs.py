@@ -33,6 +33,9 @@ KEY_FILE = "unreal-keys.txt"
 BUNDLED_KEYS = {
     "Borderlands 3": ["0x115EE4F8C625C792F37A503308048E79726E512F0BF8D2AD7C4C87BC5947CBA7"],
 }
+# game -> function(game folder) giving its Unreal Engine release (425 for 4.25), for games that cook their
+# packages unversioned; importers register theirs
+ENGINE_OF_GAME: dict = {}
 ASSET_SUFFIXES = (".uasset", ".umap")
 PAYLOAD_SUFFIXES = (".uexp", ".ubulk", ".uptnl", ".m.ubulk")
 
@@ -134,6 +137,7 @@ class GameFiles:
     locked: list[Path] = field(default_factory=list)  # paks no key opened
     errors: list[str] = field(default_factory=list)
     zen: object | None = None  # the IoStore reader (Unreal 5), if the game has one
+    _engine: int | None = field(default=None, repr=False)
     _cache: OrderedDict = field(default_factory=OrderedDict, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -205,7 +209,8 @@ class GameFiles:
             def payload(ext: str, stem=stem) -> bytes | None:
                 return self.read_optional(stem + ext)
 
-            pkg = asset.read_package(name, uasset, uexp, payload, game=_layout_game(self.game))
+            pkg = asset.read_package(name, uasset, uexp, payload, game=_layout_game(self.game),
+                                     assume_engine=self.assumed_engine)
             if pkg.package_flags & asset.PKG_UNVERSIONED_PROPERTIES:
                 from .unversioned import reader_for
                 pkg.unversioned_props = reader_for(pkg, self.root, self.game)
@@ -216,6 +221,14 @@ class GameFiles:
             while len(self._cache) > 48:
                 self._cache.popitem(last=False)
         return pkg
+
+    def assumed_engine(self) -> int | None:
+        """The Unreal Engine release (425 for 4.25) of a game whose packages are cooked unversioned, as the
+        game's importer works it out (see :data:`ENGINE_OF_GAME`); asked once."""
+        if self._engine is None:
+            find = ENGINE_OF_GAME.get(self.game or "")
+            self._engine = (find(self.root) if find else None) or 0
+        return self._engine or None
 
     def open_named(self, name: str) -> asset.Package | None:
         """The package called ``/Game/...`` (None when the game doesn't have it)."""

@@ -143,9 +143,9 @@ function UnrealGames({ s, busy, save }) {
       <textarea id="unreal-keys" rows="2" spellcheck="false" placeholder="0x…" style="flex: 1; min-width: 0; font-family: var(--mono, monospace); font-size: 12px; resize: vertical" value=${keys} disabled=${busy} onInput=${(e) => setKeys(e.target.value)}></textarea>
       <button type="submit" class="ghost" disabled=${busy || keys === (s.unreal_keys || "")}>Save</button>
     </form>
-    <p class="muted">Borderlands 4, like most Unreal 5 games, stores its objects without their property names, so reading them needs the game's type mappings: a .usmap file made for the
-      installed version of the game (dumped from the running game with a tool such as Dumper-7 or UE4SS, or shared by the modding community; it changes with
-      game updates). Add it here, or put it in the game's folder.</p>
+    <p class="muted">Borderlands 4 and Returnal store their objects without their property names, so reading them needs the game's type mappings: a .usmap file made for the
+      installed version of the game (dumped from the running game with a tool such as UE4SS or Dumper-7, or shared by the modding community; it changes with
+      game updates). Put it in the game's folder, or add it here with the game's name in the file name (Returnal.usmap) so each game finds its own.</p>
     ${s.usmaps?.length ? html`<ul class="ls-list" id="usmap-list">${s.usmaps.map((n) => html`<li key=${n}><span class="note-path">${n}</span>
       <button type="button" class="ghost" disabled=${busy} onClick=${() => save({ usmap_remove: n }, "Removed the type mappings.")}>Remove</button></li>`)}</ul>`
       : html`<p class="muted" id="usmap-none">No type mappings added.</p>`}
