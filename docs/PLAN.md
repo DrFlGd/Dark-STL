@@ -485,6 +485,11 @@ differs:
       survive rescans; a model that disappears shows as missing instead of being dropped.
       A texture picker (search every texture by name, preview, assign to a slot and role) could
       come first on its own, since it also fixes models the importers guess wrong.
+  - **Saved variations**: each Generate result kept with the original in the model's package (its
+      name, the full settings it was made with, the result mesh and a thumbnail), listed under
+      the model so earlier variations can be viewed, compared, exported again or used as the
+      starting point for new settings. Today results are only in the cache (keyed by model and
+      settings), which can be cleared and isn't browsable.
       Raised by Jerred on 2026-11-07, held for now.
 
 ## Known limits today
