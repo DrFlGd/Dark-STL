@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import struct
@@ -41,8 +42,10 @@ import numpy as np
 
 from .errors import FormatError
 from .geometry.mesh import TriMesh
-from .model import CatalogEntry, Material, MeshOptions, Part, Rig, SourceModel, Texture
+from .model import CatalogEntry, Material, MeshOptions, PaintRecipe, PaintUVs, Part, Rig, SourceModel, Texture
 from .posing import pose_mesh, pose_world
+
+log = logging.getLogger(__name__)
 
 FORMAT = "darkstl-package"
 VERSION = 1
@@ -598,6 +601,7 @@ def write_package(root: Path, entry: CatalogEntry, source_rel: str, models: list
         "format": FORMAT, "version": VERSION, "game": entry.game, "category": entry.category, "group": entry.group,
         "stem": entry.stem, "label": entry.label, "importer": entry.importer, "is_lod": bool(entry.is_lod),
         "source": source_rel.replace("\\", "/"), "models": written, "written": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "importer_version": importer_version(entry.importer),
     }
     from . import __version__
 
@@ -608,23 +612,46 @@ def write_package(root: Path, entry: CatalogEntry, source_rel: str, models: list
     return folder / INDEX
 
 
+def importer_version(key: str) -> int:
+    """The importer's ``package_version``: packages written by an earlier one are written again."""
+    from .importers import IMPORTERS
+
+    return next((int(i.package_version) for i in IMPORTERS if i.key == key), 1)
+
+
+def _stored(store: AssetStore, rel_root: str, tex: Texture) -> dict:
+    try:
+        file = store.add_texture(tex)
+    except Exception as exc:  # noqa: BLE001 - a texture that can't be decoded is left out, and said so
+        return {"name": tex.name, "source": tex.source, "error": str(exc)}
+    try:
+        describe = tex.describe()
+    except Exception:  # noqa: BLE001 - only for display
+        describe = ""
+    return {"name": tex.name, "source": tex.source, "describe": describe, "file": f"{rel_root}/{file}"}
+
+
 def _write_model(folder: Path, name: str, model: SourceModel, store: AssetStore, options: WriteOptions) -> None:
     mesh = model.build_mesh(MeshOptions())
     rig = model.rig if model.rig is not None and mesh.metadata.get("skin") is not None else None
     write_glb(folder / f"{name}.glb", mesh, model.materials, rig, name)
     rel_root = os.path.relpath(store.root, folder).replace("\\", "/")
-    textures = {}
-    for key, tex in model.textures.items():
+    textures = {key: _stored(store, rel_root, tex) for key, tex in model.textures.items()}
+    paint = None
+    if model.paint is not None:  # a paint mixed for each model it goes on: how, and from which textures
+        paint = {"kind": model.paint.kind, "values": model.paint.values,
+                 "textures": {k: _stored(store, rel_root, t) for k, t in model.paint.textures.items()}}
+    paint_uvs = None
+    if model.paint_uvs is not None:  # what such a paint is mixed from on this model
         try:
-            file = store.add_texture(tex)
-        except Exception as exc:  # noqa: BLE001 - a texture that can't be decoded is left out, and said so
-            textures[key] = {"name": tex.name, "source": tex.source, "error": str(exc)}
-            continue
-        try:
-            describe = tex.describe()
-        except Exception:  # noqa: BLE001 - only for display
-            describe = ""
-        textures[key] = {"name": tex.name, "source": tex.source, "describe": describe, "file": f"{rel_root}/{file}"}
+            uv0, uv1 = model.paint_uvs.load()
+            arrays = {"uv0": np.asarray(uv0)} | ({"uv1": np.asarray(uv1)} if uv1 is not None else {})
+            tmp = folder / f"{name}.paintuv.npz.part"
+            tmp.write_bytes(_npz(arrays))
+            os.replace(tmp, folder / f"{name}.paintuv.npz")
+            paint_uvs = f"{name}.paintuv.npz"
+        except Exception:  # noqa: BLE001 - its skins are then shown with its own textures
+            log.debug("%s: no texture coordinates kept for paints", name, exc_info=True)
     animations, note = [], None
     if options.animations and rig is not None and model.animations is not None:
         animations, note = _write_animations(model, rig, store, rel_root, options)
@@ -637,6 +664,7 @@ def _write_model(folder: Path, name: str, model: SourceModel, store: AssetStore,
         "sockets": {k: np.asarray(v, np.float64).reshape(-1).tolist() for k, v in model.sockets.items()},
         "flags": {o.key: o.default for o in model.options},
         "animations": animations, "animation_note": note,
+        **({"paint": paint} if paint else {}), **({"paint_uvs": paint_uvs} if paint_uvs else {}),
     }
     tmp = folder / f"{name}.json.part"
     tmp.write_text(json.dumps(data, indent=1), "utf-8")
@@ -759,8 +787,9 @@ def listed_variants(models: list[dict]) -> list[str]:
     return [m.get("variant") or m.get("name") for m in shown] if len(shown) > 1 else []
 
 
-def load_package(path: str | os.PathLike, variant: str | None = None) -> SourceModel:
-    """Open a package (its ``package.json``) as a :class:`SourceModel`, as ``variant`` when it holds several."""
+def load_package(path: str | os.PathLike, variant: str | None = None, cache: Path | None = None) -> SourceModel:
+    """Open a package (its ``package.json``) as a :class:`SourceModel`, as ``variant`` when it holds several.
+    ``cache``: a folder for what's made from it when it's shown (paints mixed for each model)."""
     index_file = Path(path)
     index = read_index(index_file)
     folder = index_file.parent
@@ -785,18 +814,30 @@ def load_package(path: str | os.PathLike, variant: str | None = None) -> SourceM
                 loaded.append(read_glb(glb))
             return loaded[0]
 
-    textures = {}
     missing = []
-    for key, t in (data.get("textures") or {}).items():
+
+    def stored(key: str, t: dict) -> Texture | None:
         file = t.get("file")
         if not file:
             missing.append(t.get("name") or key)
-            continue
+            return None
         tex_path = (folder / file).resolve()
         describe = t.get("describe") or ""
-        textures[key] = Texture(str(t.get("name") or key), str(t.get("source") or ""),
-                                load=lambda p=tex_path: _decode_image(p),
-                                describe_fn=(lambda d=describe: d) if describe else None)
+        return Texture(str(t.get("name") or key), str(t.get("source") or ""), load=lambda p=tex_path: _decode_image(p),
+                       describe_fn=(lambda d=describe: d) if describe else None)
+
+    textures = {k: tex for k, t in (data.get("textures") or {}).items() if (tex := stored(k, t)) is not None}
+    paint, paint_for = None, None
+    if isinstance(data.get("paint"), dict):  # a paint mixed for each model it goes on (a Borderlands 2 skin)
+        paint_rows = data["paint"].get("textures") or {}
+        held = {k: tex for k, t in paint_rows.items() if (tex := stored(k, t)) is not None}
+        paint = PaintRecipe(str(data["paint"].get("kind") or ""), dict(data["paint"].get("values") or {}), held)
+        keys = {k: [paint_rows[k]["file"], *_stamp((folder / paint_rows[k]["file"]).resolve())] for k in held}
+        paint_for = _painter(paint, keys, cache)
+    paint_uvs = None
+    if data.get("paint_uvs") and (folder / data["paint_uvs"]).is_file():
+        uv_file = folder / data["paint_uvs"]
+        paint_uvs = PaintUVs([str(uv_file), _stamp(uv_file)], lambda: _read_paint_uvs(uv_file))
     materials = [_material_from(m) for m in data.get("materials") or []]
     parts = [Part(**p) for p in data.get("parts") or []]
     notes = list(data.get("notes") or [])
@@ -839,8 +880,31 @@ def load_package(path: str | os.PathLike, variant: str | None = None) -> SourceM
         variant=chosen.get("variant"),
         variants=listed_variants(models),
         game=data.get("game") or index.get("game"), parts=parts, materials=materials, textures=textures,
-        info=info, notes=notes, animations=anims, sockets=sockets, rig=rig,
+        info=info, notes=notes, animations=anims, sockets=sockets, rig=rig, paint=paint, paint_for=paint_for,
+        paint_uvs=paint_uvs,
     )
+
+
+def _stamp(path: Path) -> list:
+    try:
+        st = os.stat(path)
+        return [st.st_size, int(st.st_mtime)]
+    except OSError:
+        return []
+
+
+def _read_paint_uvs(path: Path) -> tuple[np.ndarray, np.ndarray | None]:
+    with np.load(path, allow_pickle=False) as z:
+        return z["uv0"], (z["uv1"] if "uv1" in z.files else None)
+
+
+def _painter(paint: PaintRecipe, keys: dict[str, list], cache: Path | None):
+    """``SourceModel.paint_for`` from a paint a package kept, by its kind; None for a kind this app doesn't know."""
+    from .importers.borderlands import gunpaint
+
+    if paint.kind == gunpaint.RECIPE:
+        return gunpaint.painter(gunpaint.from_recipe(paint.values, paint.textures, keys), (), cache)
+    return None
 
 
 def _material_from(m: dict) -> Material:

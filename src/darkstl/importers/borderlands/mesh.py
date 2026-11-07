@@ -50,6 +50,8 @@ def build_trimesh(positions: np.ndarray, normals: np.ndarray | None, uvs: np.nda
                 mesh.faces[flip] = mesh.faces[flip][:, [0, 2, 1]]
                 mesh.corner_uvs[flip] = mesh.corner_uvs[flip][:, [0, 2, 1]]
                 mesh.corner_normals[flip] = mesh.corner_normals[flip][:, [0, 2, 1]]
+    if len(np.unique(f)) < len(p):  # some pieces only (a gestalt mesh's parts): the others' vertices aren't kept
+        mesh = mesh.subset(np.ones(mesh.n_faces, bool))
     if do_weld:
         mesh = weld(mesh)
     return mesh

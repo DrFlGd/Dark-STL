@@ -104,6 +104,7 @@ class BorderlandsImporter(Importer):
     name = "Borderlands (Unreal Engine)"
     file_filter = "Borderlands packages (*.upk *.u *.uasset)"
     games = GAMES
+    package_version = 2  # gun parts keep the texture coordinates their skins are mixed from (0.33.0)
 
     def detect_game(self, folder: Path) -> str | None:
         return files.detect_game(folder)
@@ -195,7 +196,8 @@ class BorderlandsImporter(Importer):
         if gestalt is not None:
             info.append(f"gestalt definition {gestalt.export.path}: {len(gestalt.fragments)} fragments")
         return SourceModel(name=m.name, path=path, importer=self.key, build=build, game=game, parts=parts,
-                           materials=mats, textures=textures, info=info, notes=notes)
+                           materials=mats, textures=textures, info=info, notes=notes,
+                           paint_uvs=gunpaint.uvs_of(path))
 
     def _load_skin(self, path, pkg, spec: str, dirs, game) -> SourceModel:
         """A gun skin: the material of a Material part (``<package stem>:<part path>``), no geometry."""
@@ -221,7 +223,7 @@ class BorderlandsImporter(Importer):
         if not isinstance(ref, ObjectRef) or not ref:
             raise FormatError(f"{part_path} names no material")
         mats, textures, notes = _materials([ref], dirs)
-        paint_for, info = None, [f"skin {part_path} in {where.name}: {ref.path}"]
+        paint_for, recipe, info = None, None, [f"skin {part_path} in {where.name}: {ref.path}"]
         try:
             paint = gunpaint.read_paint(ref)
         except FormatError as exc:
@@ -229,6 +231,7 @@ class BorderlandsImporter(Importer):
             notes.append(f"The skin's paint couldn't be read ({exc})")
         if paint is not None and mats:  # a Master_Gun paint: its colour is mixed for each part it goes on
             paint_for = gunpaint.painter(paint, dirs, self.cache)
+            recipe = gunpaint.recipe(paint, dirs)
             m0 = mats[0]
             used = {m0.normal}  # the detail atlas and masks are the paint's inputs, not maps to show as they are
             textures = {k: t for k, t in textures.items() if k in used}
@@ -243,7 +246,8 @@ class BorderlandsImporter(Importer):
             return build_trimesh(np.zeros((0, 3)), None, None, [])
 
         return SourceModel(name=e.name, path=path, importer=self.key, build=build, game=game, parts=[],
-                           materials=mats, textures=textures, info=info, notes=notes, paint_for=paint_for)
+                           materials=mats, textures=textures, info=info, notes=notes, paint_for=paint_for,
+                           paint=recipe)
 
     def _load_static(self, path, pkg, e, dirs, game) -> SourceModel:
         m = read_static_mesh(pkg, e)
@@ -266,7 +270,8 @@ class BorderlandsImporter(Importer):
                 f"{len(m.positions):,} vertices, {len(tris):,} triangles, {len(m.sections)} sections, "
                 f"{m.lod_count} levels of detail", f"object {e.path}"]
         return SourceModel(name=m.name, path=path, importer=self.key, build=build, game=game, parts=parts,
-                           materials=mats, textures=textures, info=info, notes=notes)
+                           materials=mats, textures=textures, info=info, notes=notes,
+                           paint_uvs=gunpaint.uvs_of(path))
 
     def describe(self, path: Path) -> list[str] | None:
         path = Path(path)

@@ -106,6 +106,26 @@ class MeshOptions:
 
 
 @dataclass
+class PaintRecipe:
+    """How a paint that's mixed for each model it goes on (a Borderlands 2 gun skin) mixes it, kept so that a
+    model package can mix it without the game: ``kind`` names the mixing (see :mod:`darkstl.package`),
+    ``values`` are its numbers (as JSON), ``textures`` the pictures it reads."""
+
+    kind: str
+    values: dict
+    textures: dict[str, Texture] = field(default_factory=dict)
+
+
+@dataclass
+class PaintUVs:
+    """What a model gives a paint mixed for it: its texture coordinates (UV0 and UV1 triangles, (n, 3, 2)),
+    read when first needed. ``key`` says where from (a file and its date), so a mixed paint can be kept."""
+
+    key: list
+    load: Callable[[], tuple[np.ndarray, np.ndarray | None]] = field(repr=False)
+
+
+@dataclass
 class SourceModel:
     name: str
     path: Path
@@ -129,6 +149,8 @@ class SourceModel:
     # ``paint_for(target)`` returns the colour texture it gives ``target`` (made when it's first decoded),
     # or None. configs.assemble uses it for material and finish slots.
     paint_for: Callable[["SourceModel"], Texture | None] | None = field(default=None, repr=False)
+    paint: PaintRecipe | None = field(default=None, repr=False)  # how ``paint_for`` mixes, for model packages
+    paint_uvs: PaintUVs | None = field(default=None, repr=False)  # what such a paint is mixed from on this model
     rig: Rig | None = field(default=None, repr=False)  # the skeleton animations pose, for model packages
 
     def build_mesh(self, options: MeshOptions | None = None) -> TriMesh:
