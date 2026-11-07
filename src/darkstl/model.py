@@ -31,6 +31,9 @@ class Texture:
     source: str  # where it was found, for display
     load: Callable[[], np.ndarray] = field(repr=False)  # -> (H, W, 4) uint8 or float32 RGBA
     describe_fn: Callable[[], str] | None = field(default=None, repr=False)
+    # -> the texture as a DDS file, still compressed as the game keeps it, when the importer can give it:
+    # what a model package stores (smaller than a picture, and nothing to decode or encode on import)
+    raw: Callable[[], bytes] | None = field(default=None, repr=False)
 
     def decode(self) -> np.ndarray:
         return _decode_cached(self)
@@ -152,6 +155,8 @@ class Rig:
     bind_world: np.ndarray  # (B, 4, 4): where the bind-pose mesh was placed with
     # (animation, frame) -> (bone names, (n, 4, 4) local matrices of those bones at that frame)
     pose_locals: Callable[[str, int], tuple[list[str], np.ndarray]] = field(repr=False)
+    # animation -> (bone names, (frames, n, 4, 4)): every frame at once, when the importer can do it faster
+    pose_all: Callable[[str], tuple[list[str], np.ndarray]] | None = field(default=None, repr=False)
 
 
 def frame_matrix(game_to_export: np.ndarray) -> np.ndarray:

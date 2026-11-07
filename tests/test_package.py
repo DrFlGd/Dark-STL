@@ -61,6 +61,9 @@ def test_a_fromsoft_character_round_trips_with_its_animations(tmp_path):
     assert set(packed.textures) == set(model.textures)
     key = model.materials[0].albedo
     assert np.array_equal(packed.textures[key].decode(), model.textures[key].decode())
+    # kept as the game keeps it: the DDS file, not a picture decoded and encoded again
+    stored = sorted(p.name for p in (index.parents[1] / "assets" / "textures").iterdir())
+    assert stored == ["c2000_a.dds"]
     assert [p.name for p in packed.parts] == [p.name for p in model.parts]
     _same_mesh(packed.build_mesh(), model.build_mesh())
     _same_mesh(packed.build_mesh(MeshOptions(parts={1})), model.build_mesh(MeshOptions(parts={1})))
@@ -139,3 +142,48 @@ def test_names_with_slashes_stay_inside_the_package():
     assert pkg._safe("GD_Weap:Skins.Dahl|/games/BL2/GD_Weap.upk") == "GD_Weap_Skins.Dahl__games_BL2_GD_Weap.upk"
     assert pkg.listed_variants([{"variant": "a"}, {"variant": "b", "hidden": True}]) == []
     assert pkg.listed_variants([{"variant": "a"}, {"variant": "b"}, {"variant": "c", "hidden": True}]) == ["a", "b"]
+
+
+def test_a_texture_without_a_dds_file_is_kept_as_a_picture(tmp_path):
+    from darkstl.model import Texture
+    from darkstl.textures import dds
+
+    store = pkg.AssetStore(tmp_path)
+    img = np.arange(4 * 4 * 4, dtype=np.uint8).reshape(4, 4, 4)
+    broken = Texture("T_Broken", "x", lambda: img, raw=lambda: b"not a dds")  # its DDS doesn't read: decoded
+    assert store.add_texture(broken) == "assets/textures/T_Broken.png"
+    good = Texture("T_Good", "x", lambda: img, raw=lambda: dds.build_dds("R8G8B8A8", 4, 4, img.tobytes()))
+    rel = store.add_texture(good)
+    assert rel == "assets/textures/T_Good.dds"
+    assert np.array_equal(pkg._decode_image(tmp_path / rel), img)
+    assert pkg.stored_texture_name(rel) == "T_Good"
+
+
+def test_the_store_index_is_written_only_when_it_changed_and_not_too_often(tmp_path):
+    from darkstl.model import Texture
+
+    store = pkg.AssetStore(tmp_path)
+    store.save()
+    assert not (tmp_path / "assets" / "index.json").exists()  # nothing stored yet
+    store.add_texture(Texture("A", "x", lambda: np.zeros((2, 2, 4), np.uint8)))
+    store.save(every=10.0)  # never written yet: written now
+    assert "assets/textures/A.png" in json.loads((tmp_path / "assets" / "index.json").read_text())["textures"]
+    store.add_texture(Texture("B", "x", lambda: np.ones((2, 2, 4), np.uint8)))
+    store.save(every=10.0)  # written a moment ago: later
+    assert "assets/textures/B.png" not in json.loads((tmp_path / "assets" / "index.json").read_text())["textures"]
+    store.save()
+    assert "assets/textures/B.png" in json.loads((tmp_path / "assets" / "index.json").read_text())["textures"]
+    assert set(pkg.AssetStore(tmp_path).stored_textures()) == {"assets/textures/A.png", "assets/textures/B.png"}
+
+
+def test_re_textures_are_stored_as_dds_files(tmp_path):
+    from test_reengine import write_re4_game
+
+    game = write_re4_game(tmp_path / "RE4")
+    src = next(p for p in game.rglob("cha000_00.mesh.*") if "streaming" not in p.parts)
+    (model,), index = _write(tmp_path, src)
+    packed = open_model(index)
+    assert model.textures and set(packed.textures) == set(model.textures)
+    for key, tex in model.textures.items():  # padded rows and mips too: they read back as the importer decodes them
+        assert np.array_equal(packed.textures[key].decode(), tex.decode())
+    assert {p.suffix for p in (index.parents[1] / "assets" / "textures").rglob("*.*")} == {".dds"}

@@ -49,9 +49,12 @@ skeleton and skin weights, so Blender opens it as it is; the extra `_VERTEX` att
 welded vertex each glTF vertex is, so it reads back exactly as the importer built it) and a
 JSON sidecar (materials and texture roles, normal-map convention, sockets, notes, animations).
 Textures and animations go into the game's asset store (`assets/` beside the packages), each
-once: textures under their name in the game (as the decoded picture, PNG), animations by content
-(the local matrix each bone takes per frame), so armour pieces posed by the same animations
-share them. `package.py` writes and reads packages; `posing.py` poses a package's mesh from its
+once: textures under their name in the game (kept compressed as the game keeps them, as DDS files,
+where the importer gives them so: FromSoftware and RE Engine; else as the decoded picture, PNG),
+animations by content (the local matrix each bone takes per frame, sampled for every frame of an
+animation at once), so armour pieces posed by the same animations share them. A whole game's import
+writes four models at a time where the importer allows it (FromSoftware), and lists each of the
+game's folders once. `package.py` writes and reads packages; `posing.py` poses a package's mesh from its
 skeleton and weights (importers that can pose give a `Rig` and per-vertex weights for this);
 `importers/package.py` lists and opens them like any other model, and the library prefers a
 model's package to its game file. Configurable models (weapons with parts and skins) are imported
@@ -525,6 +528,12 @@ The plan in the backlog entry below, built in stages:
       used as a starting point (0.30.0)
 - [x] Configurable models as packages: their configurations kept with the packages, every part and
       skin a package (0.31.0)
+- [x] Faster import (0.32.0): textures stored as DDS (no decoding and encoding, half the size of
+      PNG), animations sampled every frame at once (16 times faster), folders listed once, four
+      models at a time; 12 animated Bloodborne characters 138 s -> 38 s. Cancel stops an import,
+      Run in background leaves it running
+- [ ] Animations kept as the game's own files (Havok) if sampled frames turn out too big on a real
+      install (they are several times the size of the game's compressed animations)
 - [ ] Borderlands 2 skins mixed for each part baked into packages (copied as game files until then)
 - [ ] The whole asset store: every texture of a game extracted, kept compressed (DDS), with a size
       estimate first; models from other tools (FModel, UModel, Blender) imported as packages

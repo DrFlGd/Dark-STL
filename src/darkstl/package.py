@@ -14,9 +14,9 @@ a folder named after the model's file in the game (``chr/c1120.chrbnd.dcx.darkpk
 
 Textures and animations go into the game's **asset store** (``assets/`` beside the packages), each
 once however many models use it: textures under their name in the game, animations by their content.
-A texture is kept as the picture the importer decoded (PNG), an animation as the local matrices it
-gives each bone per frame, which any skeleton with those bone names can be posed with
-(:mod:`darkstl.posing`).
+A texture is kept compressed as the game keeps it, as a DDS file (FromSoftware and RE Engine games), or
+else as the picture the importer decoded (PNG); an animation as the local matrices it gives each bone per
+frame, which any skeleton with those bone names can be posed with (:mod:`darkstl.posing`).
 
 Packages are listed and opened by :class:`darkstl.importers.package.PackageImporter` like any other
 model, and everything after import (Generate, Cut, Finish, Pose, Export) works on them unchanged.
@@ -94,13 +94,21 @@ class AssetStore:
         except (OSError, ValueError, AttributeError):
             self._index = {}
         self._by_texture: dict[tuple[str, str], str] = {}  # (name, source) -> stored path, within one import
+        self._changed = False
+        self._saved = 0.0
         self.bytes_written = 0
 
-    def save(self) -> None:
-        self.folder.mkdir(parents=True, exist_ok=True)
-        tmp = self._index_file.with_suffix(".part")
-        tmp.write_text(json.dumps({"textures": self._index}, indent=1, sort_keys=True), "utf-8")
-        os.replace(tmp, self._index_file)
+    def save(self, every: float = 0.0) -> None:
+        """Write the store's index, when it changed (with ``every``: and it was last written that many seconds
+        ago, so that a whole game's import doesn't write it again after each model)."""
+        with self._lock:
+            if not self._changed or time.monotonic() - self._saved < every:
+                return
+            self.folder.mkdir(parents=True, exist_ok=True)
+            tmp = self._index_file.with_suffix(".part")
+            tmp.write_text(json.dumps({"textures": self._index}, indent=1, sort_keys=True), "utf-8")
+            os.replace(tmp, self._index_file)
+            self._changed, self._saved = False, time.monotonic()
 
     def _write(self, rel: str, data: bytes) -> None:
         path = self.root / rel
@@ -111,22 +119,28 @@ class AssetStore:
         self.bytes_written += len(data)
 
     def add_texture(self, texture: Texture) -> str:
-        """Store a texture (decoding it), returning its path relative to the store's root."""
+        """Store a texture, returning its path relative to the store's root: the DDS file the importer gives
+        (compressed as in the game), or else the picture it decodes."""
         key = (texture.name, texture.source)
         known = self._by_texture.get(key)
         if known is not None:
             return known
-        img = np.ascontiguousarray(texture.decode())
-        digest = hashlib.sha1(str((img.dtype.str, img.shape)).encode() + img.tobytes()).hexdigest()
-        ext = ".png" if img.dtype == np.uint8 else ".npy"
+        data = _raw_dds(texture)
+        if data is not None:
+            digest, ext, encode = hashlib.sha1(data).hexdigest(), ".dds", lambda: data
+        else:
+            img = np.ascontiguousarray(texture.decode())
+            digest = hashlib.sha1(str((img.dtype.str, img.shape)).encode() + img.tobytes()).hexdigest()
+            ext, encode = (".png" if img.dtype == np.uint8 else ".npy"), lambda: _encode_image(img)
         base = f"{ASSETS}/textures/{safe_relative(texture.name)}"
         with self._lock:
             rel = base + ext
             if self._index.get(rel, digest) != digest:
                 rel = f"{base}~{digest[:10]}{ext}"
             if self._index.get(rel) != digest or not (self.root / rel).is_file():
-                self._write(rel, _encode_image(img))
+                self._write(rel, encode())
                 self._index[rel] = digest
+                self._changed = True
         self._by_texture[key] = rel
         return rel
 
@@ -146,22 +160,50 @@ class AssetStore:
             "moving_local": local[:, ~still],
             "frames": np.array(len(local), np.int32),
         }
-        buf = io.BytesIO()
-        np.savez_compressed(buf, **arrays)
-        data = buf.getvalue()
         digest = hashlib.sha1(b"".join(np.ascontiguousarray(a).tobytes() for a in arrays.values())).hexdigest()
         rel = f"{ASSETS}/animations/{digest[:24]}.npz"
+        if (self.root / rel).is_file():
+            return rel
+        data = _npz(arrays)
         with self._lock:
             if not (self.root / rel).is_file():
                 self._write(rel, data)
         return rel
 
 
+def _npz(arrays: dict[str, np.ndarray]) -> bytes:
+    """``np.savez_compressed``, compressed less (half the time, 1% larger: matrices of floats hardly compress)."""
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as z:
+        for name, value in arrays.items():
+            with z.open(f"{name}.npy", "w", force_zip64=True) as f:
+                np.lib.format.write_array(f, np.asanyarray(value), allow_pickle=False)
+    return buf.getvalue()
+
+
 def stored_texture_name(rel: str) -> str:
     """A stored texture's name in the game, from its path in the store."""
     name = Path(rel).name
-    name = re.sub(r"\.(png|npy)$", "", name, flags=re.I)
+    name = re.sub(r"\.(png|npy|dds)$", "", name, flags=re.I)
     return re.sub(r"~[0-9a-f]{10}$", "", name)
+
+
+def _raw_dds(texture: Texture) -> bytes | None:
+    """The texture as the DDS file its importer gives, when it gives one that reads."""
+    if texture.raw is None:
+        return None
+    from .textures import dds
+
+    try:
+        data = bytes(texture.raw())
+        info = dds.parse_dds(data)
+        if info.data_offset + info.mip_size(0)[2] > len(data):
+            return None
+    except Exception:  # noqa: BLE001 - kept as the decoded picture instead
+        return None
+    return data
 
 
 def _encode_image(img: np.ndarray) -> bytes:
@@ -175,7 +217,7 @@ def _encode_image(img: np.ndarray) -> bytes:
             if img.shape[2] == 1:
                 img = img[:, :, 0]
         buf = io.BytesIO()
-        Image.fromarray(img, mode).save(buf, format="PNG", compress_level=6)
+        Image.fromarray(img, mode).save(buf, format="PNG", compress_level=1)  # 3.5 times faster than 6, 15% larger
         return buf.getvalue()
     buf = io.BytesIO()
     np.save(buf, img, allow_pickle=False)
@@ -185,6 +227,10 @@ def _encode_image(img: np.ndarray) -> bytes:
 def _decode_image(path: Path) -> np.ndarray:
     if path.suffix.lower() == ".npy":
         return np.load(path, allow_pickle=False)
+    if path.suffix.lower() == ".dds":
+        from .textures import dds
+
+        return dds.decode_dds(path.read_bytes())
     from PIL import Image
 
     with Image.open(path) as im:
@@ -620,11 +666,13 @@ def _write_animations(model: SourceModel, rig: Rig, store: AssetStore, rel_root:
             last = time.monotonic()
             options.progress(f"animation {i + 1:,} of {len(infos):,} ({info.name})")
         try:
-            frames = [rig.pose_locals(info.name, f) for f in range(int(info.frames))]
+            if rig.pose_all is not None:
+                names, local = rig.pose_all(info.name)
+            else:
+                frames = [rig.pose_locals(info.name, f) for f in range(int(info.frames))]
+                names, local = frames[0][0], np.stack([f[1] for f in frames])
         except Exception:  # noqa: BLE001 - an animation that can't be read is left out
             continue
-        names = frames[0][0]
-        local = np.stack([f[1] for f in frames])
         file = store.add_animation(names, local)
         row = info.as_dict()
         row["file"] = f"{rel_root}/{file}"

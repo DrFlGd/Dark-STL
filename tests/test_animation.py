@@ -119,6 +119,48 @@ def test_tagfile_round_trip_with_several_blocks(rotation_format):
     check_decoded(hkx, poses, {1: 2e-3, 2: 1e-3, 5: 1e-6}[rotation_format])
 
 
+@pytest.mark.parametrize("rotation_format", [1, 2, 5], ids=["ThreeComp40", "ThreeComp48", "Uncompressed"])
+def test_every_frame_at_once_matches_frame_by_frame(rotation_format):
+    """Model packages sample whole animations at once; the poses are the frame-by-frame ones exactly, across
+    blocks (here of 4 frames) too."""
+    frames = 23
+    rng = np.random.default_rng(3)
+    bones = BONES + [sh.HkBone("finger", 2, (0.0, 0.1, 0.0))]
+    poses = np.zeros((frames, len(bones), 12))
+    poses[:, :, 8:11] = 1.0
+    t = np.linspace(0.0, 1.0, frames)
+    for b, bone in enumerate(bones):
+        poses[:, b, 0:3] = np.asarray(bone.translation) + 0.05 * np.sin(t[:, None] * 5 + b + np.arange(3))
+        axis = rng.normal(size=3)
+        axis /= np.linalg.norm(axis)
+        angle = 1.5 * t + b
+        poses[:, b, 4:7] = axis * np.sin(angle / 2)[:, None]
+        poses[:, b, 7] = np.cos(angle / 2)
+    scene = sh.HkScene(bones, "master", sh.spline_animation(poses, 0.7, rotation_format=rotation_format,
+                                                              max_frames_per_block=5))
+    hkx = read_hkx(sh.build_hkx_packfile(scene))
+    sk = Skeleton.from_hkx(hkx)
+    anim = read_animation(hkx, "a000_000000")
+    assert len(anim.block_offsets) > 1
+    every = anim.local_poses(sk)
+    assert every.shape == (frames, len(bones), 12)
+    assert np.allclose(every, np.stack([anim.local_pose(sk, f) for f in range(frames)]), atol=1e-12)
+
+
+@pytest.mark.parametrize("degree", [1, 2, 3])
+def test_spline_weights_at_once_match_one_at_a_time(degree):
+    from darkstl.importers.fromsoft.animation import _Spline
+
+    count = 9
+    inner = [1, 2, 2, 4, 6, 6][: count - degree - 1]  # repeated knots too
+    knots = np.array([0] * (degree + 1) + inner + [8] * (degree + 1), np.float64)
+    spline = _Spline(degree, knots, count)
+    points = np.random.default_rng(degree).normal(size=(count, 3))
+    t = np.concatenate([np.linspace(-1, 9, 81), knots])  # outside, at and between the knots
+    many = spline.evaluate_many(points, t)
+    assert np.allclose(many, np.stack([spline.evaluate(points, x) for x in t]), atol=1e-12)
+
+
 def test_static_translation_and_8bit_scalars():
     poses = rig_poses()
     scene = sh.HkScene(BONES, "master", sh.spline_animation(poses, 0.3, scalar_bits=8))
@@ -342,3 +384,22 @@ def test_the_pose_tab_steps_through_frames(char_dir, tmp_path, monkeypatch):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_a_whole_games_import_lists_each_folder_once(char_dir):
+    """While a game is imported its folders are listed once (each model's folder is looked through several
+    times, and a game's folders hold thousands of files); files read are kept a moment too."""
+    chr_dir = char_dir / "chr"
+    src = chr_dir / "c2000.chrbnd.dcx"
+    with files.kept_listings():
+        assert [p.name for p in files.animation_archives(src, "c2000")] == ["c2000.anibnd.dcx"]
+        (chr_dir / "c2000_div00.anibnd.dcx").write_bytes(b"")  # the game's folder doesn't change meanwhile
+        assert [p.name for p in files.animation_archives(src, "c2000")] == ["c2000.anibnd.dcx"]
+        first = files.read_bytes(src)
+        assert files.read_bytes(src) is first
+        model = open_model(src)
+        assert [a.name for a in model.animations.list()] == ["a000_000000", "a000_003000"]
+    # afterwards, nothing is kept
+    assert sorted(p.name for p in files.animation_archives(src, "c2000")) == ["c2000.anibnd.dcx",
+                                                                              "c2000_div00.anibnd.dcx"]
+    assert files.read_bytes(src) is not files.read_bytes(src)

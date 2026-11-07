@@ -194,6 +194,32 @@ class _Spline:
         idx = span - np.arange(self.degree + 1)
         return (points[idx] * w[:, None]).sum(axis=0)
 
+    def weights_many(self, t: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """:meth:`weights` for many parameters at once: spans (T,) and weights (T, degree + 1)."""
+        knots, degree, n = self.knots, self.degree, self.count
+        t = np.clip(np.asarray(t, np.float64), knots[degree], knots[n])
+        # the span whose knot interval holds t (the last one for t at the end), as the search above finds it
+        span = np.clip(np.searchsorted(knots, t, side="right") - 1, degree, n - 1)
+        span = np.where(t >= knots[n], n - 1, span)
+        w = np.zeros((len(t), degree + 1))
+        w[:, 0] = 1.0
+        for i in range(1, degree + 1):
+            for j in range(i - 1, -1, -1):
+                lo = knots[span - j]
+                denom = knots[span + i - j] - lo
+                safe = np.where(denom != 0, denom, 1.0)
+                a = np.where(denom != 0, (t - lo) / safe, 0.0)
+                tmp = w[:, j] * a
+                w[:, j + 1] += w[:, j] - tmp
+                w[:, j] = tmp
+        return span, w
+
+    def evaluate_many(self, points: np.ndarray, t: np.ndarray) -> np.ndarray:
+        """Points (count, k) blended at each of the parameters ``t``: (T, k)."""
+        span, w = self.weights_many(t)
+        idx = span[:, None] - np.arange(self.degree + 1)[None, :]
+        return (points[idx] * w[:, :, None]).sum(axis=1)
+
 
 @dataclass
 class _VectorTrack:
@@ -235,6 +261,12 @@ class _VectorTrack:
             out[list(self.axes)] = self.spline.evaluate(self.points, t)
         return out
 
+    def at_many(self, t: np.ndarray) -> np.ndarray:
+        out = np.tile(self.static, (len(t), 1))
+        if self.spline is not None:
+            out[:, list(self.axes)] = self.spline.evaluate_many(self.points, t)
+        return out
+
 
 @dataclass
 class _RotationTrack:
@@ -262,6 +294,15 @@ class _RotationTrack:
         q = self.spline.evaluate(self.points, t)
         n = np.linalg.norm(q)
         return q / n if n > 0 else np.array([0, 0, 0, 1.0])
+
+    def at_many(self, t: np.ndarray) -> np.ndarray:
+        if self.spline is None:
+            return np.tile(self.static, (len(t), 1))
+        q = self.spline.evaluate_many(self.points, t)
+        n = np.linalg.norm(q, axis=1)
+        out = q / np.where(n > 0, n, 1.0)[:, None]
+        out[n <= 0] = (0, 0, 0, 1.0)
+        return out
 
 
 def _decode_quaternions(raw: bytes, quant: int, endian: str) -> np.ndarray:
@@ -328,6 +369,14 @@ class _Track:
         out[11] = 1.0
         return out
 
+    def at_many(self, t: np.ndarray) -> np.ndarray:
+        out = np.zeros((len(t), 12))
+        out[:, 0:3] = self.translation.at_many(t)
+        out[:, 4:8] = self.rotation.at_many(t)
+        out[:, 8:11] = self.scale.at_many(t)
+        out[:, 11] = 1.0
+        return out
+
 
 # ---------------------------------------------------------------------------
 # Animations
@@ -355,6 +404,10 @@ class Animation:
         """(tracks, 12) local transforms at ``frame`` (clamped into range)."""
         raise NotImplementedError
 
+    def all_tracks(self) -> np.ndarray:
+        """(frames, tracks, 12): :meth:`tracks_at` for every frame."""
+        return np.stack([self.tracks_at(f) for f in range(self.frames)])
+
     def local_pose(self, skeleton: Skeleton, frame: int) -> np.ndarray:
         """(bones, 12) local pose: the skeleton's reference pose with the animated bones replaced."""
         pose = np.array(skeleton.reference_pose, np.float64, copy=True)
@@ -362,6 +415,16 @@ class Animation:
         for t, b in enumerate(self.track_to_bone[: len(tracks)]):
             if 0 <= b < len(pose):
                 pose[b] = tracks[t]
+        return pose
+
+    def local_poses(self, skeleton: Skeleton) -> np.ndarray:
+        """(frames, bones, 12): :meth:`local_pose` for every frame, worked out together (far faster)."""
+        reference = np.asarray(skeleton.reference_pose, np.float64)
+        pose = np.repeat(reference[None], self.frames, axis=0)
+        tracks = self.all_tracks()
+        for t, b in enumerate(self.track_to_bone[: tracks.shape[1]]):
+            if 0 <= b < len(reference):
+                pose[:, b] = tracks[:, t]
         return pose
 
 
@@ -403,6 +466,17 @@ class SplineAnimation(Animation):
         tracks = self._block(block)
         return np.array([t.at(local) for t in tracks]).reshape(-1, 12)
 
+    def all_tracks(self) -> np.ndarray:
+        frames = np.arange(self.frames)
+        blocks = np.minimum(frames // self.frames_per_block, len(self.block_offsets) - 1)
+        out = np.zeros((self.frames, self.n_tracks, 12))
+        for block in np.unique(blocks):
+            rows = np.flatnonzero(blocks == block)
+            local = (frames[rows] - block * self.frames_per_block).astype(np.float64)
+            for i, track in enumerate(self._block(int(block))[:self.n_tracks]):
+                out[rows, i] = track.at_many(local)
+        return out
+
 
 class InterleavedAnimation(Animation):
     def __init__(self, name: str, obj: dict, track_to_bone: np.ndarray):
@@ -414,6 +488,9 @@ class InterleavedAnimation(Animation):
 
     def tracks_at(self, frame: int) -> np.ndarray:
         return self.transforms[min(max(int(frame), 0), self.frames - 1)].astype(np.float64)
+
+    def all_tracks(self) -> np.ndarray:
+        return self.transforms.astype(np.float64)
 
 
 def read_animation(hkx: Hkx, name: str = "") -> Animation | None:
@@ -538,6 +615,10 @@ class AnimationSet:
 
     def local_pose(self, name: str, frame: int) -> np.ndarray:
         return self.animation(name).local_pose(self.skeleton, frame)
+
+    def local_poses(self, name: str) -> np.ndarray:
+        """(frames, bones, 12): every frame of animation ``name``."""
+        return self.animation(name).local_poses(self.skeleton)
 
     def clamp(self, name: str, frame: int) -> int:
         """``frame`` kept inside the animation."""

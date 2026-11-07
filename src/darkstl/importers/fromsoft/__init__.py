@@ -38,7 +38,7 @@ def _texture(ref: files.TextureRef) -> Texture:
         info = ref.info()
         return f"{info.width} x {info.height}, {info.codec}, {info.mipmaps} mips"
 
-    return Texture(ref.name, ref.source, ref.decode, describe)
+    return Texture(ref.name, ref.source, ref.decode, describe, raw=ref.dds_bytes)
 
 
 def _material(info: materials.MaterialInfo) -> Material:
@@ -148,6 +148,11 @@ class FromSoftwareImporter(Importer):
         return [f"Most of this game is still packed in its archives ({names}), so only {len(found)} models "
                 "were found. Choose Unpack in this folder's menu: Dark STL unpacks the models into its own "
                 "library (the game's folder isn't changed) and lists them from there."]
+
+    parallel = True  # every read opens its own file; the caches are thread-safe
+
+    def bulk(self):
+        return files.kept_listings()
 
     def can_open(self, path: Path) -> bool:
         return bool(_OPENABLE.search(path.name))
@@ -273,8 +278,14 @@ def _rig(f, animations) -> Rig:
         m = qs_to_matrices(animations.local_pose(anim, animations.clamp(anim, frame)))
         return names, g @ m @ gi
 
+    def pose_all(anim: str):
+        names = list(animations.skeleton.names)
+        qs = animations.local_poses(anim)
+        m = qs_to_matrices(qs).reshape(qs.shape[0], qs.shape[1], 4, 4)
+        return names, g @ m @ gi
+
     return Rig([b.name for b in f.bones], np.array([b.parent for b in f.bones], np.int64), g @ local @ gi,
-               g @ world @ gi, pose_locals)
+               g @ world @ gi, pose_locals, pose_all)
 
 
 __all__ = ["FromSoftwareImporter", "flver_summary"]

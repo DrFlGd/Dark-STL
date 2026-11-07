@@ -17,6 +17,9 @@ from __future__ import annotations
 
 import os
 import re
+import threading
+from collections import OrderedDict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -47,10 +50,72 @@ def file_stem(name: str) -> str:
 
 
 def read_bytes(path: Path) -> bytes:
+    kept = _kept_file(path) if _keeping else None
+    if kept is not None:
+        return kept
     raw = Path(path).read_bytes()
     if dcx.is_dcx(raw) and b"KRAK" in raw[:0x40]:
         oodle.add_hint_path(Path(path).parent)  # the game's DLL is usually a few folders up
-    return dcx.maybe_decompress(raw)
+    data = dcx.maybe_decompress(raw)
+    if _keeping:
+        _keep_file(path, data)
+    return data
+
+
+# ---------------------------------------------------------------------------
+# What a whole game's import keeps while it loads one model after another (see kept_listings)
+
+_keeping = 0
+_keep_lock = threading.Lock()
+_listings: dict[str, dict[str, Path]] = {}
+_files: OrderedDict[tuple, bytes] = OrderedDict()
+_KEEP_FILES = 8  # the files read last: listing a file's models, then loading each, reads it again
+_KEEP_FILE_BYTES = 256 << 20
+
+
+@contextmanager
+def kept_listings():
+    """Within: each folder is listed once, and the last files read are kept for a moment, as importing a whole
+    game loads thousands of models from folders of thousands of files that don't change meanwhile (each
+    model's folder is looked through several times, and each file read twice: for its models, then each one)."""
+    global _keeping
+    with _keep_lock:
+        _keeping += 1
+    try:
+        yield
+    finally:
+        with _keep_lock:
+            _keeping -= 1
+            if not _keeping:
+                _listings.clear()
+                _files.clear()
+
+
+def _file_key(path: Path) -> tuple | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return str(path), st.st_size, st.st_mtime_ns
+
+
+def _kept_file(path: Path) -> bytes | None:
+    key = _file_key(path)
+    with _keep_lock:
+        data = _files.get(key) if key is not None else None
+        if data is not None:
+            _files.move_to_end(key)
+        return data
+
+
+def _keep_file(path: Path, data: bytes) -> None:
+    key = _file_key(path)
+    if key is None or len(data) > _KEEP_FILE_BYTES:
+        return
+    with _keep_lock:
+        _files[key] = data
+        while len(_files) > _KEEP_FILES:
+            _files.popitem(last=False)
 
 
 @dataclass(eq=False)
@@ -132,10 +197,21 @@ def _add_binder_textures(textures: dict[str, TextureRef], binder: bnd.Binder, so
 
 
 def _dir_listing(directory: Path) -> dict[str, Path]:
+    """The folder's entries by lower-case name (not to be changed: within :func:`kept_listings`, it's kept)."""
+    if _keeping:
+        kept = _listings.get(str(directory))
+        if kept is not None:
+            return kept
     try:
-        return {p.name.lower(): p for p in directory.iterdir()}
+        listing = {p.name.lower(): p for p in Path(directory).iterdir()}
     except OSError:
         return {}
+    if _keeping:
+        with _keep_lock:
+            if len(_listings) > 4096:
+                _listings.clear()
+            _listings[str(directory)] = listing
+    return listing
 
 
 def _find_file(directory: Path, name: str) -> Path | None:
@@ -167,12 +243,12 @@ def add_texture_file(textures: dict[str, TextureRef], path: Path, only: set[str]
 
 def _scan_loose_texture_dir(textures: dict[str, TextureRef], directory: Path, depth: int = 1) -> None:
     for entry in sorted(_dir_listing(directory).values()):
-        low = entry.name.lower()
-        if entry.is_dir():
-            if depth > 0 and re.search(r"-(tpf|texbnd)(-dcx)?$", low):
-                _scan_loose_texture_dir(textures, entry, depth - 1)
-        elif low.endswith((".dds", ".tpf", ".tpf.dcx", ".texbnd", ".texbnd.dcx")):
-            add_texture_file(textures, entry)
+        low = entry.name.lower()  # the name first: asking each entry whether it's a folder is slow on Windows
+        if low.endswith((".dds", ".tpf", ".tpf.dcx", ".texbnd", ".texbnd.dcx")):
+            if not entry.is_dir():
+                add_texture_file(textures, entry)
+        elif depth > 0 and re.search(r"-(tpf|texbnd)(-dcx)?$", low) and entry.is_dir():
+            _scan_loose_texture_dir(textures, entry, depth - 1)
 
 
 def _sibling_texture_files(directory: Path, stem: str) -> list[Path]:
@@ -389,7 +465,8 @@ def animation_archives(path: Path, stem: str) -> list[Path]:
         folders.append(path.parent.parent)  # a loose FLVER inside an unpacked archive folder
     s = stem.lower()
     for folder in folders:
-        for low, entry in sorted(_dir_listing(folder).items()):
+        # the names first: asking each of a folder's thousands of files whether it's a folder is slow on Windows
+        for low, entry in sorted(kv for kv in _dir_listing(folder).items() if kv[0].startswith(s)):
             base = strip_dcx(low)
             if entry.is_dir():
                 if ANIBND_FOLDER.search(low) and re.match(rf"^{re.escape(s)}(_div\d+|_a\d+)?-anibnd", low):
