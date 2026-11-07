@@ -24,6 +24,9 @@ class Importer:
     file_filter = ""  # for open-file dialogs, e.g. "Models (*.flver *.partsbnd)"
     games: tuple[str, ...] = ()  # games this importer knows, offered when adding a folder
     cache: Path | None = None  # a folder of its own in the app's cache, for what scans find (see set_cache_folder)
+    # Collect opens each model while recording what it reads (see darkstl.access) and copies that too. An importer
+    # whose related_files already name everything a model reads turns it off, as it would only read the model twice.
+    record_reads = True
 
     def detect_game(self, folder: Path) -> str | None:
         """Name of the game a folder of extracted files belongs to, if this importer recognises it."""

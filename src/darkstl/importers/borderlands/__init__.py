@@ -42,7 +42,7 @@ GAMES = (GAME_BL1, GAME_BL2, GAME_TPS, GAME_BL3, GAME_WL, GAME_BL4)
 
 
 def _texture(tex: Texture2D, dirs: list[Path]) -> Texture:
-    return Texture(tex.name, f"{tex.pkg.path.name}: {tex.path}", lambda: tex.decode(dirs), tex.describe)
+    return Texture(tex.name, f"{tex.pkg.path.name}: {tex.path}", lambda: tex.decode(dirs), lambda: tex.describe(dirs))
 
 
 def _open(path: Path) -> tuple[upk.Package, upk.Export, str]:
@@ -201,7 +201,12 @@ class BorderlandsImporter(Importer):
         """A gun skin: the material of a Material part (``<package stem>:<part path>``), no geometry."""
         spec, _, file = spec.partition("|")
         stem, _, part_path = spec.partition(":")
-        where = Path(file) if file and Path(file).is_file() else None
+        where = None
+        if file:  # a collected copy names it below the copy's folder
+            for p in (Path(file), files.game_root(pkg.path) / file):
+                if p.is_absolute() and p.is_file():
+                    where = p
+                    break
         where = where or files.index_for(pkg.path).find(stem)
         if where is None:
             raise FormatError(f"{stem}.upk, which holds the skin {part_path}, wasn't found")
@@ -289,13 +294,9 @@ class BorderlandsImporter(Importer):
         if not files.is_member(path):
             return [RelatedFile(path, "model")]
         package, _p, _c = files.split_member(path)
-        out = [RelatedFile(package, "model")]
-        if textures:
-            seen = {package}
-            for tfc in sorted(package.parent.glob("*.tfc")):
-                if tfc not in seen:
-                    out.append(RelatedFile(tfc, "texture"))
-        return out
+        # the texture caches (.tfc, gigabytes each) and the other packages a model reads from are found by
+        # opening it while Collect records what's read (record_reads): only those it uses are copied
+        return [RelatedFile(package, "model")]
 
     def configurations(self, folder: Path, game: str, entries: list[CatalogEntry]) -> list:
         """Each gun type as a configuration of its gestalt mesh's parts (Borderlands 2, The Pre-Sequel)."""

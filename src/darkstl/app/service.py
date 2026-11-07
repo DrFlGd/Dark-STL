@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -36,6 +37,8 @@ from ..model import CatalogEntry, MeshOptions, SourceModel, path_id
 from ..thumbnails import ThumbnailCache
 from .config import Config, config_dir, filelists_dir, models_dir
 from .meshpack import pack_mesh
+
+log = logging.getLogger(__name__)
 
 UNITS = {"mm": 1000.0, "m": 1.0, "cm": 100.0, "in": 39.3701}
 
@@ -681,6 +684,9 @@ class Service:
                 raise AppError(f"{path} isn't one of the game folders.")
             self.library.remove_root(path)
             self._save_folders()
+        from ..importers.borderlands.ue4 import vfs
+
+        vfs.forget(path)  # the containers it kept open, so the game can be uninstalled with the app running
         return {}
 
     def cmd_folder_set_game(self, args: dict) -> dict:
@@ -898,8 +904,9 @@ class Service:
                 entries = self.library.query(str(args["game"]), args.get("category") or None, args.get("group") or None,
                                              str(args.get("q") or ""), bool(args.get("lod")))
             roots = [r for r, g in self.library.roots.items()]
-        entries = self._expand_configs(entries)
         entries = [e for e in entries if not self._is_collection(self.library.root_of(e) or e.path.parent)]
+        found_configs = [e.config for e in entries if e.config is not None]
+        entries, variants = self._expand_configs(entries)
         if not entries:
             raise AppError("Nothing to collect: choose a model, a kind or a game.")
         games = sorted({e.game for e in entries})
@@ -916,7 +923,10 @@ class Service:
 
         def related(e: CatalogEntry) -> list[collect.RelatedFile]:
             imp = by_key.get(e.importer) or importer_for(e.path)
-            return imp.related_files(e.path, options.textures, options.animations, options.lod)
+            out = list(imp.related_files(e.path, options.textures, options.animations, options.lod))
+            if imp.record_reads:
+                out += self._reads(imp, e.path, variants.get(e.path, {None}), options)
+            return out
 
         def extras(root: Path) -> list[collect.RelatedFile]:
             return [f for key in importers for f in by_key[key].shared_files(root, games[0], options.player_animations)]
@@ -927,24 +937,54 @@ class Service:
             n = len(entries)
             progress = lambda i, name: job.report(i / max(n, 1), f"Reading model {i + 1:,} of {n:,}: {name}")  # noqa: E731
         return collect.plan(self.config.library_folder, games[0], entries, game_roots, options, related, extras,
-                            progress)
+                            progress, found_configs)
 
-    def _expand_configs(self, entries: list[CatalogEntry]) -> list[CatalogEntry]:
-        """A configurable model stands for its base and every part that fits it."""
+    def _expand_configs(self, entries: list[CatalogEntry]) -> tuple[list[CatalogEntry], dict[Path, set]]:
+        """A configurable model stands for its base and every part that fits it. Also returns, for each file,
+        the variants to open it as (a gun skin is a variant of its part definitions' package)."""
         import dataclasses
 
         with self.lock:
             by_path = {e.path: e for e in self.library.entries}
         out: dict[Path, CatalogEntry] = {}
+        variants: dict[Path, set] = {}
         for e in entries:
             if e.config is None:
                 out.setdefault(e.path, e)
+                variants.setdefault(e.path, set()).add(None)
                 continue
-            files = [e.config.base.file] + [o.model.file for s in e.config.slots for o in s.options]
-            for f in files:
-                p = Path(f)
+            refs = [e.config.base] + [o.model for s in e.config.slots for o in s.options]
+            for r in refs:
+                p = Path(r.file)
                 out.setdefault(p, by_path.get(p) or dataclasses.replace(e, stem=p.stem, label=p.stem, path=p, config=None))
-        return list(out.values())
+                variants.setdefault(p, set()).add(r.variant or None)
+        return list(out.values()), variants
+
+    MAX_RECORDED_VARIANTS = 64
+
+    def _reads(self, imp, path: Path, variants: set, options: collect.CollectOptions) -> list[collect.RelatedFile]:
+        """What opening the model at ``path`` (as each of ``variants``, and each model the file holds) reads:
+        every file and archive piece, so that a collected copy works without the game (see darkstl.access)."""
+        from .. import access
+
+        want = set(variants)
+        if None in want:
+            try:
+                want |= set(imp.variants(path)[:self.MAX_RECORDED_VARIANTS])
+            except Exception:  # noqa: BLE001 - a file that can't be listed is opened as it is
+                pass
+        rec = access.Recorder()
+        with access.recording(rec):
+            for v in sorted(want, key=lambda v: (v is not None, str(v))):
+                try:
+                    imp.load(path, v, tuple(self.config.texture_dirs))
+                except Exception:  # noqa: BLE001 - a model that doesn't open still has its own files copied
+                    log.debug("Collect: %s (%s) didn't open", path, v, exc_info=True)
+        out = [collect.RelatedFile(p, kind) for p, kind in rec.files.items()
+               if p.is_file() and (options.textures or kind != "texture")]
+        out += [collect.RelatedFile(m.source, m.kind, m.save_as, m.extract, m.size) for m in rec.members.values()
+                if options.textures or m.kind != "texture"]
+        return out
 
     def cmd_collect_plan(self, args: dict) -> dict:
         """What collecting would copy. With ``job``, worked out in a job (stoppable, with progress), whose

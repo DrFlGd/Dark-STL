@@ -108,6 +108,7 @@ def _kind_of(path: Path) -> str:
 class FromSoftwareImporter(Importer):
     key = "fromsoft"
     name = "FromSoftware (FLVER)"
+    record_reads = False  # related_files name all a model reads (and read each model already)
     file_filter = "FromSoftware models (*.partsbnd *.chrbnd *.objbnd *.geombnd *.mapbnd *.flver *.dcx)"
     games = profiles.GAMES
 

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .... import access
 from ....errors import FormatError
 from ....textures import dds
 from .props import Props, object_props
@@ -55,12 +56,24 @@ class Texture2D:
         lod = str(self.props.get("LODGroup", ""))
         return "Normal" in cs or "Normal" in lod
 
-    def describe(self) -> str:
-        return f"{self.width} x {self.height}, {self.codec}, {len(self.mips)} mips"
+    def describe(self, tfc_dirs: list[Path] | None = None) -> str:
+        out = f"{self.width} x {self.height}, {self.codec}, {len(self.mips)} mips"
+        try:
+            options = self.available(tfc_dirs)
+        except OSError:
+            return out
+        if options:
+            m = max((o[0] for o in options), key=lambda m: m.width * m.height)
+            if m.width < self.width:
+                missing = f"; {self.cache_name}.tfc with the larger ones wasn't found" if self.cache_name else ""
+                out += f" (showing {m.width} x {m.height}{missing})"
+        return out
 
     def available(self, tfc_dirs: list[Path] | None = None) -> list[tuple[Mip, Path | None]]:
         out = []
         cache = find_cache_file(self.pkg.path, self.cache_name, tfc_dirs) if self.cache_name else None
+        if cache is not None:
+            access.note_file(cache, "texture")
         for m in self.mips:
             if m.flags & 0x20 or m.size <= 0 or m.width <= 0:
                 continue
@@ -157,6 +170,10 @@ def read_texture(pkg: Package, export: Export) -> Texture2D:
         codec = _guess_codec(sized[0].elements, sized[0].width, sized[0].height) if sized else "BC1"
     cache = props.get("TextureFileCacheName")
     cache = None if cache in (None, "None", "") else str(cache)
+    if cache and access.active():  # where its large mips are, for collecting
+        hit = find_cache_file(pkg.path, cache)
+        if hit is not None:
+            access.note_file(hit, "texture")
     return Texture2D(pkg, export.name, export.path, props, width, height, fmt or "?", codec, cache, mips)
 
 
@@ -164,25 +181,69 @@ _CACHE_INDEX: dict[str, dict[str, Path]] = {}
 
 
 def find_cache_file(package_path: Path, name: str, extra_dirs: list[Path] | None = None) -> Path | None:
-    """``<name>.tfc`` beside the package, in a parent folder, or in the extra folders."""
+    """``<name>.tfc`` beside the package, in a parent folder, in the extra folders, or anywhere else in the
+    package's game folder (a DLC's packages keep their large mips in the game's own caches)."""
     stem = Path(name).stem if name.lower().endswith((".tfc", ".xxx")) else name
     dirs = [package_path.parent, *list(package_path.parents)[1:4], *(extra_dirs or [])]
     for d in dirs:
-        key = os.path.normcase(str(d))
-        index = _CACHE_INDEX.get(key)
-        if index is None:
-            index = {}
-            try:
-                for entry in os.scandir(d):
-                    if entry.is_file() and entry.name.lower().endswith(".tfc"):
-                        index[entry.name[:-4].lower()] = Path(entry.path)
-            except OSError:
-                pass
-            _CACHE_INDEX[key] = index
-        hit = index.get(stem.lower())
+        hit = _dir_index(d).get(stem.lower())
         if hit is not None:
             return hit
-    return None
+    root = _game_folder(package_path)
+    if root is None:
+        return None
+    found = [p for p in _tree_index(root).get(stem.lower(), []) if p.is_file()]
+    if not found:
+        return None
+    pkg = os.path.normcase(str(package_path.parent))
+    return max(found, key=lambda p: len(os.path.commonprefix([pkg, os.path.normcase(str(p.parent))])))
+
+
+def _dir_index(d: Path) -> dict[str, Path]:
+    key = os.path.normcase(str(d))
+    index = _CACHE_INDEX.get(key)
+    if index is None:
+        index = {}
+        try:
+            for entry in os.scandir(d):
+                if entry.is_file() and entry.name.lower().endswith(".tfc"):
+                    index[entry.name[:-4].lower()] = Path(entry.path)
+        except OSError:
+            pass
+        _CACHE_INDEX[key] = index
+    return index
+
+
+_TREE_INDEX: dict[str, dict[str, list[Path]]] = {}
+_GAME_MARKERS = {"binaries", "willowgame", "dlc"}
+
+
+def _game_folder(package_path: Path) -> Path | None:
+    """The highest folder above a package that looks like an Unreal 3 game's (holds Binaries, WillowGame or
+    DLC), within a few levels."""
+    best = None
+    for d in list(Path(package_path).parents)[:7]:
+        try:
+            names = {e.name.lower() for e in os.scandir(d) if e.is_dir()}
+        except OSError:
+            continue
+        if names & _GAME_MARKERS:
+            best = d
+    return best
+
+
+def _tree_index(root: Path) -> dict[str, list[Path]]:
+    """Every .tfc under a game folder, by name (looked for once per folder)."""
+    key = os.path.normcase(str(root))
+    index = _TREE_INDEX.get(key)
+    if index is None:
+        index = {}
+        for dirpath, _dirs, names in os.walk(root):
+            for n in names:
+                if n.lower().endswith(".tfc"):
+                    index.setdefault(n[:-4].lower(), []).append(Path(dirpath) / n)
+        _TREE_INDEX[key] = index
+    return index
 
 
 __all__ = ["FORMATS", "Mip", "Texture2D", "find_cache_file", "read_texture"]

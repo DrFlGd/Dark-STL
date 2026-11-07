@@ -21,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .. import access
 from ..errors import FormatError
 from ..geometry.mesh import TriMesh, weld
 from ..model import BuildOption, CatalogEntry, Material, MeshOptions, Part, SourceModel, Texture
@@ -262,6 +263,7 @@ class WavefrontImporter(Importer):
 
     def load(self, path: Path, variant: str | None = None, texture_dirs: tuple[str, ...] = ()) -> SourceModel:
         path = Path(path)
+        access.note_file(path, "model")
         try:
             obj = parse_obj(path.read_text(encoding="utf-8", errors="replace"))
         except (ValueError, IndexError) as exc:
@@ -274,6 +276,7 @@ class WavefrontImporter(Importer):
         for lib in obj.mtllibs:
             lib_path = path.parent / lib.replace("\\", "/")
             if lib_path.is_file():
+                access.note_file(lib_path, "other")
                 mtl.update(parse_mtl(lib_path.read_text(encoding="utf-8", errors="replace")))
             else:
                 notes.append(f"Material library {lib} was not found next to the OBJ")
@@ -288,6 +291,7 @@ class WavefrontImporter(Importer):
                 notes.append(f"Texture {statement[0]} was not found")
                 return None
             key = found.name.lower()
+            access.note_file(found, "texture")
             if key not in textures:
                 textures[key] = Texture(found.name, str(found), lambda p=found: load_image(p),
                                         lambda p=found: _describe_image(p))
