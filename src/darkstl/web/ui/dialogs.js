@@ -178,7 +178,7 @@ function OpenFile() {
     } catch (e) { setBusy(false); setError(String(e.message || e)); }
   };
   return html`<${Dialog} title="Open a model file" id="open-file-dialog" onSubmit=${submit} busy=${busy} error=${error} submitLabel=${busy ? "Opening…" : "Open"}>
-    <p class="muted">A .partsbnd, .chrbnd, .objbnd, .flver or .obj file (also inside .dcx). It opens on its own page; its folder isn't added to the library.</p>
+    <p class="muted">A .partsbnd, .chrbnd, .objbnd or .flver file (also inside .dcx), or a model another tool exported: .gltf, .glb, .psk, .pskx or .obj. It opens on its own page; its folder isn't added to the library.</p>
     <div class="field-block"><label class="field-label" for="file-path">File</label>
       <div class="field-row"><input type="text" id="file-path" placeholder=${dialogs ? "Choose with Browse…, or paste a path" : "Paste the file's path"}
         value=${path} onInput=${(e) => setPath(e.target.value)} disabled=${busy} />

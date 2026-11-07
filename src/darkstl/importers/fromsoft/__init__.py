@@ -18,6 +18,7 @@ from ...collect import RelatedFile
 from ...errors import FormatError
 from ...model import BuildOption, CatalogEntry, Material, MeshOptions, Part, Rig, SourceModel, Texture, frame_matrix
 from ...textures import dds
+from .. import loose
 from ..base import Importer, ScanProgress
 from . import catalog, files, materials, texindex
 from . import games as profiles
@@ -244,8 +245,11 @@ class FromSoftwareImporter(Importer):
         index = self._own_index(folder)
         if index is None:
             return []
+        # a folder of models from other tools lists its loose pictures itself (see importers.loose)
+        loose_listed = loose.owner(folder) is not None
         return [(name, f"{rels[0]}|{name}") for name, rels in sorted(index.names.items()) if rels
-                and not texindex.PLACEHOLDER.match(name)]
+                and not texindex.PLACEHOLDER.match(name)
+                and not (loose_listed and rels[0].lower().endswith(".dds"))]
 
     def open_texture(self, folder: Path, ref: str) -> Texture:
         rel, _, name = ref.rpartition("|")
