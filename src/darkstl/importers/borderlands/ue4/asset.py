@@ -245,9 +245,18 @@ def _engine_from_file_version(ue4: int, ue5: int) -> int:
     return 420
 
 
+# file versions (EUnrealEngineObjectUE4Version) of each engine release, for packages cooked unversioned
+UE4_FILE_VERSIONS = {420: 516, 421: 516, 422: 517, 423: 517, 424: 518, 425: 518, 426: 522, 427: 522}
+
+
 def read_package(name: str, uasset: bytes, uexp: bytes | None = None,
-                 payload: Callable[[str], bytes | None] | None = None, game: str = "") -> Package:
-    """A package from its ``.uasset`` and ``.uexp`` bytes; ``name`` is its ``/Game/...`` path."""
+                 payload: Callable[[str], bytes | None] | None = None, game: str = "",
+                 assume_engine: int | Callable[[], int | None] | None = None) -> Package:
+    """A package from its ``.uasset`` and ``.uexp`` bytes; ``name`` is its ``/Game/...`` path.
+
+    A package cooked "unversioned" stores 0 for its file and licensee versions and no custom versions: the
+    game's engine release says them. ``assume_engine`` (as 425 for 4.25, or a function giving it) is that
+    release; without it such a package can't be read."""
     r = Reader(uasset, None)
     if r.u32() != TAG:
         raise FormatError(f"{name} isn't an Unreal package")
@@ -261,8 +270,13 @@ def read_package(name: str, uasset: bytes, uexp: bytes | None = None,
     if legacy <= -8:
         v.ue5 = r.i32()
     v.licensee = r.i32()
-    if v.ue4 == 0 and v.ue5 == 0 and v.licensee == 0:
-        raise FormatError(f"{name} is an unversioned package (it needs the game's type mappings)")
+    unversioned = v.ue4 == 0 and v.ue5 == 0 and v.licensee == 0
+    if unversioned:
+        engine = assume_engine() if callable(assume_engine) else assume_engine
+        if not engine or engine not in UE4_FILE_VERSIONS:
+            raise FormatError(f"{name} is cooked unversioned, and which Unreal Engine release the game uses "
+                              "isn't known")
+        v.ue4, v.engine = UE4_FILE_VERSIONS[engine], engine
     if v.ue5 >= 1016:
         r.skip(20)  # saved hash
         header_size = r.i32()
@@ -320,6 +334,11 @@ def read_package(name: str, uasset: bytes, uexp: bytes | None = None,
     if v.ue4 >= 444:
         compatible = _engine_version(r)
         engine = engine or compatible
+    if unversioned:  # the summary's engine version, when it isn't blank, is the release the package came from
+        if engine in UE4_FILE_VERSIONS:
+            v.ue4 = UE4_FILE_VERSIONS[engine]
+        else:
+            engine = v.engine
     v.engine = engine or _engine_from_file_version(v.ue4, v.ue5)
     compression = r.u32()
     if r.count(1 << 16):

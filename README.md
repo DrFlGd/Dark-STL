@@ -127,9 +127,10 @@ neither.
 
 - **Returnal (Unreal Engine 4):** add the game's install folder as it is. Models are read from the
   `.pak` files in `Returnal\Content\Paks`, sorted into weapons, characters (Selene, creatures),
-  map pieces and objects by their folders. Dark STL doesn't include Returnal's AES key: if the
-  paks are encrypted, paste the key in *Settings > Unreal games* (or `unreal-keys.txt` in the game
-  folder) and rescan.
+  map pieces and objects by their folders. Returnal cooks its objects without property names, so
+  it needs a `.usmap` type mappings file for the installed version (dump one from the running game
+  with UE4SS: Ctrl+Numpad 6), put in the game folder or added in *Settings > Unreal games*. Dark STL
+  doesn't include Returnal's AES key: if the paks are encrypted, paste the key there too and rescan.
 
 ## Using the app
 

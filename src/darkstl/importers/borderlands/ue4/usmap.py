@@ -220,20 +220,80 @@ def load(path: Path) -> Mappings:
     return _CACHE[key]
 
 
+# words in a .usmap's file name that say which game it was made for
+_GAME_WORDS = {
+    "Borderlands 4": ("borderlands4", "borderlands 4", "bl4", "oak2"),
+    "Borderlands 3": ("borderlands3", "borderlands 3", "bl3"),
+    "Tiny Tina's Wonderlands": ("wonderlands", "ttwl"),
+    "Returnal": ("returnal",),
+}
+
+
+def _names_game(path: Path, game: str) -> bool:
+    low = path.stem.lower().replace("_", " ").replace("-", " ")
+    return any(w in low or w in low.replace(" ", "") for w in _GAME_WORDS.get(game, ()))
+
+
+def _for_game(candidates: list[Path], game: str, settings_dir: Path | None) -> list[Path]:
+    """The game folder's own mappings first, then the settings folder's named for this game, then the
+    settings folder's named for no game this importer knows; ones named for another game are left out."""
+    def in_settings(p: Path) -> bool:
+        return settings_dir is not None and p.parent == Path(settings_dir)
+
+    own = [p for p in candidates if not in_settings(p)]
+    shared = [p for p in candidates if in_settings(p)]
+    named = [p for p in shared if _names_game(p, game)]
+    others = [p for p in shared if p not in named and not any(_names_game(p, g) for g in _GAME_WORDS if g != game)]
+    return own + named + others
+
+
+def _project_paks(root: Path) -> list[Path]:
+    """``<root>/<Project>/Content/Paks`` folders (Returnal/Content/Paks...)."""
+    try:
+        return [d / "Content" / "Paks" for d in Path(root).iterdir() if (d / "Content" / "Paks").is_dir()]
+    except OSError:
+        return []
+
+
 def find_mappings(root: Path, game: str, settings_dir: Path | None = None) -> Mappings | None:
     """The type mappings for a game: the newest .usmap in the game folder (or its Paks folder) or in Dark STL's
     settings folder."""
     candidates: list[Path] = []
-    for d in [root, root / "OakGame", root / "OakGame" / "Content" / "Paks", settings_dir]:
+    for d in [root, root / "OakGame", root / "OakGame" / "Content" / "Paks", *_project_paks(root), settings_dir]:
         if d is not None and Path(d).is_dir():
             candidates += sorted(Path(d).glob("*.usmap"), key=lambda p: -p.stat().st_mtime)
+    candidates = _for_game(candidates, game, settings_dir)
+    fallback = None
     for c in candidates:
         if c.is_file():
             try:
-                return load(c)
+                m = load(c)
             except (FormatError, OSError, ValueError, struct.error):
                 continue
-    return None
+            fit = _fits(m, game)
+            if fit is True:
+                return m
+            if fit is None and fallback is None:
+                fallback = m
+    return fallback
+
+
+# what the classes of a game's own code are called (the mappings of Borderlands 3, Wonderlands and 4 are full of
+# Oak* types): mappings with another game's types are for that game
+_GAME_TYPES = {"Borderlands 3": "oak", "Tiny Tina's Wonderlands": "oak", "Borderlands 4": "oak"}
+
+
+def _fits(m: Mappings, game: str) -> bool | None:
+    """True: made for ``game``; False: made for another game; None: can't tell (taken if nothing fits better)."""
+    def has(prefix: str) -> bool:
+        return sum(1 for n in m.structs if n.lower().startswith(prefix)) >= 20
+
+    mine = _GAME_TYPES.get(game)
+    if mine and has(mine):
+        return True
+    if any(has(p) for p in set(_GAME_TYPES.values()) if p != mine):
+        return False
+    return None if mine else True
 
 
 __all__ = ["Mappings", "PropInfo", "PropType", "StructInfo", "find_mappings", "load", "parse"]
