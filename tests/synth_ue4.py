@@ -233,12 +233,21 @@ def _skeletal_material(engine: int, ref: int, slot: bytes) -> bytes:
     return out + bytes(24)
 
 
+def _bounds(positions) -> bytes:
+    """FBoxSphereBounds: origin, box extent, sphere radius."""
+    p = np.asarray(positions, float)
+    lo, hi = p.min(0), p.max(0)
+    origin, extent = (lo + hi) / 2, (hi - lo) / 2
+    radius = float(np.linalg.norm(p - origin, axis=1).max())
+    return struct.pack("<7f", *origin, *extent, radius)
+
+
 def skeletal_data(b: Ue4Package, materials: list[int], positions, normals, uvs, indices, sections,
                   in_bulk: bool = False, cooked_out_first: bool = False) -> bytes:
     """``sections``: (material, first index, triangles)."""
     e = b.engine
     out = b.props(b.p_bool("bHasVertexColors", False))
-    out += bytes([1, 0]) + bytes(28)
+    out += bytes([1, 0]) + _bounds(positions)
     out += struct.pack("<i", len(materials))
     for i, m in enumerate(materials):
         out += _skeletal_material(e, m, b.fname(f"Slot{i}"))

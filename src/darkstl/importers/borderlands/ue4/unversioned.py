@@ -333,13 +333,34 @@ def reader_for(pkg, root, game: str | None):
     m = _MAPPINGS[key]
     if m is None:
         def missing(r, e):
+            from .guess import skip_properties
+
+            try:  # a mesh's or texture's own data can still be found after the properties
+                return skip_properties(pkg, r, e)
+            except FormatError:
+                pass
             raise FormatError(f"{pkg.stem} is cooked without property names, so Dark STL needs the game's type "
                               f"mappings: a .usmap file made for this version of the game (dump one from the running "
                               f"game with UE4SS or Dumper-7). Add it in Settings under Unreal games, or put it in the "
                               f"game folder, then open the model again")
         return missing
     reader = UnversionedReader(m, pkg.versions.ue5 >= 1004, pkg.versions.ue5 >= 1007)
-    return lambda r, e: read_unversioned(reader, r, e.class_name)
+
+    def read(r, e):
+        start = r.pos
+        try:
+            return read_unversioned(reader, r, e.class_name)
+        except FormatError:
+            from .guess import skip_properties
+
+            r.pos = start
+            try:  # mappings for another version of the game: find the object's own data instead
+                return skip_properties(pkg, r, e)
+            except FormatError:
+                pass
+            raise
+
+    return read
 
 
 def read_unversioned(reader: UnversionedReader, r: Reader, class_name: str) -> Props:

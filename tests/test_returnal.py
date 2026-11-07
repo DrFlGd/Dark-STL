@@ -207,6 +207,15 @@ def _unversioned_files() -> dict[str, bytes]:
     e = b.add_export("SkeletalMesh", "SK_KineticRifle")
     b.set_data(e, S.skeletal_data(b, [m], POS, NRM, UV, IDX, [(0, 0, 4)]))
     pk["Gameplay/Weapons/Player_KineticRifle/SK_KineticRifle"] = b
+    b = S.Ue4Package("/Game/Environments/Biome1/SM_Pillar", 426, unversioned=True)
+    m = b.import_object(mi, "MaterialInstanceConstant", "MI_KineticRifle")
+    e = b.add_export("StaticMesh", "SM_Pillar")
+    native = S.static_data(b, [m], POS, NRM, UV, IDX, [(0, 0, 2), (0, 6, 2)])[6:]  # after the empty header
+    slots = struct.pack("<i", 1) + _header([(0, True), (1, True)]) + struct.pack("<i", m) + b.fname("Stone") \
+        + bytes(24)  # the slot: its material, its name, its UV channel data
+    b.set_data(e, _header([(3, True), (7, False), (9, True)]) + struct.pack("<f", 1.5) + slots
+               + struct.pack("<i", 0) + native)
+    pk["Environments/Biome1/SM_Pillar"] = b
     for path, b in pk.items():
         uasset, uexp, ubulk = b.build()
         out[f"Returnal/Content/{path}.uasset"] = uasset
@@ -257,12 +266,17 @@ def test_unversioned_packages_open_with_the_type_mappings(tmp_path, monkeypatch)
     imp = ReturnalImporter()
     imp.cache = tmp_path / "cache"
     found = {e.stem: e for e in imp.scan(root, GAME)}
-    assert set(found) == {"SK_KineticRifle"}
+    assert set(found) == {"SK_KineticRifle", "SM_Pillar"}
     assert found["SK_KineticRifle"].category == "Weapons"
     notes = imp.folder_notes(root, list(found.values()))
-    assert any(".usmap" in n and "UE4SS" in n for n in notes)
-    with pytest.raises(FormatError, match="usmap.*Settings"):
-        open_model(found["SK_KineticRifle"].path)
+    assert any(".usmap" in n for n in notes)
+    # without the mappings: the geometry, the material slots and the textures the material uses, by their names
+    for stem, parts in (("SK_KineticRifle", 1), ("SM_Pillar", 2)):
+        m = open_model(found[stem].path)
+        assert len(m.build(MeshOptions()).faces) == 4 and len(m.parts) == parts
+        mat = m.materials[0]
+        assert mat.name == "MI_KineticRifle" and mat.albedo and mat.normal and mat.guessed, mat.details
+        assert m.textures[mat.albedo].load()[0, 0, 0] > 240
 
     (paks / "Mappings.usmap").write_bytes(_mappings())
     vfs.forget(root)

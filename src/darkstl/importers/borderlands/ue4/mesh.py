@@ -387,6 +387,9 @@ def _static_materials(props: Props, pkg: Package) -> tuple[list[ObjectRef], list
                 slots.append(str(p.get("MaterialSlotName", "")))
         except FormatError:
             pass
+    if not mats and getattr(props, "material_refs", None):  # read without type mappings (see guess.py)
+        mats = list(props.material_refs)
+        slots = [m.name for m in mats]
     if not mats:
         arr = props.get("Materials")
         if isinstance(arr, Array4):
