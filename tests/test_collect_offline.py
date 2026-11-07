@@ -9,18 +9,19 @@ import json
 import shutil
 from pathlib import Path
 
+import numpy as np
 import pytest
-
 import synth_ue3
+from test_animation import make_char_dir
+from test_app import home, wait  # noqa: F401 - fixture
+from test_pipeline import weapon_dir  # noqa: F401 - fixture
+from test_reengine import re2_pak_dir, re4_dir  # noqa: F401 - fixtures
+
 from darkstl.app.config import Config
 from darkstl.app.service import Service
 from darkstl.importers import set_cache_folder
 from darkstl.importers.borderlands import files as bl_files
 from darkstl.importers.borderlands.ue4 import vfs
-from test_animation import make_char_dir
-from test_app import home, wait  # noqa: F401 - fixture
-from test_pipeline import weapon_dir  # noqa: F401 - fixture
-from test_reengine import re2_pak_dir, re4_dir  # noqa: F401 - fixtures
 
 
 def _service(home, cache: str = "cache") -> Service:  # noqa: F811
@@ -77,6 +78,8 @@ def collect_and_uninstall(home, game_dir: Path, game: str | None = None,  # noqa
     if packages:
         assert not done["failed"], done["failed"]
         assert done["written"] + done["configurable"] > 0
+        kept = [f for f in Path(plan["folder"]).glob("assets/textures/**/*") if f.is_file()]
+        assert kept and all(f.suffix == ".dds" for f in kept), "textures are kept as the game keeps them"
     s.call("folder_remove", {"path": str(game_dir)})
     gone = game_dir.with_name(game_dir.name + " (uninstalled)")
     bl_files._INDEXES.clear()
@@ -132,7 +135,7 @@ def test_fromsoftware(home, packages, weapon_dir, tmp_path):  # noqa: F811
     assert_same(before, after)
 
 
-def test_borderlands_2_guns_parts_and_skins(home, packages, tmp_path):  # noqa: F811
+def _bl2_game(tmp_path) -> Path:
     import test_borderlands as T
 
     root = tmp_path / "Borderlands 2"
@@ -153,6 +156,11 @@ def test_borderlands_2_guns_parts_and_skins(home, packages, tmp_path):  # noqa: 
     (cooked / "Weap_AssaultRifle.upk").write_bytes(T.ar_parts_package())
     (cooked / "GD_Weap_AssaultRifle.upk").write_bytes(T.ar_part_definitions())
     bl_files._INDEXES.clear()
+    return root
+
+
+def test_borderlands_2_guns_parts_and_skins(home, packages, tmp_path):  # noqa: F811
+    root = _bl2_game(tmp_path)
     before, after, plan = collect_and_uninstall(home, root, bl_files.GAME_BL2, packages=packages)
     gun = before[("Weapons", "Pistol (any parts)", True)][0]
     assert len(gun) > 3 and any(":colour" in (m[1] or "") for o in gun for m in o["materials"]), \
@@ -220,8 +228,9 @@ def test_returnal_from_paks(home, packages, tmp_path):  # noqa: F811
 
 def test_returnal_unversioned_keeps_its_mappings_and_engine(home, packages, tmp_path):  # noqa: F811
     import synth_ue4 as S
-    from darkstl.importers.borderlands.ue4 import unversioned
     from test_returnal import _mappings, _unversioned_files
+
+    from darkstl.importers.borderlands.ue4 import unversioned
 
     root = tmp_path / "Returnal"
     paks = root / "Returnal" / "Content" / "Paks"
@@ -236,3 +245,103 @@ def test_returnal_unversioned_keeps_its_mappings_and_engine(home, packages, tmp_
     before, after, _plan = collect_and_uninstall(home, root, packages=packages)
     assert before and any(m["materials"][0][1] for shown in before.values() for v in shown for m in v)
     assert_same(before, after)
+
+
+# -- every texture of a game ---------------------------------------------------
+
+
+def _texture_key(name: str) -> str:
+    return name.lower().replace("\\", "/")
+
+
+def keep_every_texture_and_uninstall(home, game_dir: Path, game: str | None = None) -> dict:  # noqa: F811
+    """Import a game as packages with every texture it holds, take the game away, and check that each texture
+    its folders listed is in the asset store, still compressed, and shows as it did from the game."""
+    s = _service(home)
+    args = {"path": str(game_dir)}
+    if game:
+        args["game"] = game
+    game = wait(s, s.call("folder_add", args)["job"])["game"]
+    plan = wait(s, s.call("collect_plan", {"game": game, "job": 1, "packages": True, "all_textures": True})["job"])
+    t = plan["textures"]
+    assert t["listed"] > 0 and t["to_store"] == t["listed"] and not t["present"], t
+    assert t["sampled"] > 0 and t["bytes"] > 0
+    listed = s.call("textures_search", {"game": game, "limit": 500})["items"]
+    assert len(listed) == t["listed"] and not any(x["stored"] for x in listed)
+    shown = {_texture_key(x["name"]): hashlib.sha1(s.call("texture_preview", {"game": game, "ref": x["ref"],
+                                                                             "max": "64"})).hexdigest()
+             for x in listed}
+    done = wait(s, s.call("collect_run", {"game": game, "packages": True, "all_textures": True})["job"])
+    kept = done["textures"]
+    assert not kept["failed"] and kept["listed"] == t["listed"], kept
+    assert kept["stored"] + kept["present"] == t["listed"]
+    store = Path(plan["folder"]) / "assets" / "textures"
+    files = [f for f in store.rglob("*") if f.is_file()]
+    assert files and all(f.suffix == ".dds" for f in files), "kept as the game keeps them"
+    from darkstl.package import texture_base
+
+    bases = {texture_base(x["name"]) for x in listed}
+    size = sum(f.stat().st_size for f in files
+               if f.relative_to(store.parent.parent).as_posix().lower().rsplit(".", 1)[0] in bases)
+    assert 0.5 <= t["bytes"] / size <= 2, "the estimate is about right"
+    again = wait(s, s.call("collect_plan", {"game": game, "job": 1, "packages": True, "all_textures": True})["job"])
+    assert again["textures"]["to_store"] == 0 and again["textures"]["present"] == t["listed"], (kept, again["textures"], sorted(str(f.relative_to(store)) for f in files))
+
+    s.call("folder_remove", {"path": str(game_dir)})
+    gone = game_dir.with_name(game_dir.name + " (uninstalled)")
+    bl_files._INDEXES.clear()
+    vfs.forget(game_dir)
+    shutil.move(str(game_dir), str(gone))
+    try:
+        fresh = _service(home, "cache2")
+        wait(fresh, fresh.load_folders().id)
+        stored = fresh.call("textures_search", {"game": game, "limit": 500})["items"]
+        assert all(x["stored"] for x in stored)
+        found = {_texture_key(x["name"]): x for x in stored}
+        for key, picture in shown.items():
+            hit = found.get(key) or next((x for k, x in found.items() if key.endswith("/" + k) or k.endswith(key)),
+                                         None)
+            assert hit is not None, f"{key} isn't in the asset store"
+            png = fresh.call("texture_preview", {"game": game, "ref": hit["ref"], "max": "64"})
+            assert hashlib.sha1(png).hexdigest() == picture, f"{key} shows differently from the asset store"
+    finally:
+        shutil.move(str(gone), str(game_dir))
+    return t
+
+
+def test_every_texture_of_a_fromsoftware_game(home, weapon_dir):  # noqa: F811
+    import synth
+
+    from darkstl.importers.fromsoft.formats import dcx
+
+    img = np.zeros((8, 8, 4), np.uint8)
+    img[..., 1] = 150
+    other = weapon_dir / "map" / "m30"
+    other.mkdir(parents=True)
+    (other / "m30_unused.tpf.dcx").write_bytes(dcx.compress_dflt(synth.build_tpf([("m30_moss_a", synth.rgba_dds(img))])))
+    t = keep_every_texture_and_uninstall(home, weapon_dir)
+    assert t["listed"] == 3  # the weapon's two, and one no model uses
+
+
+def test_every_texture_of_borderlands_2(home, tmp_path):  # noqa: F811
+    keep_every_texture_and_uninstall(home, _bl2_game(tmp_path), bl_files.GAME_BL2)
+
+
+def test_every_texture_of_cyberpunk(home, tmp_path):  # noqa: F811
+    from test_redengine_weapons import archive_game, weapon_files
+
+    keep_every_texture_and_uninstall(home, archive_game(tmp_path / "Cyberpunk 2077", weapon_files()))
+
+
+def test_every_texture_of_resident_evil(home, re2_pak_dir, re4_dir):  # noqa: F811
+    keep_every_texture_and_uninstall(home, re4_dir)
+
+
+def test_every_texture_of_unreal_games(home, tmp_path):  # noqa: F811
+    from test_borderlands4 import _game as wonderlands
+    from test_borderlands_ue5 import _bl4
+    from test_returnal import _game as returnal
+
+    for root in (wonderlands(tmp_path, 426, 11, compress=True, exe="Wonderlands.exe"), _bl4(tmp_path / "bl4"),
+                 returnal(tmp_path / "returnal")):
+        keep_every_texture_and_uninstall(home, root)

@@ -42,7 +42,8 @@ GAMES = (GAME_BL1, GAME_BL2, GAME_TPS, GAME_BL3, GAME_WL, GAME_BL4)
 
 
 def _texture(tex: Texture2D, dirs: list[Path]) -> Texture:
-    return Texture(tex.name, f"{tex.pkg.path.name}: {tex.path}", lambda: tex.decode(dirs), lambda: tex.describe(dirs))
+    return Texture(tex.name, f"{tex.pkg.path.name}: {tex.path}", lambda: tex.decode(dirs), lambda: tex.describe(dirs),
+                   raw=lambda: tex.dds_bytes(dirs))
 
 
 def _open(path: Path) -> tuple[upk.Package, upk.Export, str]:
@@ -272,6 +273,42 @@ class BorderlandsImporter(Importer):
         return SourceModel(name=m.name, path=path, importer=self.key, build=build, game=game, parts=parts,
                            materials=mats, textures=textures, info=info, notes=notes,
                            paint_uvs=gunpaint.uvs_of(path))
+
+    def list_textures(self, folder: Path, deep: bool = False) -> list[tuple[str, str]]:
+        folder = Path(folder)
+        if _another_importers_folder(folder):
+            return []
+        game = files.detect_game(folder)
+        if game in unreal4.UE4_GAMES or (game not in files.UE3_GAMES and files.is_unreal4_folder(folder)):
+            from .ue4 import catalog4
+            return [(name, f"ue4|{ref}") for name, ref in unreal4.list_textures(catalog4._root_for(folder), game)]
+        if game not in files.UE3_GAMES:
+            return []
+        files.use_cache(self.cache)
+        index = catalog.object_index(folder, self.cache)
+        out = []
+        for package, path, cls in index.where.values():
+            if cls == "Texture2D":
+                try:
+                    rel = Path(package).relative_to(folder).as_posix()
+                except ValueError:
+                    continue
+                out.append((path.rsplit(".", 1)[-1], f"{rel}|{path}"))
+        return sorted(out, key=lambda t: (t[0].lower(), t[1].lower()))
+
+    def open_texture(self, folder: Path, ref: str) -> Texture:
+        folder = Path(folder)
+        if ref.startswith("ue4|"):
+            from .ue4 import catalog4
+            return unreal4.open_texture(catalog4._root_for(folder), ref[4:], files.detect_game(folder))
+        rel, _, path = ref.partition("|")
+        pkg = upk.open_package(folder / rel)
+        e = pkg.find_export(path, "Texture2D")
+        if e is None:
+            raise FormatError(f"{path} isn't in {Path(rel).name} any more")
+        from .formats.texture import read_texture
+
+        return _texture(read_texture(pkg, e), [])
 
     def describe(self, path: Path) -> list[str] | None:
         path = Path(path)

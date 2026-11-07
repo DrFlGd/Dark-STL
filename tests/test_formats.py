@@ -139,6 +139,32 @@ def test_dds_mip_offset():
     assert dds.decode_dds(data, mip=1)[0, 0, 0] == 200
 
 
+@pytest.mark.parametrize("codec", ["BC1", "BC2", "BC3", "BC4", "BC5", "BC7", "R8G8B8A8", "B8G8R8A8", "A8",
+                                   "R16G16B16A16F"])
+def test_a_games_mips_kept_as_a_dds_file_read_back_the_same(codec):
+    """How Unreal and Cyberpunk textures are kept in a model package's asset store: their mips as they are,
+    in a DDS file that decodes to the same pixels as the game's data does."""
+    if codec == "BC7":
+        pytest.importorskip("texture2ddecoder")
+    rng = np.random.default_rng(3)
+    mips = []
+    for w, h in [(16, 8), (8, 4), (4, 2), (2, 1)]:
+        raw = rng.integers(0, 256, dds.surface_bytes(codec, w, h), dtype=np.uint8).tobytes()
+        if codec == "R16G16B16A16F":  # finite half floats
+            raw = np.clip(np.frombuffer(raw, np.uint16) & 0x3BFF, 0, None).astype(np.uint16).tobytes()
+        mips.append((w, h, raw + b"\0" * 8))  # a game's mip may carry padding after its pixels
+    data = dds.wrap_mips(codec, mips)
+    info = dds.parse_dds(data)
+    assert (info.width, info.height, info.mipmaps) == (16, 8, 4)
+    for level, (w, h, raw) in enumerate(mips):
+        assert np.array_equal(dds.decode_dds(data, level), dds.decode_surface(codec, raw, w, h)), level
+    # the chain stops where a mip isn't half the one before, or is short of bytes
+    assert dds.parse_dds(dds.wrap_mips(codec, [mips[0], mips[2], mips[3]])).mipmaps == 1
+    assert dds.parse_dds(dds.wrap_mips(codec, [mips[0], (8, 4, b"")])).mipmaps == 1
+    assert dds.wrap_mips(codec, [(16, 8, b"\0")]) is None
+    assert dds.wrap_mips("V8U8", mips) is None  # decoded into a normal map of its own: kept as the picture
+
+
 # -- TPF ---------------------------------------------------------------------
 
 def test_tpf_pc():

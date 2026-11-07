@@ -93,9 +93,12 @@ class AssetStore:
         self._index_file = self.folder / "index.json"
         self._lock = threading.Lock()
         try:
-            self._index: dict[str, str] = json.loads(self._index_file.read_text("utf-8")).get("textures", {})
-        except (OSError, ValueError, AttributeError):
-            self._index = {}
+            kept = json.loads(self._index_file.read_text("utf-8"))
+            self._index: dict[str, str] = dict(kept.get("textures") or {})
+            # a texture of the game's listed by its importer (``<importer>|<its reference>``) -> where it's stored
+            self._sources: dict[str, str] = dict(kept.get("sources") or {})
+        except (OSError, ValueError, AttributeError, TypeError):
+            self._index, self._sources = {}, {}
         self._by_texture: dict[tuple[str, str], str] = {}  # (name, source) -> stored path, within one import
         self._changed = False
         self._saved = 0.0
@@ -109,7 +112,8 @@ class AssetStore:
                 return
             self.folder.mkdir(parents=True, exist_ok=True)
             tmp = self._index_file.with_suffix(".part")
-            tmp.write_text(json.dumps({"textures": self._index}, indent=1, sort_keys=True), "utf-8")
+            tmp.write_text(json.dumps({"textures": self._index, "sources": self._sources}, indent=1, sort_keys=True),
+                           "utf-8")
             os.replace(tmp, self._index_file)
             self._changed, self._saved = False, time.monotonic()
 
@@ -121,9 +125,33 @@ class AssetStore:
         os.replace(tmp, path)
         self.bytes_written += len(data)
 
-    def add_texture(self, texture: Texture) -> str:
+    def add_texture(self, texture: Texture, source: str | None = None) -> str:
         """Store a texture, returning its path relative to the store's root: the DDS file the importer gives
-        (compressed as in the game), or else the picture it decodes."""
+        (compressed as in the game), or else the picture it decodes. ``source``: the texture as its importer
+        lists the game's textures (see :meth:`stored_source`)."""
+        rel = self._add_texture(texture)
+        if source is not None:
+            with self._lock:
+                if self._sources.get(source) != rel:
+                    self._sources[source] = rel
+                    self._changed = True
+        return rel
+
+    def stored_source(self, source: str) -> str | None:
+        """Where a texture of the game's, as its importer lists it (``<importer>|<its reference>``), is stored,
+        if it is."""
+        rel = self._sources.get(source)
+        return rel if rel is not None and rel in self._index else None
+
+    def stored_under(self) -> set[str]:
+        """The names textures are stored under (lower case, as :func:`texture_base` makes them)."""
+        out = set()
+        for rel in self._index:
+            name = re.sub(r"\.(png|npy|dds)$", "", rel, flags=re.I)
+            out.add(re.sub(r"~[0-9a-f]{10}$", "", name).lower())
+        return out
+
+    def _add_texture(self, texture: Texture) -> str:
         key = (texture.name, texture.source)
         known = self._by_texture.get(key)
         if known is not None:
@@ -186,9 +214,17 @@ def _npz(arrays: dict[str, np.ndarray]) -> bytes:
     return buf.getvalue()
 
 
+def texture_base(name: str) -> str:
+    """Where a texture called ``name`` is stored, without its extension (lower case)."""
+    return f"{ASSETS}/textures/{safe_relative(name)}".lower()
+
+
 def stored_texture_name(rel: str) -> str:
-    """A stored texture's name in the game, from its path in the store."""
-    name = Path(rel).name
+    """A stored texture's name in the game, from its path in the store (with the folders of a name that has
+    them: a Cyberpunk depot path)."""
+    rel = str(rel).replace("\\", "/")
+    head = f"{ASSETS}/textures/"
+    name = rel[len(head):] if rel.lower().startswith(head) else Path(rel).name
     name = re.sub(r"\.(png|npy|dds)$", "", name, flags=re.I)
     return re.sub(r"~[0-9a-f]{10}$", "", name)
 

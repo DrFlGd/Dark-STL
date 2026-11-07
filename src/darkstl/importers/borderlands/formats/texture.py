@@ -98,6 +98,28 @@ class Texture2D:
                 errors.append(str(e))
         raise FormatError(f"{self.name}: {errors[0]}")
 
+    def dds_bytes(self, tfc_dirs: list[Path] | None = None) -> bytes:
+        """The texture as a DDS file, still compressed as the game keeps it: the largest mip whose data is
+        found (the one :meth:`decode` shows) and the smaller ones after it."""
+        if self.codec == "V8U8":  # decoded into a normal map of its own
+            raise FormatError(f"{self.name} ({self.codec}) can't be kept as a DDS file")
+        options = sorted(self.available(tfc_dirs), key=lambda o: -o[0].width * o[0].height)
+        for i, (m, cache) in enumerate(options):
+            try:
+                chain = [(m.width, m.height, self._mip_bytes(m, cache))]
+            except (FormatError, OSError):
+                continue
+            for n, c in options[i + 1:]:
+                try:
+                    chain.append((n.width, n.height, self._mip_bytes(n, c)))
+                except (FormatError, OSError):
+                    break
+            data = dds.wrap_mips(self.codec, chain)
+            if data is None:
+                break
+            return data
+        raise FormatError(f"{self.name} can't be kept as a DDS file")
+
     def _mip_bytes(self, m: Mip, cache: Path | None) -> bytes:
         if cache is not None:
             def read(offset: int, size: int) -> bytes:

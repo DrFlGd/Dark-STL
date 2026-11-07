@@ -201,8 +201,10 @@ function Collect({ game, category, group, model }) {
   if (game && cat) scopes.push({ key: "kind", label: `All ${cat}`, args: { game, category: cat } });
   if (game) scopes.push({ key: "game", label: `All of ${game}`, args: { game } });
   const [scope, setScope] = useState(scopes[0].key);
-  const [opts, setOpts] = useState({ textures: true, animations: true, player_animations: false, lod: false, packages: true });
+  const [opts, setOpts] = useState({ textures: true, animations: true, player_animations: false, lod: false, packages: true,
+    all_textures: false });
   const packages = !!opts.packages;
+  const allTextures = packages && scope === "game" && !!opts.all_textures; // every texture of the game, not only the models'
   const [plan, setPlan] = useState(null);
   const [planError, setPlanError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -213,7 +215,8 @@ function Collect({ game, category, group, model }) {
   const shown = useRef(true);
   useEffect(() => () => { shown.current = false; }, []);
   const args = { ...(scopes.find((s) => s.key === scope) || scopes[0]).args, textures: opts.textures, animations: opts.animations,
-    player_animations: opts.player_animations, lod: opts.lod, lod_copies: opts.lod, packages };
+    player_animations: opts.player_animations, lod: opts.lod, lod_copies: opts.lod, packages,
+    ...(allTextures ? { all_textures: true } : {}) };
   const argsKey = JSON.stringify(args);
   const [reading, setReading] = useState("");
   useEffect(() => {
@@ -245,8 +248,10 @@ function Collect({ game, category, group, model }) {
       await loadOverview();
       if (shown.current) close(); // (run in the background: the dialog is gone already, and another may be open)
       const failed = r.failures ? ` · ${plural(r.failures, "model")} couldn't be read` : "";
-      toast(packages ? (r.written ? `Imported ${plural(r.written, "model")} as packages (${bytesText(r.bytes)})${failed}`
-          : `Everything was imported already${failed}`)
+      const tex = r.textures ? ` · ${r.textures.stored ? `${plural(r.textures.stored, "texture")} kept` : "every texture kept already"}${
+        r.textures.failures ? `, ${plural(r.textures.failures, "texture")} couldn't be read` : ""}` : "";
+      toast(packages ? (r.written || r.textures?.stored ? `Imported ${plural(r.written, "model")} as packages (${bytesText(r.bytes)})${tex}${failed}`
+          : `Everything was imported already${tex}${failed}`)
         : r.copied ? `Copied ${plural(r.copied, "file")} (${bytesText(r.bytes)}) into the app's library`
         : "Everything was already in the app's library", { ms: 6000, action: { label: "Show in folder", run: () => showInFolder(r.folder) } });
     } catch (e) {
@@ -269,7 +274,7 @@ function Collect({ game, category, group, model }) {
     <input type="checkbox" data-collect=${key} checked=${!!opts[key]} disabled=${busy} onChange=${(e) => setOpts({ ...opts, [key]: e.target.checked })} />
     <span>${label}${sub ? html`<small class="muted">${sub}</small>` : null}</span></label>`;
   const submitLabel = busy ? (packages ? "Importing…" : "Copying…")
-    : packages ? (plan && !plan.to_write && !plan.configurable ? "Already imported" : "Import")
+    : packages ? (plan && !plan.to_write && !plan.configurable && !plan.textures?.to_store ? "Already imported" : "Import")
     : plan && !plan.to_copy && plan.files ? "Already collected" : "Copy";
   return html`<${Dialog} title="Collect into the app" id="collect-dialog" onSubmit=${submit} busy=${busy || !plan} error=${error}
       submitLabel=${submitLabel} onCancel=${busy ? stop : null} onBackground=${busy ? close : null}>
@@ -298,13 +303,19 @@ function Collect({ game, category, group, model }) {
         : "each model's own skeleton and animations (its .anibnd)")}
       ${packages ? null : check("player_animations", "Player animations", "the player character's animations, which armour pieces and weapons are animated with; large")}
       ${check("lod", "Low-detail copies", "the _l models the game shows from afar")}
+      ${packages && scope === "game" ? check("all_textures", "Every texture of the game",
+        "not only those its models use: kept still compressed, for the texture picker and after the game is uninstalled") : null}
     </div>
     <div class="collect-plan" id="collect-plan" aria-live="polite">
       ${planError ? html`<p class="warn-text" id="collect-plan-error">${planError}</p>`
       : !plan ? html`<p class="muted" id="collect-plan-reading">Working out what to copy…${reading ? html`<br /><small>${reading}</small>` : null}</p>`
-      : plan.packages ? html`<p id="collect-plan-text"><b>${plural(plan.models, "model")}</b>
-          ${plan.present ? html`<span class="muted"> · ${plan.to_write ? `${plural(plan.present, "model")} imported already, ${plural(plan.to_write, "model")} to write` : "all imported already"}</span>` : null}</p>
+      : plan.packages ? html`<p id="collect-plan-text">${!plan.models ? html`<span class="muted">Every model of the game is in the app's library already.</span>` : html`<b>${plural(plan.models, "model")}</b>
+          ${plan.present ? html`<span class="muted"> · ${plan.to_write ? `${plural(plan.present, "model")} imported already, ${plural(plan.to_write, "model")} to write` : "all imported already"}</span>` : null}`}</p>
         ${plan.configurable ? html`<p class="muted" id="collect-plan-configurable">${plural(plan.configurable, "configurable model")} with every part and skin that can be chosen for ${plan.configurable > 1 ? "them" : "it"}</p>` : null}
+        ${plan.textures ? html`<p id="collect-plan-textures">${!plan.textures.listed ? html`<span class="muted">Dark STL can't list this game's textures on their own.</span>`
+          : plan.textures.to_store ? html`<b>${plural(plan.textures.to_store, "texture")}</b> to keep, about <b>${bytesText(plan.textures.bytes)}</b>${
+            plan.textures.present ? html`<span class="muted"> · ${plural(plan.textures.present, "texture")} kept already</span>` : null}`
+          : html`<span class="muted">Every one of the game's ${plural(plan.textures.listed, "texture")} is kept already.</span>`}</p>` : null}
         <p class="muted">Into <span class="note-path" id="collect-folder">${plan.folder}</span> · <a href=${routeHash("settings")} id="collect-change-folder" onClick=${close}>change where</a></p>`
       : html`<p id="collect-plan-text"><b>${plural(plan.models, "model")}</b> · ${plural(plan.files, "file")} · ${bytesText(plan.bytes)}
           ${plan.present ? html`<span class="muted"> · ${plan.to_copy ? `${plural(plan.present, "file")} already there, ${bytesText(plan.bytes_to_copy)} to copy` : "all already there"}</span>` : null}</p>

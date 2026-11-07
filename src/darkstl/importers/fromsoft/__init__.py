@@ -240,7 +240,7 @@ class FromSoftwareImporter(Importer):
     def shared_files(self, root: Path, game: str, player_animations: bool = False) -> list[RelatedFile]:
         return [RelatedFile(p, _kind_of(p)) for p in files.shared_files(Path(root), player_animations)]
 
-    def list_textures(self, folder: Path) -> list[tuple[str, str]]:
+    def list_textures(self, folder: Path, deep: bool = False) -> list[tuple[str, str]]:
         index = self._own_index(folder)
         if index is None:
             return []
@@ -254,6 +254,26 @@ class FromSoftwareImporter(Importer):
         if name.lower() not in held:
             raise FormatError(f"{name} isn't in {Path(rel).name} any more")
         return _texture(held[name.lower()])
+
+    def open_textures(self, folder: Path, refs: list[str]):
+        by_file: dict[str, list[str]] = {}
+        for ref in refs:
+            by_file.setdefault(ref.rpartition("|")[0], []).append(ref)
+        for rel, these in by_file.items():  # each texture pack read once for all the textures it holds
+            held: dict[str, files.TextureRef] = {}
+            try:
+                files.textures_in_file(held, Path(folder) / rel, {r.rpartition("|")[2].lower() for r in these})
+            except (FormatError, OSError) as exc:
+                for ref in these:
+                    yield ref, exc
+                continue
+            for ref in these:
+                name = ref.rpartition("|")[2]
+                found = held.get(name.lower())
+                if found is None:
+                    yield ref, FormatError(f"{name} isn't in {Path(rel).name} any more")
+                else:
+                    yield ref, _texture(found)
 
     @staticmethod
     def texture_pack(path: Path) -> dict[str, Texture]:

@@ -228,7 +228,7 @@ class REEngineImporter(Importer):
             return []
         return animation.REAnimations(mesh.bones, found, self.cache / "motions" if self.cache else None).files_used()
 
-    def list_textures(self, folder: Path) -> list[tuple[str, str]]:
+    def list_textures(self, folder: Path, deep: bool = False) -> list[tuple[str, str]]:
         index = files.index_for(Path(folder))
         if index is None or files._norm(index.root) != files._norm(Path(folder)):
             return []

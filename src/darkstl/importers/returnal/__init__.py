@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ...collect import RelatedFile
-from ...model import CatalogEntry, SourceModel
+from ...model import CatalogEntry, SourceModel, Texture
 from ..base import Importer, ScanProgress
 from ..borderlands import unreal4
 from . import catalog
@@ -47,6 +47,14 @@ class ReturnalImporter(Importer):
 
     def load(self, path: Path, variant: str | None = None, texture_dirs: tuple[str, ...] = ()) -> SourceModel:
         return unreal4.load(self.key, Path(path), [Path(d) for d in texture_dirs], GAME)
+
+    def list_textures(self, folder: Path, deep: bool = False) -> list[tuple[str, str]]:
+        if catalog.detect_game(folder) != GAME:
+            return []
+        return unreal4.list_textures(catalog.root_for(Path(folder)), GAME)
+
+    def open_texture(self, folder: Path, ref: str) -> Texture:
+        return unreal4.open_texture(catalog.root_for(Path(folder)), ref, GAME)
 
     def describe(self, path: Path) -> list[str] | None:
         return unreal4.describe(Path(path)) if catalog.is_returnal_path(path) else None

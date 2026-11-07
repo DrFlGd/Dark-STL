@@ -374,3 +374,29 @@ def test_mesh_uvs_run_down_the_texture(tmp_path):
     corners = tm.vertices[tm.faces]  # the plane's UV is its position over its size, so V = y / 2 in the file
     assert np.allclose(tm.corner_uvs[..., 0], corners[..., 0] / 2.0, atol=1e-3)
     assert np.allclose(tm.corner_uvs[..., 1], 1.0 - corners[..., 1] / 2.0, atol=1e-3)
+
+
+def test_textures_in_archives_are_listed_by_the_names_the_game_refers_to_them_by(tmp_path):
+    """An archive keeps hashes only; a texture is named by what refers to it (a material in another archive).
+    The scan keeps those names; an archive scanned before they were kept is read again only when asked."""
+    import json
+
+    from test_redengine import ALBEDO
+
+    from darkstl.textures import dds
+
+    root = archive_game(tmp_path / "Cyberpunk 2077", weapon_files())
+    imp = RedEngineImporter()
+    imp.cache = tmp_path / "cache"
+    imp.scan(root, "Cyberpunk 2077")
+    listed = dict(imp.list_textures(root))
+    assert ALBEDO in listed and listed[ALBEDO].startswith("archive|archive/pc/content/basegame_3_textures.archive|")
+    tex = imp.open_texture(root, listed[ALBEDO])
+    assert tex.name == ALBEDO and np.array_equal(dds.decode_dds(tex.raw()), tex.decode())
+    for f in (imp.cache / "archives").glob("*.json"):  # as an earlier version's scan left them
+        data = json.loads(f.read_text())
+        data.pop("textures")
+        f.write_text(json.dumps(data))
+    assert imp.list_textures(root) == []
+    assert dict(imp.list_textures(root, deep=True)) == listed
+    assert dict(imp.list_textures(root)) == listed  # kept for the next time

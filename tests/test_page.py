@@ -690,6 +690,35 @@ def test_cancel_stops_an_import_and_it_can_run_in_the_background(page, app, weap
     assert jobs[-1].state == "done" and len(list(root.rglob("package.json"))) > len(written)
 
 
+def test_collect_keeps_every_texture_of_the_game_after_saying_how_much(page, app, weapon_dir):  # noqa: F811
+    app.service.call("folder_add", {"path": str(weapon_dir)})
+    page.goto(app.url + "#/browse/Dark%20Souls%20III")
+    page.wait_for_selector("#place-collect", timeout=30000)
+    page.click("#place-collect")
+    page.wait_for_selector("#collect-plan-text", timeout=30000)
+    if page.query_selector("#collect-scope"):
+        page.select_option("#collect-scope", "game")
+        page.wait_for_selector("#collect-plan-text", timeout=30000)
+    assert not page.query_selector("#collect-plan-textures")
+    page.check('[data-collect="all_textures"]')
+    page.wait_for_selector("#collect-plan-textures", timeout=30000)
+    text = page.text_content("#collect-plan-textures")
+    assert "2 textures to keep, about" in text, text
+    page.click('[data-collect="all_textures"]')  # off again: the plan is only the models'
+    page.wait_for_selector("#collect-plan-textures", state="detached", timeout=30000)
+    page.check('[data-collect="all_textures"]')
+    page.wait_for_selector("#collect-plan-textures", timeout=30000)
+    page.click("#collect-dialog-ok")
+    page.wait_for_selector("#toast :text('as packages')", timeout=60000)
+    assert "kept" in page.text_content("#toast")
+    page.click("#place-collect")
+    page.wait_for_selector("#collect-plan-text", timeout=30000)
+    if page.query_selector("#collect-scope"):
+        page.select_option("#collect-scope", "game")
+    page.check('[data-collect="all_textures"]')
+    page.wait_for_selector("#collect-plan-textures :text('kept already')", timeout=30000)
+
+
 def test_export_a_painted_3mf(page, app, tmp_path):
     """The Export tab's painted 3MF: the suggested palette's swatches, a colour changed by hand, the colours shown
     on the model, and the file and its palette picture written."""
