@@ -27,6 +27,7 @@ from ..geometry.mesh import TriMesh, weld
 from ..model import BuildOption, CatalogEntry, Material, MeshOptions, Part, SourceModel, Texture
 from ..textures import dds
 from .base import Importer, ScanProgress
+from .loose import LoosePictures
 
 Y_UP_TO_Z_UP = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
 MM_GUESS_SIZE = 20.0  # models wider than this many units are taken to be in millimetres
@@ -242,7 +243,7 @@ def _describe_image(path: Path) -> str:
         return f"{im.width} x {im.height}, {im.format} {im.mode}"
 
 
-class WavefrontImporter(Importer):
+class WavefrontImporter(LoosePictures, Importer):
     key = "wavefront"
     name = "Wavefront OBJ"
     file_filter = "Wavefront OBJ (*.obj)"
@@ -259,6 +260,7 @@ class WavefrontImporter(Importer):
                 rel = path.parent.relative_to(folder).as_posix()
                 out.append(CatalogEntry(game, "Models", "" if rel == "." else rel, path.stem, path.stem, path,
                                         importer=self.key, packed=False))
+        self.note(folder, out)
         return out
 
     def load(self, path: Path, variant: str | None = None, texture_dirs: tuple[str, ...] = ()) -> SourceModel:

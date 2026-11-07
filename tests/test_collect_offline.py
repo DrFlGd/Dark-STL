@@ -64,8 +64,9 @@ def _everything(s: Service, game: str) -> dict:
 
 
 def collect_and_uninstall(home, game_dir: Path, game: str | None = None,  # noqa: F811
-                          packages: bool = False) -> tuple[dict, dict, dict]:
-    """(what the game showed, what its collected copy shows once the game is gone, the plan's summary)."""
+                          packages: bool = False, dds: bool = True) -> tuple[dict, dict, dict]:
+    """(what the game showed, what its collected copy shows once the game is gone, the plan's summary).
+    ``dds``: the game keeps its textures as DDS files, as packages then do."""
     s = _service(home)
     args = {"path": str(game_dir)}
     if game:
@@ -79,7 +80,7 @@ def collect_and_uninstall(home, game_dir: Path, game: str | None = None,  # noqa
         assert not done["failed"], done["failed"]
         assert done["written"] + done["configurable"] > 0
         kept = [f for f in Path(plan["folder"]).glob("assets/textures/**/*") if f.is_file()]
-        assert kept and all(f.suffix == ".dds" for f in kept), "textures are kept as the game keeps them"
+        assert kept and (all(f.suffix == ".dds" for f in kept) or not dds), "textures are kept as the game keeps them"
     s.call("folder_remove", {"path": str(game_dir)})
     gone = game_dir.with_name(game_dir.name + " (uninstalled)")
     bl_files._INDEXES.clear()
@@ -254,7 +255,8 @@ def _texture_key(name: str) -> str:
     return name.lower().replace("\\", "/")
 
 
-def keep_every_texture_and_uninstall(home, game_dir: Path, game: str | None = None) -> dict:  # noqa: F811
+def keep_every_texture_and_uninstall(home, game_dir: Path, game: str | None = None,  # noqa: F811
+                                     dds: bool = True) -> dict:
     """Import a game as packages with every texture it holds, take the game away, and check that each texture
     its folders listed is in the asset store, still compressed, and shows as it did from the game."""
     s = _service(home)
@@ -277,7 +279,7 @@ def keep_every_texture_and_uninstall(home, game_dir: Path, game: str | None = No
     assert kept["stored"] + kept["present"] == t["listed"]
     store = Path(plan["folder"]) / "assets" / "textures"
     files = [f for f in store.rglob("*") if f.is_file()]
-    assert files and all(f.suffix == ".dds" for f in files), "kept as the game keeps them"
+    assert files and (all(f.suffix == ".dds" for f in files) or not dds), "kept as the game keeps them"
     from darkstl.package import texture_base
 
     bases = {texture_base(x["name"]) for x in listed}

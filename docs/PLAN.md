@@ -34,6 +34,8 @@ importer and registering it in `importers/__init__.py`:
 | REDengine 4 (Cyberpunk 2077) | `.mesh` and `.xbm` in the CR2W container, loose (WolvenKit exports under their depot paths) or inside the game's `.archive` packs, read directly; `.mi`/`.mt` material chains; multilayered materials (`.mlsetup`, `.mltemplate`, `.mlmask`) blended into one colour and one normal map; `.app`/`.ent` appearance packages for weapon configurations; Kraken buffers through the game's `oo2ext_7_win64.dll`. Formats worked out with WolvenKit as the reference | Built on synthetic files; awaiting a check against the game |
 | RE Engine (Capcom) | `.mesh` models (every generation from RE2 to RE Requiem, streamed buffers included), `.mdf2` materials, `.tex` textures, read from extracted files or from `.pak` archives through a community file list. Games in `importers/reengine/games.py` | Synthetic RE2 and RE4 files; real files next |
 | Wavefront OBJ | OBJ + MTL with PNG/JPG/TGA/DDS textures, from any other tool | Done |
+| glTF | `.gltf` (with its `.bin` and pictures) and `.glb`, as Blender, FModel and most tools export: each mesh a part placed by its node, base colour and normal textures (green up), Y up turned to Z up; a model too big to be in metres read as centimetres. Skinned meshes in their bind pose | Synthetic files (0.35.0) |
+| ActorX PSK/PSKX | UModel's and FModel's exports of Unreal models: points, wedges, faces and materials, mirrored from Unreal's frame like the Unreal games' own models; each material's textures found by name beside the model, from UModel's `.mat`, FModel's `.json` and UModel's `.props.txt` material files, then from texture names like the material's. The skeleton isn't read | Synthetic files (0.35.0) |
 
 An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
 folder), `detect_game`, `variants` (files holding several models) and `describe`.
@@ -431,6 +433,9 @@ src/darkstl/
                 types), catalog.py (classifies models by the engine's folder layout), animation.py
                 (.motlist / .mot motions -> poses, skinning)
     wavefront.py  OBJ + MTL
+    gltf.py     glTF 2 (.gltf, .glb) from Blender, FModel and other tools
+    psk.py      ActorX .psk/.pskx from UModel and FModel, and their material files
+    loose.py    the loose pictures in a folder of other tools' models, listed for the texture picker
     package.py  model packages (see package.py), listed and opened like any game's models
   geometry/     TriMesh, subdivision, isotropic remesh, UV seam matching, closest-point queries,
                 displacement
@@ -554,7 +559,10 @@ The plan in the backlog entry below, built in stages:
 - [x] Borderlands 2 skins mixed for each part kept in packages, and mixed from them (0.33.0)
 - [x] The whole asset store: every texture of a game extracted, kept compressed (DDS, every importer),
       with a size estimate first (0.34.0)
-- [ ] Models from other tools (FModel, UModel, Blender exports: glTF, OBJ, PSK) imported as packages
+- [x] Models from other tools imported as packages (0.35.0): glTF (Blender, FModel) and ActorX PSK/PSKX
+      (UModel, FModel) importers beside OBJ, PSK materials' textures found through the tools' material
+      files, and every loose picture in such a folder offered by the texture picker and kept by "Every
+      texture of the game"
 
 ### Backlog (on hold)
 
