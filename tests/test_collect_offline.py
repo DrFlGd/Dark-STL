@@ -357,3 +357,13 @@ def test_returnal_animations(home, packages, tmp_path):  # noqa: F811
     before, after, _plan = collect_and_uninstall(home, root, packages=packages)
     assert any("A_Selene_Wave" in shown[0][0]["animations"] for shown in before.values())
     assert_same(before, after)
+
+
+def test_borderlands_2_animations(home, packages, tmp_path):  # noqa: F811
+    """A Borderlands 2 character's AnimSets come along (the packages they're read from), as files or packages."""
+    from test_borderlands_animation import make_game
+
+    root = make_game(tmp_path)
+    before, after, _plan = collect_and_uninstall(home, root, bl_files.GAME_BL2, packages=packages)
+    assert any("AnimSet_Siren: Wave" in shown[0][0]["animations"] for shown in before.values())
+    assert_same(before, after)

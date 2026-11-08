@@ -180,16 +180,25 @@ class BorderlandsImporter(Importer):
             parts.append(Part(name, mat, len(used), count))
         if m.lod_count == 0 or len(tris) == 0:
             notes.append(f"{m.name} has no geometry.")
+        anims = self._animations(pkg, m) if gestalt is None else None
+        skin = (m.bone_index, m.bone_weight) if anims is not None else None
 
         def build(options: MeshOptions):
+            positions, normals = m.positions, m.normals
             if options.pose is not None:
-                raise FormatError(f"{m.name} can't be posed yet")
+                if anims is None:
+                    raise FormatError(f"{m.name} has no animations to pose it with")
+                from .ue4.animset import skin as skin_vertices
+
+                name, frame = options.pose
+                matrices = anims.skin_matrices(name, anims.clamp(name, frame))
+                positions, normals = skin_vertices(m.positions, m.normals, m.bone_index, m.bone_weight, matrices)
             ranges = []
             for i, (_n, mat, first, count) in enumerate(pieces):
                 if options.parts is not None and i not in options.parts:
                     continue
                 ranges.append((tris[first // 3:first // 3 + count], mat, i))
-            return build_trimesh(m.positions, m.normals, uv, ranges)
+            return build_trimesh(positions, normals, uv, ranges, skin=skin if options.pose is None else None)
 
         info = [f"SkeletalMesh in {pkg.path.name} (Unreal 3, version {pkg.summary.version}/{pkg.summary.licensee})",
                 f"{len(m.positions):,} vertices, {len(tris):,} triangles, {len(m.sections)} sections, "
@@ -198,7 +207,26 @@ class BorderlandsImporter(Importer):
             info.append(f"gestalt definition {gestalt.export.path}: {len(gestalt.fragments)} fragments")
         return SourceModel(name=m.name, path=path, importer=self.key, build=build, game=game, parts=parts,
                            materials=mats, textures=textures, info=info, notes=notes,
-                           paint_uvs=gunpaint.uvs_of(path))
+                           paint_uvs=gunpaint.uvs_of(path), animations=anims,
+                           rig=unreal4._rig(anims) if anims is not None else None)
+
+    def _animations(self, pkg, m):
+        """The AnimSets' sequences that can pose an Unreal 3 skeletal mesh; None when it has no bones to move,
+        or when the game's AnimSets are known and none has its bones. Until they are known (the first time a
+        game's animations are listed) a mesh with bones is taken to have some."""
+        from .animsets import UE3Animations, index_for
+
+        if len(m.bones) < 2 or m.bone_index is None or m.bone_weight is None \
+                or len(m.bone_index) != len(m.positions):
+            return None
+        used = np.unique(m.bone_index[m.bone_weight > 0])
+        anims = UE3Animations(m.bones, index_for(files.game_root(pkg.path), self.cache), used)
+        try:
+            if anims.index.cached() and not anims.sets():
+                return None
+        except (FormatError, OSError, ValueError):
+            log.debug("Couldn't look up %s's AnimSets", m.name, exc_info=True)
+        return anims
 
     def _load_skin(self, path, pkg, spec: str, dirs, game) -> SourceModel:
         """A gun skin: the material of a Material part (``<package stem>:<part path>``), no geometry."""
@@ -335,10 +363,18 @@ class BorderlandsImporter(Importer):
             return unreal4.related_files(path, textures, animations, self.cache)
         if not files.is_member(path):
             return [RelatedFile(path, "model")]
-        package, _p, _c = files.split_member(path)
+        package, _p, cls = files.split_member(path)
         # the texture caches (.tfc, gigabytes each) and the other packages a model reads from are found by
         # opening it while Collect records what's read (record_reads): only those it uses are copied
-        return [RelatedFile(package, "model")]
+        out = [RelatedFile(package, "model")]
+        if animations and cls == "SkeletalMesh":  # the packages its AnimSets are read from
+            try:
+                anims = self.load(path).animations
+                used = anims.files_used() if hasattr(anims, "files_used") else []
+                out += [RelatedFile(Path(p), "animation") for p in used if Path(p) != package]
+            except Exception:  # noqa: BLE001 - a model whose animations can't be listed is collected without
+                log.debug("Collect: %s's animations couldn't be listed", path, exc_info=True)
+        return out
 
     def configurations(self, folder: Path, game: str, entries: list[CatalogEntry]) -> list:
         """Each gun type as a configuration of its gestalt mesh's parts (Borderlands 2, The Pre-Sequel)."""

@@ -8,6 +8,7 @@ Helpers write tagged properties and the binary parts of meshes, textures and mat
 
 from __future__ import annotations
 
+import math
 import struct
 import zlib
 
@@ -291,9 +292,12 @@ def pack_normal(n) -> int:
 
 
 def skeletal_data(b: PackageBuilder, materials: list[int], positions, normals, uvs, indices, sections,
-                  bones=(("Root", -1),), half_uvs: bool = True, extra_props=(), uv1=None) -> bytes:
+                  bones=(("Root", -1),), half_uvs: bool = True, extra_props=(), uv1=None, chunk_bones=(0,),
+                  influences=None) -> bytes:
     """SkeletalMesh export data (Borderlands 2 layout, version 832). ``sections``: (material, first index,
-    triangles). Every vertex is weighted fully to bone 0 of one chunk."""
+    triangles). ``bones``: (name, parent) or (name, parent, rotation xyzw, position). One chunk, whose bone
+    map is ``chunk_bones``; ``influences``: per vertex (chunk bone indices, weights 0..255), else every vertex
+    weighted fully to the chunk's first bone."""
     positions = np.asarray(positions, np.float32)
     n = len(positions)
     out = b.props(*extra_props)
@@ -301,8 +305,11 @@ def skeletal_data(b: PackageBuilder, materials: list[int], positions, normals, u
     out += struct.pack("<i", len(materials)) + b"".join(struct.pack("<i", m) for m in materials)
     out += b"\0" * 24
     out += struct.pack("<i", len(bones))
-    for name, parent in bones:
-        out += b.fname(name) + struct.pack("<I", 0) + struct.pack("<4f", 0, 0, 0, 1) + struct.pack("<3f", 0, 0, 0)
+    for bone in bones:
+        name, parent = bone[0], bone[1]
+        rot = bone[2] if len(bone) > 2 else (0, 0, 0, 1)
+        pos = bone[3] if len(bone) > 3 else (0, 0, 0)
+        out += b.fname(name) + struct.pack("<I", 0) + struct.pack("<4f", *rot) + struct.pack("<3f", *pos)
         out += struct.pack("<ii", 0, max(parent, 0)) + struct.pack("<i", 0)
     out += struct.pack("<i", 1)  # skeletal depth
     out += struct.pack("<i", 1)  # one LOD
@@ -311,10 +318,11 @@ def skeletal_data(b: PackageBuilder, materials: list[int], positions, normals, u
         out += struct.pack("<hhii", mat, 0, first, tris) + b"\0"
     idx = np.asarray(indices, np.uint16).tobytes()
     out += struct.pack("<i", 0) + b"\x02" + bulk_array(2, idx)
-    out += struct.pack("<i", 1) + struct.pack("<h", 0)  # used bones
+    bone_map = struct.pack("<i", len(chunk_bones)) + b"".join(struct.pack("<h", c) for c in chunk_bones)
+    out += bone_map  # used bones
     out += struct.pack("<i", 1)  # chunks
     out += struct.pack("<i", 0) + struct.pack("<i", 0) + struct.pack("<i", 0)  # first vertex, rigid, soft
-    out += struct.pack("<i", 1) + struct.pack("<h", 0)  # bones
+    out += bone_map  # the chunk's bones
     out += struct.pack("<iii", 0, n, 4)
     out += struct.pack("<ii", 0, n)  # f80, vertex count
     out += struct.pack("<i", 1) + b"\0"  # f24
@@ -327,7 +335,8 @@ def skeletal_data(b: PackageBuilder, materials: list[int], positions, normals, u
     verts = b""
     for i in range(n):
         verts += struct.pack("<II", pack_normal((1, 0, 0)), pack_normal(normals[i]))
-        verts += bytes([0, 0, 0, 0]) + bytes([255, 0, 0, 0])
+        joints, weights = influences[i] if influences is not None else ((0, 0, 0, 0), (255, 0, 0, 0))
+        verts += bytes(joints) + bytes(weights)
         verts += struct.pack("<3f", *positions[i])
         for uv in (uvs,) if uv1 is None else (uvs, uv1):
             if half_uvs:
@@ -385,3 +394,117 @@ def part_data(b: PackageBuilder, fragment: str, extra: list[str] = ()) -> bytes:
     for i, name in enumerate(extra):
         items.append(b.p_name("AdditionalGestaltModeSkeletalMeshNames", name, index=i))
     return b.props(*items)
+
+
+# --------------------------------------------------------------------------- animations
+
+POLAR_SCALE = 1.5717963
+
+
+def _polar(q, w_max: int, d2_max: int) -> tuple[int, int, int]:
+    """(w part, packed angles, sign bits) of Borderlands 2's polar encoding of a rotation (x, y, z, w)."""
+    q = np.asarray(q, np.float64)
+    q = q / np.linalg.norm(q)
+    if q[3] < 0:
+        q = -q
+    w = int(round(math.sqrt(max(0.0, 1.0 - q[3])) * w_max))
+    v = np.abs(q[:3])
+    d1 = 0
+    if np.linalg.norm(v) > 1e-12:
+        v = v / np.linalg.norm(v)
+        d2 = int(round(math.acos(min(1.0, v[2])) / POLAR_SCALE * d2_max))
+        d1 = d2 * d2 + (int(round(math.atan2(v[1], v[0]) / POLAR_SCALE * 2 * d2)) if d2 else 0)
+    signs = (int(q[0] < 0) << 31) | (int(q[1] < 0) << 30) | (int(q[2] < 0) << 29)
+    return w, d1, signs
+
+
+def polar48(q) -> bytes:
+    """Borderlands 2's ``FQuatPolarEncoded48``: w in a u16, then the angles and signs in a u32."""
+    w, d1, signs = _polar(q, 65535, 16383)
+    return struct.pack("<HI", w, d1 | signs)
+
+
+def polar32(q) -> int:
+    """Borderlands 2's ``FQuatPolarEncoded32``: w in bits 0-10, the angles in 11-28, signs above."""
+    w, d1, signs = _polar(q, 2047, 511)
+    return w | (d1 << 11) | signs
+
+
+def _float96(q) -> bytes:
+    q = np.asarray(q, np.float64)
+    q = q / np.linalg.norm(q)
+    return struct.pack("<3f", *(q[:3] if q[3] >= 0 else -q[:3]))
+
+
+def _pad(data: bytes) -> bytes:
+    return data + b"\x55" * ((-len(data)) % 4)
+
+
+def uniform_keys(tracks, rotation: str = "ACF_Float96NoW") -> tuple[bytes, list[int]]:
+    """A ``CompressedByteStream`` and ``CompressedTrackOffsets`` (4 per track) keyed at even spacing:
+    ``tracks`` are (translation keys, rotation keys); translations as plain floats, one rotation key as
+    Float96, more in ``rotation`` (Float96NoW or PolarEncoded48)."""
+    stream, offsets = b"", []
+    for trans, rots in tracks:
+        t_off = len(stream)
+        stream = _pad(stream + b"".join(struct.pack("<3f", *t) for t in trans))
+        q_off = len(stream)
+        if len(rots) == 1 or rotation == "ACF_Float96NoW":
+            stream += b"".join(_float96(q) for q in rots)
+        elif rotation == "ACF_PolarEncoded48":
+            stream += b"".join(polar48(q) for q in rots)
+        else:
+            raise ValueError(rotation)
+        stream = _pad(stream)
+        offsets += [t_off, len(trans), q_off, len(rots)]
+    return stream, offsets
+
+
+def per_track_keys(tracks) -> tuple[bytes, list[int]]:
+    """The same in Unreal 3's per-track layout (2 offsets per track; None leaves a part out): translations as
+    Float96 (format 1), rotations polar-encoded in Borderlands 2's numbering (10)."""
+    stream, offsets = b"", []
+    for trans, rots in tracks:
+        if trans is None:
+            offsets.append(-1)
+        else:
+            offsets.append(len(stream))
+            stream += struct.pack("<I", (1 << 28) | len(trans)) + b"".join(struct.pack("<3f", *t) for t in trans)
+            stream = _pad(stream)
+        if rots is None:
+            offsets.append(-1)
+        else:
+            offsets.append(len(stream))
+            stream += struct.pack("<I", (10 << 28) | len(rots)) + b"".join(polar48(q) for q in rots)
+            stream = _pad(stream)
+    return stream, offsets
+
+
+def anim_set_data(b: PackageBuilder, tracks: list[str], sequences: list[int], rotation_only: bool = True,
+                  use_translation=(), force_mesh_translation=()) -> bytes:
+    items = [b.p_array("TrackBoneNames", len(tracks), b"".join(b.fname(t) for t in tracks)),
+             b.p_array("Sequences", len(sequences), b"".join(struct.pack("<i", s) for s in sequences))]
+    if not rotation_only:
+        items.append(b.p_bool("bAnimRotationOnly", False))
+    if use_translation:
+        items.append(b.p_array("UseTranslationBoneNames", len(use_translation),
+                               b"".join(b.fname(t) for t in use_translation)))
+    if force_mesh_translation:
+        items.append(b.p_array("ForceMeshTranslationBoneNames", len(force_mesh_translation),
+                               b"".join(b.fname(t) for t in force_mesh_translation)))
+    return b.props(*items)
+
+
+def anim_sequence_data(b: PackageBuilder, name: str, frames: int, length: float, stream: bytes, offsets,
+                       rotation: str = "ACF_Float96NoW", key: str = "AKF_ConstantKeyLerp",
+                       additive: bool = False, translation: str = "ACF_None") -> bytes:
+    items = [b.p_name("SequenceName", name), b.p_float("SequenceLength", length), b.p_int("NumFrames", frames),
+             b.p_enum("TranslationCompressionFormat", "AnimationCompressionFormat", translation),
+             b.p_enum("RotationCompressionFormat", "AnimationCompressionFormat", rotation),
+             b.p_enum("KeyEncodingFormat", "AnimationKeyFormat", key),
+             b.p_array("CompressedTrackOffsets", len(offsets), b"".join(struct.pack("<i", o) for o in offsets))]
+    if additive:
+        items.append(b.p_bool("bIsAdditive", True))
+    out = b.props(*items)
+    out += struct.pack("<i", 0)  # RawAnimData: none (cooked)
+    return out + struct.pack("<i", len(stream)) + stream

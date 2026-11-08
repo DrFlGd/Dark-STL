@@ -30,6 +30,7 @@ LOOKUP_CLASSES = {"Material", "MaterialInstanceConstant", "MaterialInstanceTimeV
                   "TextureFlipBook"}
 KEEP_CLASSES = set(files.MODEL_CLASSES) | {"GestaltSkeletalMeshDefinition", "WeaponPartDefinition",
                                            "WeaponTypeDefinition"} | LOOKUP_CLASSES
+ANIM_CLASSES = {"AnimSet"}  # listed apart (package_contents(anim_sets=True)), for posing
 
 _WEAPON_KINDS = [
     (re.compile(r"pistol", re.I), "Pistols"), (re.compile(r"smg|submachine", re.I), "SMGs"),
@@ -51,32 +52,35 @@ def _cache_file(cache: Path | None, path: Path) -> Path | None:
     return cache / "packages" / f"{h}.json"
 
 
-def package_contents(path: Path, cache: Path | None = None) -> list[dict]:
-    """The objects of interest in one package: ``{"path", "canonical", "class", "name"}``."""
+def package_contents(path: Path, cache: Path | None = None, anim_sets: bool = False) -> list[dict]:
+    """The objects of interest in one package: ``{"path", "canonical", "class", "name"}``. ``anim_sets``: its
+    AnimSets instead (kept beside the rest, so lists kept before they were are only read again when asked)."""
     st = path.stat()
     cf = _cache_file(cache, path)
+    want = "anim_sets" if anim_sets else "objects"
     if cf is not None and cf.is_file():
         try:
             data = json.loads(cf.read_text("utf-8"))
             same = data.get("size") == st.st_size and data.get("mtime") == st.st_mtime_ns
-            if data.get("version") == VERSION and same:
-                return data["objects"]
+            if data.get("version") == VERSION and same and want in data:
+                return data[want]
         except (OSError, ValueError, KeyError):
             pass
     pkg = upk.open_package(path)
-    objects = []
+    found: dict[str, list[dict]] = {"objects": [], "anim_sets": []}
     for e in pkg.exports:
-        if e.class_name in KEEP_CLASSES and not e.name.startswith("Default__"):
-            objects.append({"path": e.path, "canonical": files.canonical_path(pkg, e), "class": e.class_name,
-                            "name": e.name})
+        kind = "objects" if e.class_name in KEEP_CLASSES else "anim_sets" if e.class_name in ANIM_CLASSES else None
+        if kind is not None and not e.name.startswith("Default__"):
+            found[kind].append({"path": e.path, "canonical": files.canonical_path(pkg, e), "class": e.class_name,
+                                "name": e.name})
     if cf is not None:
         try:
             cf.parent.mkdir(parents=True, exist_ok=True)
             cf.write_text(json.dumps({"version": VERSION, "size": st.st_size, "mtime": st.st_mtime_ns,
-                                      "package": str(path), "objects": objects}), "utf-8")
+                                      "package": str(path), **found}), "utf-8")
         except OSError:
             pass
-    return objects
+    return found[want]
 
 
 class ObjectIndex:
