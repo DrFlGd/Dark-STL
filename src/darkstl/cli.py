@@ -227,10 +227,26 @@ def _export_options(args, model, mesh):
         from .paint import PaintSettings
 
         palette = [c.strip() for c in (args.palette or "").split(",") if c.strip()] or None
+        sources = {}
+        for item in args.paint_texture or []:
+            mat, sep, key = item.partition("=")
+            if not sep or not mat.strip().isdigit():
+                raise SystemExit(f"--paint-texture takes MATERIAL=TEXTURE (material number), not '{item}'")
+            sources[str(int(mat))] = key.strip() or "none"
         opts.paint = PaintSettings(colours=args.colours, palette=palette, print_height_mm=args.print_height,
-                                   feature_mm=args.feature, cleanup=args.cleanup)
+                                   feature_mm=args.feature, cleanup=args.cleanup, tolerance=args.tolerance,
+                                   min_share=args.min_share, brightness=args.brightness, contrast=args.contrast,
+                                   saturation=args.saturation, sources=sources or None)
         opts.progress = _progress
-    if ext in (".obj", ".glb", ".3mf") and model is not None:
+        if model is not None:
+            from .paint import colour_textures
+
+            try:
+                opts.textures = colour_textures(model, mesh, opts.paint)
+            except ValueError as exc:
+                raise SystemExit(f"error: {exc}") from None
+            return opts
+    if ext in (".obj", ".glb") and model is not None:
         for m in np.unique(mesh.face_material):
             m = int(m)
             key = model.materials[m].albedo if m < len(model.materials) else None
@@ -484,6 +500,17 @@ def build_parser() -> argparse.ArgumentParser:
                         help="painted 3MF: smallest colour feature kept at that print height (default 0.5)")
         sp.add_argument("--cleanup", choices=["none", "light", "strong"], default="light",
                         help="painted 3MF: specks removed from the reduced textures (default light)")
+        sp.add_argument("--tolerance", type=float, default=0.0, metavar="N",
+                        help="painted 3MF: suggested colours closer than this (0-50, Oklab distance x 100) are "
+                             "merged, so there can be fewer than --colours (default 0)")
+        sp.add_argument("--min-share", type=float, default=0.0, metavar="PCT",
+                        help="painted 3MF: suggested colours covering less than this %% of the surface are dropped")
+        sp.add_argument("--brightness", type=float, default=0.0, help="painted 3MF: -1..1 added to the texture colours")
+        sp.add_argument("--contrast", type=float, default=1.0, help="painted 3MF: texture contrast, 0-3 (default 1)")
+        sp.add_argument("--saturation", type=float, default=1.0, help="painted 3MF: texture saturation, 0-3 (default 1)")
+        sp.add_argument("--paint-texture", action="append", metavar="MAT=TEXTURE",
+                        help="painted 3MF: paint material number MAT from this texture instead of its colour "
+                             "texture (MAT= alone: not painted); repeat for more")
         sp.add_argument("--cut", action="append", metavar="AXIS=MM[:JOINT]",
                         help="cut into pieces across an axis at that many mm (or AXIS=50%%), with a joint: flat, pegs, "
                              "dowels, magnets or key (default pegs); repeat for more cuts. Each piece is written as "

@@ -44,7 +44,8 @@ export const ui = createStore({
 let prefs = null;
 const KEY = "ds-ui";
 const KEPT = ["skin", "theme", "layout", "sort", "lod", "cardSize", "open", "navCollapsed", "inspector", "inspectorTab",
-  "inspectorWidth", "catPanel", "catPanelWidth", "enhance", "exportOpts", "view", "cutOpts", "cutPlans", "configChoices"];
+  "inspectorWidth", "catPanel", "catPanelWidth", "enhance", "exportOpts", "view", "cutOpts", "cutPlans", "configChoices",
+  "paintOpts", "paintSources"];
 
 /** Load saved preferences (call once the platform store exists). */
 export function initState(store) {

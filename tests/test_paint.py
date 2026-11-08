@@ -102,6 +102,63 @@ def test_quantize_and_cleanup():
     assert strong[:, 128:].min() == 1
 
 
+def test_tolerance_merges_close_colours_and_small_ones_are_dropped():
+    # two reds a little apart, a blue, and a yellow stripe on 3% of the surface
+    img = halves()
+    img[:, :64, :3] = (200, 10, 10)
+    img[:8, 128:, :3] = (255, 255, 0)
+    four = paint.suggest_palette(square(), {0: img}, 4)[0]
+    assert len(four) == 4
+    merged, coverage = paint.suggest_palette(square(), {0: img}, 4, settings=PaintSettings(tolerance=8))
+    hexes = [paint.hex_colour(c) for c in merged]
+    assert len(merged) == 3 and "#0202DE" in hexes and "#FEFE02" in hexes  # the reds are one colour now
+    assert coverage[0] == pytest.approx(0.5, abs=0.02) and coverage.sum() == pytest.approx(1)
+    dropped, coverage = paint.suggest_palette(square(), {0: img}, 4, settings=PaintSettings(tolerance=8, min_share=5))
+    assert [paint.hex_colour(c) for c in dropped][1:] == ["#0202DE"] and coverage[1] == pytest.approx(0.5, abs=0.02)
+    # every colour under the share: the biggest one stays
+    assert len(paint.suggest_palette(square(), {0: img}, 4, settings=PaintSettings(min_share=50))[0]) == 1
+
+
+def test_brightness_contrast_and_saturation_change_the_colours():
+    img = halves(left=(120, 60, 60), right=(40, 40, 40))
+    base = paint.suggest_palette(square(), {0: img}, 2)[0]
+    brighter = paint.suggest_palette(square(), {0: img}, 2, settings=PaintSettings(brightness=0.2))[0]
+    assert (brighter.astype(int) - base.astype(int)).min() > 40
+    grey = paint.suggest_palette(square(), {0: img}, 2, settings=PaintSettings(saturation=0))[0]
+    assert all(int(c.max()) - int(c.min()) <= 2 for c in grey)
+    punchy = paint.suggest_palette(square(), {0: img}, 2, settings=PaintSettings(contrast=2))[0]
+    assert np.ptp(punchy[:, 0].astype(int)) > np.ptp(base[:, 0].astype(int))
+    # the texels are changed the same way before they take a filament: dark grey is nearer black once darkened
+    palette = np.array([[0, 0, 0], [80, 80, 80]], np.uint8)
+    assert paint.quantize(img, palette)[0, 200] == 1
+    assert paint.quantize(img, palette, PaintSettings(brightness=-0.15))[0, 200] == 0
+
+
+def test_materials_are_painted_from_the_texture_chosen():
+    class Tex:
+        def __init__(self, img):
+            self.img = img
+
+        def decode(self):
+            return self.img
+
+    class Mat:
+        def __init__(self, albedo):
+            self.albedo = albedo
+
+    class Model:
+        materials = [Mat("a"), Mat("b")]
+        textures = {"a": Tex(halves()), "b": Tex(halves(left=(0, 200, 0))), "c": Tex(halves(left=(9, 9, 9)))}
+
+    mesh = square()
+    mesh.face_material = np.array([0, 1])
+    assert {m: int(t[0, 0, 1]) for m, t in paint.colour_textures(Model, mesh).items()} == {0: 0, 1: 200}
+    got = paint.colour_textures(Model, mesh, PaintSettings(sources={"0": "c", "1": "none"}))
+    assert list(got) == [0] and got[0][0, 0, 0] == 9
+    with pytest.raises(ValueError, match="No texture 'x'"):
+        paint.colour_textures(Model, mesh, PaintSettings(sources={"1": "x"}))
+
+
 # ---------------------------------------------------------------------------
 # painting
 
@@ -340,6 +397,18 @@ def test_the_app_suggests_a_palette_previews_and_exports(two_colour_game, tmp_pa
     assert service.call("paint_palette", {"sid": m["sid"], "colours": 2}) is pal  # kept
     with pytest.raises(Exception, match="between 2 and"):
         service.call("paint_palette", {"sid": m["sid"], "colours": 40})
+    # painted from another texture (here the normal map: blue-violet), or a material left unpainted
+    normal = next(t["key"] for t in m["textures"] if t["key"] != m["materials"][0]["albedo"])
+    other = service.call("paint_palette", {"sid": m["sid"], "settings": json.dumps({"colours": 2, "sources": {"0": normal}})})
+    assert other["colours"] != pal["colours"]
+    with pytest.raises(Exception, match="not painted"):
+        service.call("paint_palette", {"sid": m["sid"], "settings": {"colours": 2, "sources": {"0": "none"}}})
+    with pytest.raises(Exception, match="No texture 'nope'"):
+        service.call("paint_palette", {"sid": m["sid"], "settings": {"colours": 2, "sources": {"0": "nope"}}})
+    with pytest.raises(Exception, match="tolerance"):
+        service.call("paint_palette", {"sid": m["sid"], "settings": {"colours": 2, "tolerance": 90}})
+    grey = service.call("paint_palette", {"sid": m["sid"], "settings": {"colours": 2, "saturation": 0}})
+    assert all(c[1:3] == c[3:5] == c[5:7] for c in grey["colours"])
     # the preview texture: the albedo in the palette's colours
     png = service.call("paint_texture", {"sid": m["sid"], "key": m["materials"][0]["albedo"], "max": "64",
                                          "settings": json.dumps({"colours": 2, "palette": ["#FF0000", "#0000FF", "#00FF00"]})})
@@ -417,3 +486,9 @@ def test_cli_exports_a_painted_3mf(two_colour_game, tmp_path, capsys):
     assert len(pieces) == 2 and out.with_name("cut_palette.png").exists()
     assert all(read_3mf(p)[3] == ["#DE0202", "#0202DE"] for p in pieces)
     assert read_3mf(tmp_path / "cli" / "p.3mf")[3] == ["#FF0000", "#00FF00"]
+    out = tmp_path / "cli" / "grey.3mf"
+    assert main(["export", str(two_colour_game / "parts" / "wp_a_0300.partsbnd.dcx"), "-o", str(out), "--colours", "2",
+                 "--saturation", "0", "--brightness", "0.1", "--tolerance", "5", "--min-share", "1"]) == 0
+    assert all(c[1:3] == c[3:5] == c[5:7] for c in read_3mf(out)[3])
+    with pytest.raises(SystemExit, match="No texture 'nope'"):
+        main(["export", str(two_colour_game / "parts" / "wp_a_0300.partsbnd.dcx"), "-o", str(out), "--paint-texture", "0=nope"])

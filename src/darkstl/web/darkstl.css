@@ -203,6 +203,9 @@ a.chip-btn.on { background: var(--sel); }
 .paint-options input[type="range"] { flex: 1; }
 .paint-options .num-short { width: 64px; }
 .paint-options > small, .paint-options .field-block > small { display: block; }
+.paint-options .mat-row.paint-src { grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); margin-top: 4px; }
+.paint-options .slider-value { font-weight: 600; margin-left: 4px; }
+.paint-options .more-settings > .field-block { margin-top: 8px; }
 .paint-swatches { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
 .paint-swatch { position: relative; display: inline-flex; align-items: flex-end; width: 44px; height: 36px; border-radius: var(--radius-s); border: 1px solid #0004; box-shadow: inset 0 0 0 1px #fff5; cursor: pointer; overflow: hidden; }
 .paint-swatch > span { font-size: 11px; font-weight: 700; line-height: 1; padding: 2px 4px; margin: 0 0 3px 3px; border-radius: 3px; background: #fffc; color: #222; }
