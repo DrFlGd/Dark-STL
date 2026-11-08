@@ -217,7 +217,8 @@ formats) are decoded in the 4.12-4.22, 4.23-4.24 and 4.25+ layouts; ACL-compress
 are recognised and reported. Rotations come from the animation; translations are the mesh's bone
 offsets moved by the animation's change from the skeleton's reference pose; the root bone keeps
 its place on the floor (only its height follows); additive animations are applied to the bind
-pose. Without type mappings (Returnal), the skeleton's and animation's own data are found past
+pose. An animation's own data starts after its object GUID flag and its skeleton's GUID
+(`UAnimationAsset::Serialize`; read without it too). Without type mappings (Returnal), the skeleton's and animation's own data are found past
 their properties by signature, the frame count from the codec's header and the frame rate taken
 as 30.
 

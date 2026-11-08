@@ -153,19 +153,23 @@ def _skeleton_start(pkg, data: bytes, q: int) -> bool:
 
 
 def _anim_start(pkg, data: bytes, q: int) -> bool:
-    """An ``AnimSequence``'s compressed data: strip flags, the flag that it follows, a track map of bones."""
-    if q + 2 + 4 + 4 + 4 > len(data):
-        return False
-    g, c = data[q], data[q + 1]
-    if not g & 1 or g > 3 or c > 7 or struct.unpack_from("<i", data, q + 2)[0] != 1:
-        return False
-    from .anim import read_compressed
+    """An ``AnimSequence``'s own data: the skeleton's GUID (left out by some games), then its compressed data:
+    strip flags, the flag that it follows, a track map of bones."""
+    from .anim import SKELETON_GUID, read_compressed
 
-    try:
-        found = read_compressed(Reader(data, pkg, pos=q), pkg)
-    except (FormatError, struct.error, ValueError, IndexError, UnicodeDecodeError):
-        return False
-    return bool(found.track_bones)
+    for at in (q + SKELETON_GUID, q):
+        if at + 2 + 4 + 4 + 4 > len(data):
+            continue
+        g, c = data[at], data[at + 1]
+        if not g & 1 or g > 3 or c > 7 or struct.unpack_from("<i", data, at + 2)[0] != 1:
+            continue
+        try:
+            found = read_compressed(Reader(data, pkg, pos=at), pkg)
+        except (FormatError, struct.error, ValueError, IndexError, UnicodeDecodeError):
+            continue
+        if found.track_bones:
+            return True
+    return False
 
 
 _STARTS = {"SkeletalMesh": _skeletal_start, "StaticMesh": _static_start, "Texture2D": _texture_start,

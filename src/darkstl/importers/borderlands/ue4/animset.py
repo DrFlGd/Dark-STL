@@ -39,6 +39,7 @@ from .asset import Package
 log = logging.getLogger(__name__)
 
 INDEX_VERSION = 2
+INFO_VERSION = 2  # 2: animations read past the skeleton's GUID (rows kept before said they couldn't be read)
 ANIM_CLASSES = ("AnimSequence",)
 # names an animation package goes by: Epic's style guide (A_, AS_) and others' (Anim_, ANIM_, AN_...)
 ANIM_NAME = re.compile(r"^(a|as|an|am|anm|ani|anim|anims|animation|seq)_", re.I)
@@ -188,7 +189,8 @@ class AnimIndex:
                 data = json.loads(f.read_text("utf-8"))
                 if data.get("fingerprint") == self._fingerprint:
                     files = data.get("files", {})
-                    self._info = data.get("info", {})
+                    if data.get("info_version") == INFO_VERSION:
+                        self._info = data.get("info", {})
                     self._wide = bool(data.get("wide"))
                     self._stopped = str(data.get("stopped") or "")
             except (OSError, ValueError):
@@ -255,6 +257,7 @@ class AnimIndex:
             f.parent.mkdir(parents=True, exist_ok=True)
             tmp = f.with_suffix(".tmp")
             tmp.write_text(json.dumps({"fingerprint": self._fingerprint, "files": self._files, "info": self._info,
+                                       "info_version": INFO_VERSION,
                                        "wide": self._wide, "stopped": self._stopped}), "utf-8")
             tmp.replace(f)
             self._dirty = False

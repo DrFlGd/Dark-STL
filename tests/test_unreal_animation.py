@@ -279,3 +279,26 @@ def test_collect_copies_the_animations(tmp_path):
     vfs.forget(out)
     loose = {e.stem: e for e in imp.scan(out, GAME)}
     _check_wave(open_model(loose["SK_Selene_Suit"].path))
+
+
+def test_a_game_that_leaves_out_the_skeleton_guid(tmp_path, monkeypatch):
+    """Animations are read past the skeleton's GUID every animation asset writes, and without it too."""
+    monkeypatch.setattr(A, "SKELETON_GUID", b"")
+    imp, path = _suit(tmp_path)
+    _check_wave(imp.load(path))
+
+
+def test_animations_kept_as_unreadable_before_are_read_again(tmp_path):
+    import json
+
+    imp, path = _suit(tmp_path)
+    imp.load(path).animations.list()
+    kept = next((tmp_path / "cache").glob("unreal-animations-*.json"))
+    data = json.loads(kept.read_text())
+    assert data["info"]
+    for row in data["info"].values():  # as 0.36.0-0.38.0 kept them
+        row[:] = [0, 0.0, None, "", "not an animation's data", []]
+    del data["info_version"]
+    kept.write_text(json.dumps(data))
+    vfs.forget(tmp_path / "Returnal")
+    _check_wave(imp.load(path))
