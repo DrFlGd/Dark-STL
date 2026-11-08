@@ -201,6 +201,23 @@ folder for `cha000`, Village's `ch01`): those of its own animation folders first
 after, and only motion files that move one of the model's bones are offered. What each motion
 file holds is kept in the importer's cache. Root bones' translation is left out, as above.
 
+Unreal 4/5 skeletal meshes (Returnal, Borderlands 3/Wonderlands/4) are posed from the
+`AnimSequence` assets of their `Skeleton` (`borderlands/ue4/anim.py`, `animset.py`, after UE Viewer
+and CUE4Parse). The mesh's skin weights (`FSkinWeightVertexBuffer`, through each section's bone
+map) and reference skeleton come from the mesh; the skeleton asset's reference skeleton maps each
+animation's tracks (`CompressedTrackToSkeletonMapTable`) to bone names, matched to the mesh's.
+Animations are found by reading the header of every package that looks like one (name or folder)
+and keeping those importing the mesh's skeleton, cached per game
+(`unreal-animations-<hash>.json`, with each animation's length). Keys in Unreal's own codecs
+(constant or variable key spacing, per-track compression; float, fixed-point and interval
+formats) are decoded in the 4.12-4.22, 4.23-4.24 and 4.25+ layouts; ACL-compressed animations
+are recognised and reported. Rotations come from the animation; translations are the mesh's bone
+offsets moved by the animation's change from the skeleton's reference pose; the root bone keeps
+its place on the floor (only its height follows); additive animations are applied to the bind
+pose. Without type mappings (Returnal), the skeleton's and animation's own data are found past
+their properties by signature, the frame count from the codec's header and the frame rate taken
+as 30.
+
 The library groups models by their FromSoftware naming:
 
 | Prefix | Category | Grouped by |
