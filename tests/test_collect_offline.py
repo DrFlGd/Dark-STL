@@ -347,3 +347,13 @@ def test_every_texture_of_unreal_games(home, tmp_path):  # noqa: F811
     for root in (wonderlands(tmp_path, 426, 11, compress=True, exe="Wonderlands.exe"), _bl4(tmp_path / "bl4"),
                  returnal(tmp_path / "returnal")):
         keep_every_texture_and_uninstall(home, root)
+
+
+def test_returnal_animations(home, packages, tmp_path):  # noqa: F811
+    """A Returnal character's animations (its Skeleton and AnimSequence assets) come along, as files or packages."""
+    from test_unreal_animation import _game as animated
+
+    root = animated(tmp_path)
+    before, after, _plan = collect_and_uninstall(home, root, packages=packages)
+    assert any("A_Selene_Wave" in shown[0][0]["animations"] for shown in before.values())
+    assert_same(before, after)

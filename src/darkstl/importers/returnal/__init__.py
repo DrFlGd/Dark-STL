@@ -46,7 +46,7 @@ class ReturnalImporter(Importer):
         return catalog.is_returnal_path(path) and unreal4.can_open(path)
 
     def load(self, path: Path, variant: str | None = None, texture_dirs: tuple[str, ...] = ()) -> SourceModel:
-        return unreal4.load(self.key, Path(path), [Path(d) for d in texture_dirs], GAME)
+        return unreal4.load(self.key, Path(path), [Path(d) for d in texture_dirs], GAME, self.cache)
 
     def list_textures(self, folder: Path, deep: bool = False) -> list[tuple[str, str]]:
         if catalog.detect_game(folder) != GAME:
@@ -75,7 +75,7 @@ class ReturnalImporter(Importer):
 
     def related_files(self, path: Path, textures: bool = True, animations: bool = True,
                       lod: bool = False) -> list[RelatedFile]:
-        return unreal4.related_files(Path(path), textures)
+        return unreal4.related_files(Path(path), textures, animations, self.cache)
 
 
 __all__ = ["GAME", "ReturnalImporter"]

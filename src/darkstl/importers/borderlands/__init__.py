@@ -135,7 +135,7 @@ class BorderlandsImporter(Importer):
     def load(self, path: Path, variant: str | None = None, texture_dirs: tuple[str, ...] = ()) -> SourceModel:
         path = Path(path)
         if unreal4.is_asset_path(path):
-            return unreal4.load(self.key, path, [Path(d) for d in texture_dirs])
+            return unreal4.load(self.key, path, [Path(d) for d in texture_dirs], cache=self.cache)
         files.use_cache(self.cache)
         pkg, e, cls = _open(path)
         dirs = [Path(d) for d in texture_dirs]
@@ -332,7 +332,7 @@ class BorderlandsImporter(Importer):
                       lod: bool = False) -> list[RelatedFile]:
         path = Path(path)
         if unreal4.is_asset_path(path):
-            return unreal4.related_files(path, textures)
+            return unreal4.related_files(path, textures, animations, self.cache)
         if not files.is_member(path):
             return [RelatedFile(path, "model")]
         package, _p, _c = files.split_member(path)

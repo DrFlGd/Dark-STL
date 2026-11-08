@@ -133,6 +133,13 @@ neither.
   materials' settings instead (game folder or *Settings > Unreal games*). Dark STL doesn't include
   Returnal's AES key: if the paks are encrypted, paste the key there too and rescan.
 
+- **Posing Unreal 4/5 models** (Returnal, Borderlands 3, Wonderlands, Borderlands 4): a skeletal
+  mesh can be posed on the Pose tab with every `AnimSequence` made for its `Skeleton` asset. The
+  first time a game's animations are listed, Dark STL reads the header of each package that looks
+  like an animation (named `A_`, `AS_`, `Anim_`... or in an animation folder) and keeps what it found.
+  Animations compressed with Unreal's own codecs are read (4.12 to 5.x); those compressed with the
+  ACL plugin are counted on the Pose tab but not read yet.
+
 ## Using the app
 
 Start *Dark STL* from the Start menu, or from a source install:

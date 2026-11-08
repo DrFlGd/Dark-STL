@@ -21,8 +21,9 @@ def to_export_frame(positions: np.ndarray) -> np.ndarray:
 
 
 def build_trimesh(positions: np.ndarray, normals: np.ndarray | None, uvs: np.ndarray | None, ranges: list,
-                  do_weld: bool = True) -> TriMesh:
-    """``ranges``: (triangles (T, 3) vertex indices, material index, group index) per piece kept."""
+                  do_weld: bool = True, skin: tuple[np.ndarray, np.ndarray] | None = None) -> TriMesh:
+    """``ranges``: (triangles (T, 3) vertex indices, material index, group index) per piece kept. ``skin``:
+    per vertex its bones and weights, kept on the mesh as ``metadata["skin"]`` (see :class:`darkstl.model.Rig`)."""
     p = to_export_frame(positions)
     n = None if normals is None else np.asarray(normals, np.float64) * MIRROR
     faces, mats, groups = [], [], []
@@ -40,6 +41,8 @@ def build_trimesh(positions: np.ndarray, normals: np.ndarray | None, uvs: np.nda
     uv = np.zeros((len(p), 2), np.float32) if uvs is None else np.asarray(uvs, np.float32)
     mesh = TriMesh(p, f, uv[f], np.concatenate(mats), np.concatenate(groups),
                    corner_normals=None)
+    if skin is not None and len(skin[0]) == len(p):
+        mesh.metadata["skin"] = (np.asarray(skin[0], np.int32), np.asarray(skin[1], np.float32))
     if n is not None:
         length = np.linalg.norm(n, axis=1, keepdims=True)
         n = n / np.where(length > 0, length, 1)
