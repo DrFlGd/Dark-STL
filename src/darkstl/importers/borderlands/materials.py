@@ -34,7 +34,7 @@ _NAME_RULES = [
      NORMAL),
     (re.compile(r"(_|^)(d|dif|diff|diffuse|alb|albedo|c|col|color|colour|bc|basecolou?r|base_colou?r)(_|\d*$)",
                 re.I), ALBEDO),
-    (re.compile(r"(_|^)(s|spec|specular|m|mask|msk|masks|g|gloss|orm|mra|rma|arm|mr|rm|r|rough|roughness)(_|\d*$)",
+    (re.compile(r"(_|^)(s|spec|specular|m|mask|msk|masks|g|gloss|orm|mra|rma|arm|mr|rm|r|rough|roughness|metal|metalness|metallic)(_|\d*$)",
                 re.I), SPECULAR),
     (re.compile(r"(_|^)(h|height|disp|bump)(_|\d*$)", re.I), HEIGHT),
 ]

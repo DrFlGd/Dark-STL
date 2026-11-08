@@ -320,8 +320,8 @@ def test_generic_textures_of_master_materials_are_not_taken_for_a_models_own():
                      "T_Pinpointer_ORM": "specular", "T_Pinpointer_Normal": "normal"}
 
 
-@pytest.mark.parametrize("normal", ["T_KineticRifle_Normal", "T_KineticRifle_N", "T_KineticRifle_Normals",
-                                    "T_KineticRifle_NRM"])
+@pytest.mark.parametrize("normal", ["T_KineticRifle_Comp", "T_KineticRifle_Normal", "T_KineticRifle_N",
+                                    "T_KineticRifle_Normals", "T_KineticRifle_NRM"])
 def test_a_normal_map_the_material_doesnt_name_is_found_beside_its_colour_map(tmp_path, monkeypatch, normal):
     from darkstl.importers.borderlands.ue4 import unversioned
 
@@ -344,3 +344,12 @@ def test_a_normal_map_the_material_doesnt_name_is_found_beside_its_colour_map(tm
     assert mat.albedo and mat.albedo.endswith("T_KineticRifle_BaseColor"), mat.details
     assert mat.normal and mat.normal.endswith(normal), mat.details
     assert any(d.startswith("normal (beside T_KineticRifle_BaseColor)") for d in mat.details), mat.details
+
+
+def test_returnal_comp_textures_are_normal_maps_only_in_returnal():
+    from darkstl.importers.borderlands.ue4.materials import _name_role
+
+    assert _name_role("T_KineticPistol_A_Comp", "Returnal") == "normal"
+    assert _name_role("T_KineticPistol_A_Comp", "Borderlands 3") == "other"
+    assert _name_role("T_KineticPistol_A_Metalness", "Returnal") == "specular"
+    assert _name_role("T_KineticPistol_AO", "Returnal") == "other"

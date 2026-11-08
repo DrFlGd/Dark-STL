@@ -156,7 +156,7 @@ def resolve_material(ref: ObjectRef) -> ResolvedMaterial:
             out.details.append(f"{name}: {ref_t.name} couldn't be read")
             continue
         if role == OTHER:
-            role = role_from_texture(tex)
+            role = _texture_role(tex)
             if role == OTHER or role in out.roles:
                 continue
         out.roles[role] = tex
@@ -172,7 +172,7 @@ def resolve_material(ref: ObjectRef) -> ResolvedMaterial:
         tex = texture(ref_t)
         if tex is None:
             continue
-        role = role_from_texture(tex)
+        role = _texture_role(tex)
         if role != OTHER and role not in out.roles:
             out.roles[role] = tex
             out.guessed = True
@@ -183,6 +183,29 @@ def resolve_material(ref: ObjectRef) -> ResolvedMaterial:
 
 
 _SUFFIX = re.compile(r"_[A-Za-z]+\d*$")
+
+# Texture names particular to one game's studio, read before the usual suffixes. Returnal (Housemarque) keeps
+# its normal maps as ``_Comp``: the normal's X and Y in red and green, a mask in blue (Displace only reads red
+# and green, so the mask doesn't disturb it).
+_GAME_NAMES = {
+    "Returnal": [(re.compile(r"_comp\d*$", re.I), NORMAL)],
+}
+
+
+def _name_role(name: str, game: str | None) -> str:
+    for rx, role in _GAME_NAMES.get(game or "", ()):
+        if rx.search(name or ""):
+            return role
+    return role_from_name(name)
+
+
+def _texture_role(tex) -> str:
+    """A texture's role from what it is (a normal map's compression) and its name, the game's own names first."""
+    game = getattr(getattr(tex.pkg, "files", None), "game", None)
+    for rx, role in _GAME_NAMES.get(game or "", ()):
+        if rx.search(tex.name or ""):
+            return role
+    return role_from_texture(tex)
 
 
 def _folder_index(files) -> dict[str, list[str]]:
@@ -208,17 +231,18 @@ def _siblings(pkg: Package, out: ResolvedMaterial) -> None:
     if files is None or not hasattr(files, "packages"):
         return
     index = _folder_index(files)
+    game = getattr(files, "game", None)
     for have in list(out.roles.values()):
         if all(r in out.roles for r in (ALBEDO, NORMAL)):
             return
         name = getattr(have.pkg, "name", "") or ""
         folder, _, leaf = name.lower().rpartition("/")
-        if not leaf or role_from_name(leaf) == OTHER:
+        if not leaf or _name_role(leaf, game) == OTHER:
             continue
         stem = _SUFFIX.sub("", leaf)
         candidates = sorted((x for x in index.get(folder, []) if x != leaf and x.startswith(stem + "_")), key=len)
         for x in candidates:
-            role = role_from_name(x)
+            role = _name_role(x, game)
             if role not in (ALBEDO, NORMAL) or role in out.roles:
                 continue
             try:
