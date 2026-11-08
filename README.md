@@ -167,7 +167,9 @@ darkstl            # or darkstl-gui; darkstl gui --browser opens it in your brow
    install, *Add collected files…* lists them from there without the games.
 2. **Browse a game.** Each game has its own library: its kinds of model (weapons, armour,
    characters, objects, map pieces) as tiles, then each kind's models with a preview, in
-   groups. Previews are drawn once and kept until you rescan the folder. Search with the box
+   groups. Previews are drawn once and kept until you rescan the folder; *Redraw preview*
+   (right-click a card) draws one again, and *Redraw previews here* under ⋯ a whole game,
+   kind or group, for pictures an older version drew without textures. Search with the box
    at the top (or press /). *Open a model file…* under ⋯ on
    Home opens a single file, including `.obj`.
 3. **Open a model** (double-click or Enter). It's shown with the game's textures, wherever in
