@@ -208,7 +208,10 @@ map) and reference skeleton come from the mesh; the skeleton asset's reference s
 animation's tracks (`CompressedTrackToSkeletonMapTable`) to bone names, matched to the mesh's.
 Animations are found by reading the header of every package that looks like one (name or folder)
 and keeping those importing the mesh's skeleton, cached per game
-(`unreal-animations-<hash>.json`, with each animation's length). Keys in Unreal's own codecs
+(`unreal-animations-<hash>.json`, with each animation's length). When that finds none for a
+skeleton in a game that may name its animations otherwise (Returnal: `vfs.LOOK_THROUGH_FOR_ANIMATIONS`),
+or where nothing named like one is, every package whose name and folders don't rule it out is looked
+through once; with none found, the Pose tab lists what was read (`AnimIndex.survey`). Keys in Unreal's own codecs
 (constant or variable key spacing, per-track compression; float, fixed-point and interval
 formats) are decoded in the 4.12-4.22, 4.23-4.24 and 4.25+ layouts; ACL-compressed animations
 are recognised and reported. Rotations come from the animation; translations are the mesh's bone

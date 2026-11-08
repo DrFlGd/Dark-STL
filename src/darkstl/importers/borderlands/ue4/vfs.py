@@ -36,6 +36,9 @@ BUNDLED_KEYS = {
 # game -> function(game folder) giving its Unreal Engine release (425 for 4.25), for games that cook their
 # packages unversioned; importers register theirs
 ENGINE_OF_GAME: dict = {}
+# games whose animations aren't all named like animations (A_, AS_, Anim_...): when a skeleton has none by
+# name, every package is looked through for them (see animset.AnimIndex); importers add theirs
+LOOK_THROUGH_FOR_ANIMATIONS: set = set()
 ASSET_SUFFIXES = (".uasset", ".umap")
 PAYLOAD_SUFFIXES = (".uexp", ".ubulk", ".uptnl", ".m.ubulk")
 

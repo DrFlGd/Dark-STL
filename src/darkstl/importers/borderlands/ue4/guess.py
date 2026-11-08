@@ -249,6 +249,8 @@ def skip_properties(pkg, r: Reader, e) -> Props:
     data = r.data
     start = r.pos
     test = _STARTS.get(e.class_name)
+    if test is None and e.class_name.endswith("AnimSequence"):  # a game's own kind of AnimSequence
+        test = _anim_start
     if test is None:
         raise FormatError(f"{e.class_name}'s properties can't be read without the game's type mappings")
     body = start + _header_end(data[start:])
