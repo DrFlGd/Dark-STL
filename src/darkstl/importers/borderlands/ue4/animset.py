@@ -39,7 +39,8 @@ from .asset import Package
 log = logging.getLogger(__name__)
 
 INDEX_VERSION = 2
-INFO_VERSION = 2  # 2: animations read past the skeleton's GUID (rows kept before said they couldn't be read)
+INFO_VERSION = 3  # 2: animations read past the skeleton's GUID; 3: tracks for virtual bones allowed (rows kept
+# before said those animations couldn't be read)
 ANIM_CLASSES = ("AnimSequence",)
 # names an animation package goes by: Epic's style guide (A_, AS_) and others' (Anim_, ANIM_, AN_...)
 ANIM_NAME = re.compile(r"^(a|as|an|am|anm|ani|anim|anims|animation|seq)_", re.I)
@@ -456,6 +457,7 @@ class UEAnimations:
             diffs.append((dt, 2 * np.degrees(np.arccos(min(dq, 1.0))), self.names_[i]))
         diffs.sort(reverse=True)
         return {"package": self.skeleton_package, "skeleton_bones": len(names), "mesh_bones": len(self.names_),
+                "virtual_bones": [{"name": n, "source": a, "target": b} for n, a, b in skel.virtual],
                 "matched": len(matched), "mesh_only": [n for n, s in zip(self.names_, self._map) if s < 0][:40],
                 "skeleton_only": [n for j, n in enumerate(names) if j not in {s for _i, s in matched}][:40],
                 "bind_differences": [{"bone": n, "translation": round(dt, 3), "degrees": round(float(da), 2)}
@@ -491,6 +493,11 @@ class UEAnimations:
                         name += "'"
                     out[name] = _Entry(name, v)
                 self._entries = dict(sorted(out.items(), key=lambda kv: kv[0].lower()))
+                if self._entries:
+                    try:  # first, so every animation is checked against it as posing will
+                        self._skel()
+                    except FormatError:
+                        pass
                 for e in self._entries.values():
                     self._summarise(e)
                 self.index.save()
@@ -568,7 +575,7 @@ class UEAnimations:
             (x for x in pkg.exports if x.outer == 0 and is_animation_class(x.class_name)), None)
         if e is None:
             raise FormatError(f"{virtual} isn't an animation")
-        bones = len(self._skeleton.bones) if self._skeleton is not None else None
+        bones = self._skeleton.tracks if self._skeleton is not None else None
         return read_anim(pkg, e, bones)
 
     def _anim(self, name: str) -> AnimSequence:

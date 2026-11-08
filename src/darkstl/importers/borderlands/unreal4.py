@@ -7,6 +7,7 @@ in the game's paks or IoStore containers.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -25,6 +26,8 @@ from .ue4.mesh import Mesh4, read_skeletal_mesh, read_static_mesh
 
 UE4_GAMES = (GAME_BL3, GAME_WL, GAME_BL4)
 MODEL_CLASSES = ("SkeletalMesh", "StaticMesh")
+MATERIAL_CLASSES = ("MaterialInstanceConstant", "Material")
+RELATED_BUDGET = 1000  # materials and textures looked at for one model's files, at most
 
 
 def is_asset_path(path: Path) -> bool:
@@ -68,8 +71,83 @@ def _texture(tex, dirs) -> Texture:
     return Texture(tex.name, f"{tex.pkg.name}", lambda: tex.decode(dirs), tex.describe, raw=tex.dds_bytes)
 
 
-def _materials(mesh: Mesh4, dirs) -> tuple[list[Material], dict[str, Texture], list[str]]:
+def _stems(files) -> dict[str, list[str]]:
+    """The game's packages by their last name (lower-case): kept on the game's file list, built once."""
+    index = getattr(files, "_stem_index", None)
+    if index is None:
+        index = {}
+        names = list(getattr(files, "packages", {}))
+        zen = getattr(files, "zen", None)
+        if zen is not None:
+            names += list(getattr(zen, "by_name", {}))
+        for name in names:
+            index.setdefault(name.rsplit("/", 1)[-1], []).append(name)
+        try:
+            files._stem_index = index
+        except AttributeError:
+            pass
+    return index
+
+
+def _named_materials(pkg: Package, mesh: Mesh4) -> dict[int, str]:
+    """Fill the slots that name no material (a blueprint sets theirs as the game runs) with the material the
+    slot is called after, when the game has one: Returnal's Helios has slots M_Helios_Head and M_Helios_hair
+    and no material in either. Returns, per slot filled, the material's package."""
+    files = getattr(pkg, "files", None)
+    if files is None or not hasattr(files, "open_named"):
+        return {}
+    empty = [i for i, ref in enumerate(mesh.materials)
+             if not ref and i < len(mesh.slot_names) and mesh.slot_names[i] and mesh.slot_names[i] != "None"]
+    if not empty:
+        return {}
+    index = _stems(files)
+    here = (pkg.name or "").lower().rsplit("/", 1)[0] + "/"
+    out = {}
+    for i in empty:
+        slot = mesh.slot_names[i]
+        names = [slot]
+        if slot.lower().startswith("m_"):
+            names.append("MI_" + slot[2:])
+        elif slot.lower().startswith("mi_"):
+            names.append("M_" + slot[3:])
+        found = [name for n in names for name in index.get(n.lower(), [])]
+        found.sort(key=lambda name: (-len(os.path.commonprefix([name, here])), len(name)))  # nearest the mesh
+        for name in found[:8]:
+            try:
+                other = files.open_named(name)
+            except (FormatError, OSError, ValueError):
+                continue
+            e = other.main_export(MATERIAL_CLASSES) if other is not None else None
+            if e is not None:
+                mesh.materials[i] = ue3_materials.ObjectRef(other, e.index + 1)
+                out[i] = other.name
+                break
+    return out
+
+
+def _materials(mesh: Mesh4, dirs, named: dict[int, str] | None = None
+               ) -> tuple[list[Material], dict[str, Texture], list[str], dict[int, list]]:
+    """The mesh's materials (one per slot, then one per layer of a layered material its vertex colours show),
+    the textures they use, notes, and per slot its layers: (channel weights (R, G, B, A), material index)."""
     mats, textures, notes = [], {}, []
+    infos = []
+
+    def keys_of(roles) -> dict:
+        keys = {}
+        for role, tex in roles.items():
+            key = f"{tex.pkg.name}:{tex.name}"
+            keys[role] = key
+            if key not in textures:
+                textures[key] = _texture(tex, dirs)
+                if not tex.available():
+                    notes.append(f"{tex.name}: its pixels weren't found (its .ubulk is missing)")
+        return keys
+
+    def material(name, keys, guessed, details) -> Material:
+        return Material(name, keys.get(ue3_materials.ALBEDO), keys.get(ue3_materials.NORMAL),
+                        keys.get(ue3_materials.HEIGHT), guessed=guessed, details=details, normal_green="directx",
+                        specular=keys.get(ue3_materials.SPECULAR))
+
     for i, ref in enumerate(mesh.materials):
         try:
             info = resolve_material(ref)
@@ -77,18 +155,62 @@ def _materials(mesh: Mesh4, dirs) -> tuple[list[Material], dict[str, Texture], l
             info = ue3_materials.ResolvedMaterial(ref.name if ref else "None", details=[str(e)])
         if not ref and i < len(mesh.slot_names) and mesh.slot_names[i]:
             info.name = mesh.slot_names[i]
-        keys = {}
-        for role, tex in info.roles.items():
-            key = f"{tex.pkg.name}:{tex.name}"
-            keys[role] = key
-            if key not in textures:
-                textures[key] = _texture(tex, dirs)
-                if not tex.available():
-                    notes.append(f"{tex.name}: its pixels weren't found (its .ubulk is missing)")
-        mats.append(Material(info.name, keys.get(ue3_materials.ALBEDO), keys.get(ue3_materials.NORMAL),
-                             keys.get(ue3_materials.HEIGHT), guessed=info.guessed, details=info.details,
-                             normal_green="directx", specular=keys.get(ue3_materials.SPECULAR)))
-    return mats, textures, notes
+        if named and i in named:
+            info.details.insert(0, f"The mesh names no material for its slot {mesh.slot_names[i]}: the game's "
+                                   f"material of that name is shown ({named[i]})")
+            info.guessed = True
+        infos.append((ref, info))
+        mats.append(material(info.name, keys_of(info.roles), info.guessed, info.details))
+    layers: dict[int, list] = {}
+    if mesh.colors is None:
+        return mats, textures, notes, layers
+    tris = mesh.triangles()
+    made: dict[tuple[str, int], int] = {}  # (material, layer) -> its material index, shared by the slots using it
+    for i, (ref, info) in enumerate(infos):
+        if not info.layers:
+            continue
+        channels = [np.asarray(layer.channel, np.float64) for layer in info.layers]
+        used = set()
+        for s in mesh.sections:
+            if s.material == i:
+                picks = _layer_picks(tris[s.first_index // 3:s.first_index // 3 + s.triangles], channels,
+                                     mesh.colors)
+                used.update(int(k) for k in np.unique(picks) if k >= 0)
+        for k, layer in enumerate(info.layers):
+            if k not in used:
+                continue
+            key = (getattr(ref, "path", "") or info.name, layer.index)
+            if key not in made:
+                made[key] = len(mats)
+                shown = f"Layer {layer.index} of {info.name}: shown where the mesh's vertex colour is "
+                details = [shown + layer.channel_name(), *layer.details]
+                mats.append(material(f"{info.name} layer {layer.index}", keys_of(layer.roles), info.guessed,
+                                     details))
+            layers.setdefault(i, []).append((channels[k], made[key]))
+    return mats, textures, notes, layers
+
+
+def _layer_picks(seg: np.ndarray, channels: list, colors: np.ndarray) -> np.ndarray:
+    """Per triangle the layer its vertex colours show (an index into ``channels``), or -1 for the material's
+    own: the last layer whose channel reaches half (each is blended over the ones before it)."""
+    pick = np.full(len(seg), -1)
+    if not len(seg):
+        return pick
+    c = colors[seg].astype(np.float64).mean(axis=1) / 255.0  # (T, 4): each triangle's mean colour
+    for k, channel in enumerate(channels):
+        pick[c @ channel >= 0.5] = k
+    return pick
+
+
+def _layer_ranges(seg: np.ndarray, material: int, part: int, layers: dict, colors) -> list:
+    """A section's triangles by the material layer their vertex colours show."""
+    found = layers.get(material)
+    if not found or colors is None or not len(seg):
+        return [(seg, material, part)]
+    pick = _layer_picks(seg, [channel for channel, _index in found], colors)
+    out = [(seg[pick == -1], material, part)]
+    out += [(seg[pick == k], index, part) for k, (_channel, index) in enumerate(found)]
+    return [r for r in out if len(r[0])]
 
 
 def _animations(pkg: Package, m: Mesh4, cache: Path | None):
@@ -137,7 +259,8 @@ def load(importer_key: str, path: Path, dirs: list[Path], game: str | None = Non
     files = getattr(pkg, "files", None)
     game = game or (files.game if files is not None else None)
     m = read_skeletal_mesh(pkg, e) if e.class_name == "SkeletalMesh" else read_static_mesh(pkg, e)
-    mats, textures, notes = _materials(m, dirs)
+    named = _named_materials(pkg, m)
+    mats, textures, notes, layers = _materials(m, dirs, named)
     notes = list(m.notes) + notes
     tris = m.triangles()
     uv = m.uvs[0] if m.uvs else None
@@ -163,8 +286,9 @@ def load(importer_key: str, path: Path, dirs: list[Path], game: str | None = Non
             name, frame = options.pose
             matrices = anims.skin_matrices(name, anims.clamp(name, frame))
             positions, normals = skin_vertices(m.positions, m.normals, m.joints, m.weights, matrices)
-        ranges = [(tris[s.first_index // 3:s.first_index // 3 + s.triangles], s.material, i)
-                  for i, s in enumerate(m.sections) if options.parts is None or i in options.parts]
+        ranges = [r for i, s in enumerate(m.sections) if options.parts is None or i in options.parts
+                  for r in _layer_ranges(tris[s.first_index // 3:s.first_index // 3 + s.triangles], s.material, i,
+                                         layers, m.colors)]
         return build_trimesh(positions, normals, uv, ranges, skin=skin if options.pose is None else None)
 
     v = pkg.versions
@@ -258,22 +382,30 @@ def related_files(path: Path, textures: bool = True, animations: bool = False,
         out += _animation_files(gf, pkg, m, cache, seen)
     if not textures:
         return out
-    for ref in m.materials:
-        queue = [ref]
-        for _ in range(16):
-            if not queue:
-                break
-            r = queue.pop()
-            hit = resolve(r)
-            if hit is None:
-                continue
-            opkg, oe = hit
-            if opkg.virtual and opkg.virtual.lower() not in seen and gf.exists(opkg.virtual):
-                seen.add(opkg.virtual.lower())
-                out += _package_files(gf, opkg.virtual, "texture")
-            for i, imp in enumerate(opkg.imports):
-                if imp.class_name in ("Texture2D", "MaterialInstanceConstant", "Material") and opkg is not pkg:
-                    queue.append(type(r)(opkg, -(i + 1)))
+    _named_materials(pkg, m)
+    # every material and texture the materials lead to (a layered material may name dozens)
+    queue = [ref for ref in m.materials if ref]
+    queued = {(ref.path or "").lower() for ref in queue}
+    budget = RELATED_BUDGET
+    while queue and budget > 0:
+        budget -= 1
+        r = queue.pop()
+        hit = resolve(r)
+        if hit is None:
+            continue
+        opkg, oe = hit
+        if opkg.virtual and opkg.virtual.lower() not in seen and gf.exists(opkg.virtual):
+            seen.add(opkg.virtual.lower())
+            out += _package_files(gf, opkg.virtual, "texture")
+        if opkg is pkg:
+            continue
+        for i, imp in enumerate(opkg.imports):
+            if imp.class_name in ("Texture2D", "VirtualTexture2D", "MaterialInstanceConstant", "Material"):
+                child = type(r)(opkg, -(i + 1))
+                key = (child.path or "").lower()
+                if key not in queued:
+                    queued.add(key)
+                    queue.append(child)
     return out
 
 

@@ -330,7 +330,9 @@ def test_previews_stay_shown_and_a_job_stops_from_the_status_bar(page, app, weap
     # Redraw preview (a card's menu): only that model's picture is drawn again, the others stay shown
     first = page.locator(f'.results [data-model="{weapons[0]}"]').first
     first.click(button="right")
-    page.click('[data-action="redraw-preview"]')
+    # waited for by its request: the card may not have shown "wait" yet when the click returns
+    with page.expect_response(lambda r: f"id={weapons[0]}&" in r.url and "cached" not in r.url, timeout=30000):
+        page.click('[data-action="redraw-preview"]')
     page.wait_for_selector("text=Drawing its preview again.")
     page.wait_for_function(f"document.querySelector('.results [data-model=\"{weapons[0]}\"] [data-thumb]').dataset.thumb !== 'wait'", timeout=30000)
     assert [u for u in asked if f"id={weapons[0]}&" in u and "cached" not in u]  # drawn, not read from the cache
