@@ -74,6 +74,24 @@ export function collectModelItem(m, game = m.game) {
     run: () => collectInto({ game: game || null, model: { id: m.id, label: m.label || m.name, category: m.category || null, group: m.group || null } }) };
 }
 
+/** Draw the previews of some models again: { ids } or a place ({ game, category, group }). For previews an
+ *  older version drew (without textures, say); the engine forgets them and they're drawn as they come into view. */
+export async function redrawPreviews(scope, what) {
+  try {
+    const r = await api("thumbs_redraw", scope);
+    forgetThumbs(scope.ids || null);
+    toast(scope.ids ? `Drawing ${what} again.` : `Drawing ${plural(r.models, "preview")} in ${what} again as they come into view.`);
+  } catch (e) {
+    toast(String(e.message || e));
+  }
+}
+
+/** The menu item that draws one model's preview again. */
+export function redrawModelItem(m) {
+  return { id: "redraw-preview", label: "Redraw preview", sub: "if its picture is out of date, such as missing its textures", icon: "image",
+    run: () => redrawPreviews({ ids: [m.id] }, "its preview") };
+}
+
 /** The menu item that exports one model's files into a zip, to send for review. */
 export function modelFilesItem(m, variant = null) {
   return { id: "model-files", label: "Export model files…", sub: "a zip of its files and a report, to send for review", icon: "download",
@@ -85,6 +103,9 @@ export function gameMenu(game, place) {
   const items = [
     { id: "game-add-folder", label: "Add another folder to this game…", icon: "plus", run: () => ui.set({ dialog: { type: "add-folder", game: game.name } }) },
     collectItem(game, place),
+    { id: "game-redraw", label: place?.category ? "Redraw previews here" : "Redraw this game's previews", sub: "pictures drawn by an older version, without textures", icon: "image",
+      disabled: game.count ? false : "There are no models here.",
+      run: () => redrawPreviews({ game: game.name, category: place?.category || null, group: place?.group ?? null }, place?.group || place?.category || game.name) },
   ];
   for (const f of game.folders) {
     const name = f.path.split(/[\\/]/).filter(Boolean).pop();

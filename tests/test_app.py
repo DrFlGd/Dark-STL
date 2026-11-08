@@ -173,6 +173,14 @@ def test_open_a_model_and_read_its_mesh_and_textures(service):
     assert "128" in service.call("texture_info", {"sid": m["sid"], "key": m["materials"][0]["albedo"]})["info"]
     thumb = service.call("thumb", {"id": item["id"]})
     assert thumb[:4] == b"\x89PNG" and service.call("thumb", {"id": item["id"]}) == thumb
+    assert service.call("thumbs_redraw", {"ids": [item["id"]]}) == {"removed": 1, "models": 1}
+    assert service.call("thumbs_redraw", {"ids": [item["id"]]})["removed"] == 0  # gone already
+    assert service.call("thumb", {"id": item["id"]}) == thumb  # drawn again
+    r = service.call("thumbs_redraw", {"game": item["game"], "category": item["category"]})
+    assert r["removed"] >= 1 and r["models"] >= 1
+    with pytest.raises(AppError):
+        service.call("thumbs_redraw", {})
+    service.call("thumb", {"id": item["id"]})
     assert service.call("thumbs_clear", {})["removed"] >= 1
 
 
