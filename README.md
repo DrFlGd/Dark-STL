@@ -189,12 +189,14 @@ darkstl            # or darkstl-gui; darkstl gui --browser opens it in your brow
 9. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default; *Finished* the watertight
    model; *Pieces* writes each piece
    to its own file, laid on a cut face ready to print. **Painted 3MF** paints the model from its
-   colour textures for a multi-colour printer (Bambu Studio, OrcaSlicer, PrusaSlicer): the textures
-   are reduced to a palette of 2 to 12 colours (suggested from the model, or chosen swatch by
-   swatch), and each triangle is painted finer than the mesh, down to the smallest feature you
-   name at the print size, the way the slicers' own brush paint is stored. *Show the colours on
-   the model* previews it, and a picture of the palette is written beside the file to set the
-   filament slots by. The Finished model and cut pieces are painted too, from the textured model
+   colour textures for a multi-colour printer (Bambu Studio, OrcaSlicer, PrusaSlicer), with the
+   settings in the Finish tab's *Paint for colour printing*: the textures are reduced to a palette
+   of 2 to 12 colours (suggested from the model, or chosen swatch by swatch; a colour tolerance
+   merges near shades and the rarest colours can be dropped), each material painted from its colour
+   texture or another one you choose, with brightness, contrast and saturation adjusted first. Each
+   triangle is painted finer than the mesh, down to the smallest feature you name at the print size,
+   the way the slicers' own brush paint is stored. *Show the colours on the model* previews it, and a
+   picture of the palette is written beside the file to set the filament slots by. The Finished model and cut pieces are painted too, from the textured model
    they were made from (cut faces, joints and filled gaps take filament 1).
 
 ![A game's library](docs/images/library.png)
@@ -220,7 +222,8 @@ opengl|directx` if the relief comes out inverted, `--max-mm` to clamp displaceme
 to 1 mm, `--drop-loose 1` to remove loose bits under 1% of it, `--keep-hollows`), and `--variant WP_A_0402_1.flver` to pick a model in a
 file that holds several (see `info`). A `.3mf` output is painted from the colour textures: `--colours 6` or
 `--palette "#1a1a1a,#c8b89a,..."`, `--print-height` and `--feature` (mm) for how fine the paint goes, `--cleanup
-none|light|strong`. Run `darkstl <command> -h` for all.
+none|light|strong`, `--tolerance 10` to merge near colours, `--min-share 1` to drop colours under 1% of the surface,
+`--brightness`/`--contrast`/`--saturation`, and `--paint-texture 2=WP_A_0300_m` to paint material 2 from another texture. Run `darkstl <command> -h` for all.
 
 ## Development
 

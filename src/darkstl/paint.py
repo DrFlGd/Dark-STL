@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 import numpy as np
 
@@ -44,7 +45,7 @@ ProgressFn = Callable[[float, str], None]
 
 __all__ = ["PaintSettings", "Painting", "suggest_palette", "quantize", "cleanup", "paint_mesh", "encode_tree",
            "decode_string", "leaf_colours", "parse_colour", "hex_colour", "MAX_COLOURS", "SurfaceColours",
-           "surface_colours", "transfer_paint"]
+           "surface_colours", "transfer_paint", "colour_textures"]
 
 MAX_COLOURS = 16  # filament slots the slicers accept in paint (OrcaSlicer stops at 16)
 LATTICE = (1, 2, 3, 4, 6, 8, 11, 16)  # sample lattices per piece: n * n points
@@ -62,10 +63,24 @@ class PaintSettings:
     feature_mm: float = 0.5  # smallest colour feature kept, at that print size
     cleanup: str = "light"  # none | light | strong: specks removed from the quantised textures
     max_depth: int = 12  # levels of splits of a triangle (each halves at least one side)
+    tolerance: float = 0.0  # suggested colours closer than this (Oklab distance x 100) are merged into one
+    min_share: float = 0.0  # % of the surface: suggested colours covering less are dropped (taken by the nearest)
+    brightness: float = 0.0  # -1..1, added to the texture colours before they are reduced
+    contrast: float = 1.0  # 0..3, around mid grey
+    saturation: float = 1.0  # 0 (grey) .. 3
+    sources: dict[str, str] | None = None  # material index -> texture key it is painted from ("none": not painted)
 
     def key(self) -> tuple:
         return (int(self.colours), tuple(self.palette) if self.palette else None, round(self.print_height_mm, 3),
-                round(self.feature_mm, 4), self.cleanup, int(self.max_depth))
+                round(self.feature_mm, 4), self.cleanup, int(self.max_depth)) + self.colour_key()
+
+    def colour_key(self) -> tuple:
+        """What changes the colours read off the textures (and so the suggested palette)."""
+        return (round(self.tolerance, 3), round(self.min_share, 3), *self.adjust(),
+                tuple(sorted((self.sources or {}).items())))
+
+    def adjust(self) -> tuple[float, float, float]:
+        return (round(float(self.brightness), 3), round(float(self.contrast), 3), round(float(self.saturation), 3))
 
 
 @dataclass
@@ -138,6 +153,59 @@ def _shrink(img: np.ndarray, max_size: int = MAX_PREVIEW) -> np.ndarray:
     h2, w2 = h // f * f, w // f * f
     small = img[:h2, :w2].reshape(h2 // f, f, w2 // f, f, -1).mean(axis=(1, 3))
     return small.astype(img.dtype)
+
+
+@lru_cache(maxsize=8)
+def _cube_rgb_cached(adjust: tuple[float, float, float], bits: int = 6) -> np.ndarray:
+    rgb = (_cube_colours(np.arange(1 << (3 * bits)), bits) / 255.0).astype(np.float32)
+    brightness, contrast, saturation = adjust
+    if adjust != (0.0, 1.0, 1.0):
+        luma = rgb @ np.array([0.2126, 0.7152, 0.0722], np.float32)
+        rgb = luma[:, None] + (rgb - luma[:, None]) * saturation
+        rgb = (rgb - 0.5) * contrast + 0.5 + brightness
+        rgb = np.clip(rgb, 0.0, 1.0)
+    rgb.setflags(write=False)
+    return rgb
+
+
+@lru_cache(maxsize=8)
+def _cube_lab_cached(adjust: tuple[float, float, float], bits: int = 6) -> np.ndarray:
+    lab = srgb_to_oklab(_cube_rgb_cached(adjust, bits)).astype(np.float32)
+    lab.setflags(write=False)
+    return lab
+
+
+def _cube_rgb(settings: PaintSettings | None, bits: int = 6) -> np.ndarray:
+    """The colour (sRGB 0..1) every cell of the colour cube stands for, after the settings' brightness,
+    contrast and saturation: the colours the palette is chosen from and the textures are reduced by."""
+    return _cube_rgb_cached(settings.adjust() if settings else (0.0, 1.0, 1.0), bits)
+
+
+def _cube_lab(settings: PaintSettings | None, bits: int = 6) -> np.ndarray:
+    return _cube_lab_cached(settings.adjust() if settings else (0.0, 1.0, 1.0), bits)
+
+
+def colour_textures(model, mesh: TriMesh, settings: PaintSettings | None = None) -> dict[int, np.ndarray]:
+    """Material -> decoded colour texture to paint it from: the material's own colour texture, or the one the
+    settings' ``sources`` name for it ("none": that material isn't painted and takes filament 1)."""
+    sources = (settings.sources if settings else None) or {}
+    out = {}
+    for m in np.unique(mesh.face_material).tolist():
+        m = int(m)
+        key = sources.get(str(m))
+        if key is None:
+            key = model.materials[m].albedo if m < len(model.materials) else None
+        elif key == "none":
+            continue
+        elif key not in model.textures:
+            raise ValueError(f"No texture '{key}' in this model to paint from.")
+        if not key or key not in model.textures:
+            continue
+        try:
+            out[m] = model.textures[key].decode()
+        except Exception:  # noqa: BLE001 - that material isn't painted
+            pass
+    return out
 
 
 def _cube_keys(rgb: np.ndarray, bits: int = 6) -> np.ndarray:
@@ -309,10 +377,15 @@ def _prepared(textures: dict[int, np.ndarray]) -> dict[int, np.ndarray]:
 
 
 def suggest_palette(mesh: TriMesh, textures: dict[int, np.ndarray], colours: int,
-                    progress: ProgressFn | None = None) -> tuple[np.ndarray, np.ndarray]:
+                    progress: ProgressFn | None = None,
+                    settings: PaintSettings | None = None) -> tuple[np.ndarray, np.ndarray]:
     """The ``colours`` colours that best stand for the textures over the model's surface: k-means in Oklab
     over the texels the surface covers, each weighted by the area it covers. Returns the palette (K, 3)
-    uint8, most-used colour first, and the fraction of the surface each colour takes."""
+    uint8, most-used colour first, and the fraction of the surface each colour takes.
+
+    The settings' brightness, contrast and saturation change the texture colours first; then colours closer
+    than its tolerance are merged and colours covering less than its smallest share are dropped, so the
+    palette can have fewer than ``colours`` colours."""
     colours = int(min(max(colours, 1), MAX_COLOURS))
     faces = _textured_faces(mesh, textures)
     if not faces:
@@ -321,7 +394,8 @@ def suggest_palette(mesh: TriMesh, textures: dict[int, np.ndarray], colours: int
     hist = np.zeros(1 << (3 * bits), np.float64)
     flat_hist = np.zeros_like(hist)
     areas = mesh.face_areas()
-    cube_lab = srgb_to_oklab(_cube_colours(np.arange(1 << (3 * bits)), bits) / 255.0).astype(np.float32)
+    cube_rgb = _cube_rgb(settings, bits)
+    cube_lab = _cube_lab(settings, bits)
     for i, (mat, sel) in enumerate(faces.items()):
         if progress:
             progress(0.02 + 0.18 * i / len(faces), "Reading the colours")
@@ -349,20 +423,69 @@ def suggest_palette(mesh: TriMesh, textures: dict[int, np.ndarray], colours: int
     used = np.flatnonzero(learn > 0)
     if progress:
         progress(0.2, "Choosing the colours")
-    rgb = _cube_colours(used, bits) / 255.0
-    lab = srgb_to_oklab(rgb)
+    rgb = cube_rgb[used]
+    lab = cube_lab[used]
     centres = _kmeans(lab, learn[used], colours)
+    tolerance = float(settings.tolerance) / 100 if settings else 0.0
+    if tolerance > 0 and len(centres) > 1:
+        centres = _merge_close(lab, learn[used], centres, tolerance)
     # each centre becomes the real texel colour nearest it, so the palette holds colours that are in the model
     d = ((lab[:, None, :] - centres[None, :, :]) ** 2).sum(2)
     nearest = d.argmin(0)
     palette = np.clip(np.round(rgb[nearest] * 255), 0, 255).astype(np.uint8)
     # the share of the surface each colour takes counts every texel, flat or not
     every = np.flatnonzero(hist > 0)
-    plab = srgb_to_oklab(palette.astype(np.float32) / 255.0)
-    label = ((cube_lab[every][:, None, :] - plab[None, :, :]) ** 2).sum(2).argmin(1)
-    coverage = np.bincount(label, weights=hist[every], minlength=len(palette))
-    coverage = coverage / max(coverage.sum(), 1e-12)
-    return palette, coverage
+
+    def shares(pal):
+        plab = srgb_to_oklab(pal.astype(np.float32) / 255.0)
+        label = _nearest(cube_lab[every], plab)
+        cov = np.bincount(label, weights=hist[every], minlength=len(pal))
+        return cov / max(cov.sum(), 1e-12)
+
+    coverage = shares(palette)
+    least = float(settings.min_share) / 100 if settings else 0.0
+    while least > 0 and len(palette) > 1 and coverage.min() < least:
+        palette = np.delete(palette, int(coverage.argmin()), axis=0)  # its texels go to the nearest colour left
+        coverage = shares(palette)
+    order = np.argsort(-coverage, kind="stable") if (tolerance > 0 or least > 0) else np.arange(len(palette))
+    return palette[order], coverage[order]
+
+
+def _nearest(lab: np.ndarray, plab: np.ndarray) -> np.ndarray:
+    out = np.empty(len(lab), np.int64)
+    for start in range(0, len(lab), 65536):
+        out[start:start + 65536] = ((lab[start:start + 65536, None, :] - plab[None, :, :]) ** 2).sum(2).argmin(1)
+    return out
+
+
+def _merge_close(points: np.ndarray, weights: np.ndarray, centres: np.ndarray, tolerance: float) -> np.ndarray:
+    """Merge k-means centres closer than ``tolerance`` (Oklab distance): the less used one joins the more used
+    one, then the centres settle again over the colours (a few k-means steps), until none are that close."""
+    w = weights / max(weights.sum(), 1e-12)
+    for _ in range(8):
+        label = _nearest(points, centres)
+        held = np.bincount(label, weights=w, minlength=len(centres))
+        order = np.argsort(-held, kind="stable")
+        kept: list[int] = []
+        for i in order.tolist():
+            if held[i] <= 0:
+                continue
+            if all(np.linalg.norm(centres[i] - centres[j]) >= tolerance for j in kept):
+                kept.append(i)
+        if len(kept) == len(centres):
+            return centres
+        centres = centres[kept]
+        for _ in range(10):
+            label = _nearest(points, centres)
+            new = centres.copy()
+            for i in range(len(centres)):
+                sel = label == i
+                if sel.any():
+                    new[i] = (points[sel] * w[sel, None]).sum(0) / w[sel].sum()
+            if np.allclose(new, centres, atol=1e-6):
+                break
+            centres = new
+    return centres
 
 
 def _flat_texels(lab: np.ndarray) -> np.ndarray:
@@ -375,18 +498,15 @@ def _flat_texels(lab: np.ndarray) -> np.ndarray:
     return flat
 
 
-def quantize(img: np.ndarray, palette: np.ndarray) -> np.ndarray:
-    """Each texel's nearest palette colour (Oklab), as (H, W) int16 indices into the palette."""
+def quantize(img: np.ndarray, palette: np.ndarray, settings: PaintSettings | None = None) -> np.ndarray:
+    """Each texel's nearest palette colour (Oklab), as (H, W) int16 indices into the palette; the texels'
+    colours changed first by the settings' brightness, contrast and saturation."""
     rgb = _rgb(img)
     bits = 6
     keys = _cube_keys(rgb, bits)
-    lut_rgb = _cube_colours(np.arange(1 << (3 * bits)), bits) / 255.0
-    lab = srgb_to_oklab(lut_rgb)
+    lab = _cube_lab(settings, bits)
     plab = srgb_to_oklab(np.asarray(palette, np.float32) / 255.0)
-    lut = np.empty(len(lab), np.int16)
-    for start in range(0, len(lab), 65536):
-        d = ((lab[start:start + 65536, None, :] - plab[None, :, :]) ** 2).sum(2)
-        lut[start:start + 65536] = d.argmin(1)
+    lut = _nearest(lab, plab).astype(np.int16)
     return lut[keys]
 
 
@@ -448,7 +568,7 @@ def paint_mesh(mesh: TriMesh, textures: dict[int, np.ndarray], settings: PaintSe
         palette = np.array([parse_colour(c) for c in settings.palette][:MAX_COLOURS], np.uint8)
         coverage = None
     else:
-        palette, coverage = suggest_palette(mesh, textures, settings.colours, progress)
+        palette, coverage = suggest_palette(mesh, textures, settings.colours, progress, settings)
     k = len(palette)
     feature = _feature(mesh, settings)
     strings = [""] * mesh.n_faces
@@ -460,7 +580,7 @@ def paint_mesh(mesh: TriMesh, textures: dict[int, np.ndarray], settings: PaintSe
     for i, (mat, sel) in enumerate(faces.items()):
         _maybe(progress, 0.25 + 0.7 * i / len(faces), f"Painting material {i + 1} of {len(faces)}")
         img = _shrink(_rgb(textures[mat]))
-        index = cleanup(quantize(img, palette), k, settings.cleanup)
+        index = cleanup(quantize(img, palette, settings), k, settings.cleanup)
         h, w = index.shape
         root_uv = mesh.corner_uvs[sel].astype(np.float32)
 
@@ -679,7 +799,7 @@ def surface_colours(source: TriMesh, textures: dict[int, np.ndarray], settings: 
         palette = np.array([parse_colour(c) for c in settings.palette][:MAX_COLOURS], np.uint8)
         coverage = None
     else:
-        palette, coverage = suggest_palette(source, textures, settings.colours, progress)
+        palette, coverage = suggest_palette(source, textures, settings.colours, progress, settings)
     k = len(palette)
     feature = _feature(source, settings)
     verts = source.vertices[source.faces].astype(np.float64)
@@ -695,7 +815,7 @@ def surface_colours(source: TriMesh, textures: dict[int, np.ndarray], settings: 
     for i, (mat, sel) in enumerate(faces.items()):
         _maybe(progress, 0.25 + 0.15 * i / len(faces), "Reading the model's colours")
         img = _shrink(_rgb(textures[mat]))
-        index = cleanup(quantize(img, palette), k, settings.cleanup)
+        index = cleanup(quantize(img, palette, settings), k, settings.cleanup)
         uv = source.corner_uvs[sel].astype(np.float32)
         for size in np.unique(n[sel]).tolist():
             part = sel[n[sel] == size]

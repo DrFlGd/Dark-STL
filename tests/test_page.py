@@ -720,13 +720,27 @@ def test_collect_keeps_every_texture_of_the_game_after_saying_how_much(page, app
 
 
 def test_export_a_painted_3mf(page, app, tmp_path):
-    """The Export tab's painted 3MF: the suggested palette's swatches, a colour changed by hand, the colours shown
-    on the model, and the file and its palette picture written."""
+    """The Finish tab's paint settings: the suggested palette's swatches, the tolerance and the colour adjust, the
+    texture each material is painted from, a colour changed by hand, the colours shown on the model; then the
+    Export tab writes the painted 3MF and its palette picture with them."""
     from test_paint import make_two_colour_game
     from darkstl.export import read_3mf
 
     game = make_two_colour_game(tmp_path)
     shots = os.environ.get("DARKSTL_SCREENSHOTS")
+
+    def slide(sel, value):
+        page.evaluate("""([sel, v]) => { const i = document.querySelector(sel); i.value = v;
+            i.dispatchEvent(new Event('input', { bubbles: true })); i.dispatchEvent(new Event('change', { bubbles: true })); }""",
+                      [sel, str(value)])
+
+    def swatches(n):
+        page.wait_for_function(f"document.querySelectorAll('#paint-swatches .paint-swatch').length === {n}", timeout=30000)
+
+    def first_swatch(colour):
+        page.wait_for_function(f"document.querySelector('#paint-swatches .paint-swatch').title.startsWith('Filament 1: {colour}')",
+                               timeout=30000)
+
     page.wait_for_selector("#first-run")
     page.click("#first-add-folder")
     page.fill("#folder-path", str(game))
@@ -739,14 +753,13 @@ def test_export_a_painted_3mf(page, app, tmp_path):
     page.wait_for_selector("#model-summary")
     page.click("#summary-open")
     page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
-    page.click("#rail-export")
-    page.select_option("#export-format", ".3mf")
-    page.wait_for_selector("#paint-options")
+    page.click("#rail-finish")
+    page.wait_for_selector("#paint-section #paint-options")
     page.wait_for_selector("#paint-swatches .paint-swatch", timeout=30000)
     assert page.locator("#paint-swatches .paint-swatch").count() == 2  # 4 asked for, but the texture has two colours
     page.fill("#paint-colours-n", "2")
     page.press("#paint-colours-n", "Tab")
-    page.wait_for_function("document.querySelectorAll('#paint-swatches .paint-swatch').length === 2")
+    swatches(2)
     titles = [page.get_attribute(f"#paint-swatches .paint-swatch:nth-child({i + 1})", "title") for i in range(2)]
     assert titles[0].startswith("Filament 1: #DE0202") and titles[1].startswith("Filament 2: #0202DE")
     # the colours on the model: the 3D view's textures come from the paint preview
@@ -754,14 +767,39 @@ def test_export_a_painted_3mf(page, app, tmp_path):
         page.check("#paint-preview")
     assert seen.value.response().ok
     page.wait_for_selector("#stage-canvas:not([data-loading])")
+    # without saturation the red and blue are two greys, which a wide tolerance merges into one
+    page.click("#paint-adjust summary")
+    slide("#paint-saturation", 0)
+    page.wait_for_function("/^Filament 1: #(..)\\1\\1/.test(document.querySelector('#paint-swatches .paint-swatch').title)", timeout=30000)
+    slide("#paint-tolerance", 20)
+    swatches(1)
+    assert page.text_content("#paint-tolerance-value") == "20"
+    slide("#paint-tolerance", 0)
+    page.click("#paint-adjust-reset")
+    swatches(2)
+    first_swatch("#DE0202")
     if shots:
-        page.screenshot(path=os.path.join(shots, "export-painted.png"))
+        page.evaluate("document.getElementById('paint-section').scrollIntoView()")
+        page.wait_for_timeout(1500)
+        page.screenshot(path=os.path.join(shots, "finish-paint-settings.png"))
+    # a material painted from no texture: nothing is left to paint
+    page.select_option('[data-paint-material="0"]', "none")
+    page.wait_for_selector("#paint-error:has-text('not painted')", timeout=30000)
+    page.select_option('[data-paint-material="0"]', "")
+    swatches(2)
     # a colour changed by hand is used, and can be given back
     page.evaluate("""() => { const i = document.querySelector('#paint-swatches .paint-swatch input'); i.value = '#00ff00'; i.dispatchEvent(new Event('change', { bubbles: true })); }""")
-    page.wait_for_function("document.querySelector('#paint-swatches .paint-swatch').title.startsWith('Filament 1: #00FF00')")
+    first_swatch("#00FF00")
     assert not page.is_disabled("#paint-suggest")
     page.fill("#paint-feature", "1")
     page.press("#paint-feature", "Tab")
+    # the Export tab shows the colours and writes the file with them
+    page.click("#rail-export")
+    page.select_option("#export-format", ".3mf")
+    page.wait_for_selector("#paint-summary #export-swatches .paint-swatch")
+    assert page.get_attribute("#export-swatches .paint-swatch", "title").startswith("Filament 1: #00FF00")
+    if shots:
+        page.screenshot(path=os.path.join(shots, "export-painted.png"))
     page.fill("#export-folder", str(tmp_path / "out"))
     page.press("#export-folder", "Tab")
     page.click("#export-run")
@@ -770,19 +808,18 @@ def test_export_a_painted_3mf(page, app, tmp_path):
     assert "Filament slots 1 to 2" in page.text_content("#export-paint-done")
     verts, faces, strings, palette = read_3mf(tmp_path / "out" / "WP_A_0300.3mf")
     assert palette == ["#00FF00", "#0202DE"] and (tmp_path / "out" / "WP_A_0300_palette.png").exists()
+    page.click("#paint-settings")  # back to the Finish tab's settings
+    page.wait_for_selector("#paint-section")
     page.click("#paint-suggest")
-    page.wait_for_function("document.querySelector('#paint-swatches .paint-swatch').title.startsWith('Filament 1: #DE0202')")
+    first_swatch("#DE0202")
     assert page.is_disabled("#paint-suggest")
-    # the Finished model is painted from the textured model it was made from (no preview: it has no textures)
+    # the Finished model is painted from the textured model it was made from
     page.uncheck("#paint-preview")
-    page.click("#rail-finish")
-    page.wait_for_selector("#finish-tab")
     page.click("#finish-run")
     page.wait_for_selector("#finish-result", timeout=60000)
     page.click("#rail-export")
     page.click('#export-which button:has-text("Finished")')
     page.wait_for_selector("#paint-from-note")
-    assert page.is_disabled("#paint-preview")
     page.click("#export-run")
     page.wait_for_selector("#export-paint-done", timeout=60000)
     if shots:
@@ -790,7 +827,7 @@ def test_export_a_painted_3mf(page, app, tmp_path):
     verts, faces, strings, palette = read_3mf(tmp_path / "out" / "WP_A_0300_watertight.3mf")
     assert palette == ["#DE0202", "#0202DE"] and any(len(x) > 1 for x in strings)
     page.select_option("#export-format", ".stl")
-    page.wait_for_selector("#paint-options", state="detached")
+    page.wait_for_selector("#paint-summary", state="detached")
 
 
 def test_the_texture_picker_assigns_a_texture_by_name(page, app, weapon_dir):  # noqa: F811

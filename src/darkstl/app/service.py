@@ -2374,10 +2374,10 @@ class Service:
             if ext == ".3mf" and finished is not None:
                 # no textures of its own: painted from the textured model it was made from
                 opts.paint_from = self._surface_colours(model, finished.source, paint, job)
-            elif (args.get("textures", True) and ext in (".obj", ".glb")) or ext == ".3mf":
+            elif ext == ".3mf":
+                opts.textures = _paint_textures(model, mesh, paint)
+            elif args.get("textures", True) and ext in (".obj", ".glb"):
                 opts.textures = _albedo(model, mesh)
-                if ext == ".3mf" and not opts.textures:
-                    raise AppError("This model has no colour textures to paint from.")
             job.report(0.2, "Writing")
             path = export_mesh(mesh, _free_name(folder / f"{base}{ext}"), opts)
             out = {"path": str(path), "bytes": path.stat().st_size}
@@ -2395,23 +2395,20 @@ class Service:
 
     def cmd_paint_palette(self, args: dict) -> dict:
         """The colours that stand best for the model's textures over its surface (paint.suggest_palette),
-        for the Export tab's swatches; kept per model, parts and count."""
+        for the Finish tab's swatches; kept per model, parts and the settings that change them. ``settings``
+        is the paint settings (or only ``colours``, the count)."""
         from .. import paint as painting
 
         session = self._session(args)
-        colours = int(args.get("colours") or 4)
-        if not 2 <= colours <= painting.MAX_COLOURS:
-            raise AppError(f"Choose between 2 and {painting.MAX_COLOURS} colours.")
+        settings = paint_settings(_json_arg(args.get("settings")) or {"colours": args.get("colours") or 4})
         mesh = self._paint_mesh(session, args)
-        key = (session.sid, session.mesh_key, colours)
+        key = (session.sid, session.mesh_key, settings.colours, settings.colour_key())
         with self.lock:
             if key in self.palettes:
                 return self.palettes[key]
-        textures = _albedo(session.model, mesh)
-        if not textures:
-            raise AppError("This model has no colour textures to paint from.")
+        textures = _paint_textures(session.model, mesh, settings)
         try:
-            palette, coverage = painting.suggest_palette(mesh, textures, colours)
+            palette, coverage = painting.suggest_palette(mesh, textures, settings.colours, None, settings)
         except ValueError as exc:
             raise AppError(str(exc)) from None
         out = {"colours": [painting.hex_colour(c) for c in palette], "coverage": [round(float(c), 4) for c in coverage]}
@@ -2432,18 +2429,16 @@ class Service:
         if tex is None:
             raise AppError(f"No texture '{key}' in this model.")
         settings = paint_settings(_json_arg(args.get("settings")) or {})
+        if not settings.palette:
+            settings.palette = self.cmd_paint_palette({**args, "settings": _settings_dict(settings)})["colours"]
         size = int(args.get("max") or 2048)
         cache_key = (session.sid, "paint", key, settings.key(), size)
         with self.lock:
             if cache_key in self.textures_png:
                 return self.textures_png[cache_key]
-        if settings.palette:
-            palette = np.array([painting.parse_colour(c) for c in settings.palette], np.uint8)
-        else:
-            palette = np.array([painting.parse_colour(c) for c in self.cmd_paint_palette(
-                {**args, "colours": settings.colours})["colours"]], np.uint8)
+        palette = np.array([painting.parse_colour(c) for c in settings.palette], np.uint8)
         img = painting._shrink(painting._rgb(tex.decode()), size)
-        index = painting.cleanup(painting.quantize(img, palette), len(palette), settings.cleanup)
+        index = painting.cleanup(painting.quantize(img, palette, settings), len(palette), settings.cleanup)
         data = texture_png(palette[index], size)
         with self.lock:
             self.textures_png[cache_key] = data
@@ -2592,9 +2587,7 @@ class Service:
 
         if source is None:
             raise AppError("Make the model again (Finish or Cut tab) to paint it.")
-        textures = _albedo(model, source)
-        if not textures:
-            raise AppError("This model has no colour textures to paint from.")
+        textures = _paint_textures(model, source, paint)
         try:
             return painting.surface_colours(source, textures, paint, lambda f, m: job.report(span * f, m))
         except ValueError as exc:
@@ -2732,6 +2725,15 @@ def paint_settings(s: dict):
         out.feature_mm = float(s.get("feature_mm") or out.feature_mm)
         out.cleanup = str(s.get("cleanup") or out.cleanup)
         out.max_depth = int(s.get("max_depth") or out.max_depth)
+        out.tolerance = float(s.get("tolerance") or 0)
+        out.min_share = float(s.get("min_share") or 0)
+        out.brightness = float(s.get("brightness") or 0)
+        out.contrast = float(1 if s.get("contrast") is None else s.get("contrast"))
+        out.saturation = float(1 if s.get("saturation") is None else s.get("saturation"))
+        sources = s.get("sources") or {}
+        if not isinstance(sources, dict):
+            raise ValueError("sources is material -> texture")
+        out.sources = {str(int(k)): str(v) for k, v in sources.items() if v not in (None, "")} or None
     except (TypeError, ValueError) as exc:
         raise AppError(f"Paint settings: {exc}") from None
     if not 2 <= out.colours <= MAX_COLOURS or (out.palette and not 1 <= len(out.palette) <= MAX_COLOURS):
@@ -2741,7 +2743,34 @@ def paint_settings(s: dict):
     if out.cleanup not in ("none", "light", "strong"):
         raise AppError("Clean-up is none, light or strong.")
     out.max_depth = min(max(out.max_depth, 1), 16)
+    if not 0 <= out.tolerance <= 50:
+        raise AppError("The colour tolerance is 0 to 50.")
+    if not 0 <= out.min_share <= 50:
+        raise AppError("The smallest colour share is 0 to 50%.")
+    if not (-1 <= out.brightness <= 1 and 0 <= out.contrast <= 3 and 0 <= out.saturation <= 3):
+        raise AppError("Brightness is -1 to 1; contrast and saturation 0 to 3.")
     return out
+
+
+def _settings_dict(settings) -> dict:
+    """paint.PaintSettings back as the settings dict paint_settings reads."""
+    from dataclasses import asdict
+
+    return asdict(settings)
+
+
+def _paint_textures(model: SourceModel, mesh: TriMesh, settings) -> dict[int, np.ndarray]:
+    """Material -> the colour texture it is painted from (its own, or the one the settings choose)."""
+    from ..paint import colour_textures
+
+    try:
+        textures = colour_textures(model, mesh, settings)
+    except ValueError as exc:
+        raise AppError(str(exc)) from None
+    if not textures:
+        raise AppError("This model has no colour textures to paint from"
+                       + (" (every material is set to not painted)." if settings and settings.sources else "."))
+    return textures
 
 
 def _albedo(model: SourceModel, mesh: TriMesh) -> dict[int, np.ndarray]:

@@ -27,10 +27,36 @@ const ENHANCE = { target_vertices: 1_000_000, method: "subdivide", smooth: true,
 const IMAGE_PATTERN = "Images (*.png;*.tga;*.tif;*.tiff;*.dds;*.jpg;*.jpeg;*.webp;*.bmp)";
 const EXPORT = { format: ".stl", units: "mm", textures: true, folder: "", paint: null };
 /** The painted 3MF's settings: the palette's size (chosen from the textures) or its colours (chosen by hand). */
-const PAINT = { colours: 4, palette: null, print_height_mm: 150, feature_mm: 0.5, cleanup: "light", preview: false };
+const PAINT = { colours: 4, palette: null, print_height_mm: 150, feature_mm: 0.5, cleanup: "light", tolerance: 0, min_share: 0,
+  brightness: 0, contrast: 1, saturation: 1 };
 const CLEANUPS = [["none", "None"], ["light", "Light: specks under 4 texels"], ["strong", "Strong: specks under 24 texels"]];
 /** The paint settings as the engine takes them (without the page's own). */
-const paintArgs = (p) => ({ colours: p.colours, palette: p.palette, print_height_mm: p.print_height_mm, feature_mm: p.feature_mm, cleanup: p.cleanup });
+const paintArgs = (p) => ({ colours: p.colours, palette: p.palette, print_height_mm: p.print_height_mm, feature_mm: p.feature_mm, cleanup: p.cleanup,
+  tolerance: p.tolerance, min_share: p.min_share, brightness: p.brightness, contrast: p.contrast, saturation: p.saturation, sources: p.sources });
+/** The settings that change the suggested colours. */
+const paletteArgs = (p) => ({ colours: p.colours, tolerance: p.tolerance, min_share: p.min_share, brightness: p.brightness, contrast: p.contrast,
+  saturation: p.saturation, sources: p.sources });
+/** The painted 3MF's settings (Finish tab), and the texture each material of this model is painted from
+ *  (kept per model: texture names are the model's own). Before 0.37 the Export tab kept them. */
+function usePaint(m) {
+  const own = useStore(ui, (s) => s.paintOpts);
+  const old = useStore(ui, (s) => s.exportOpts?.paint);
+  const all = useStore(ui, (s) => s.paintSources) || {};
+  const { preview: _p, sources: _s, ...base } = { ...PAINT, ...(own || old || {}) };
+  const sources = (m && all[m.id]) || {};
+  const paint = { ...base, sources };
+  const set = (patch) => {
+    const { sources: src, ...rest } = patch;
+    const next = {};
+    if (src !== undefined) {
+      const { [m.id]: _, ...others } = all;
+      next.paintSources = Object.keys(src).length ? { ...others, [m.id]: src } : others;
+    }
+    if (Object.keys(rest).length) next.paintOpts = { ...base, ...rest };
+    setPref(next);
+  };
+  return [paint, set];
+}
 const VIEW = { shading: "textured", edges: false };
 /** A material's texture roles, as the Materials list names them. */
 const ROLES = [["albedo", "Colour"], ["normal", "Normals"], ["height", "Height"]];
@@ -104,7 +130,7 @@ export function ModelPage({ route }) {
   const placeKey = entry ? JSON.stringify([entry.game, entry.category, entry.group]) : null;
   useEffect(() => {
     ui.set({ modelPlace: entry ? { game: entry.game, category: entry.category, group: entry.group } : null });
-    return () => ui.set({ modelPlace: null, paintPreview: null, texturePreview: null });
+    return () => ui.set({ modelPlace: null, paintShow: null, texturePreview: null });
   }, [placeKey]);
   const back = () => (history.length > 1 ? history.back() : (location.hash = entry ? routeHash(placeRoute(entry.game, entry.category)) : "#/"));
   const bar = { id: "mp-head", back: { id: "mp-back", run: back } };
@@ -345,17 +371,20 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
       kept.current.clear();
     };
   }, []);
-  // each material's colour texture, for the textured view; in the paint colours when the Export tab asks
-  const paintPreview = useStore(ui, (s) => s.paintPreview);
-  const paint = paintPreview?.sid === m.sid ? JSON.stringify(paintPreview.settings) : "";
+  // each material's colour texture, for the textured view; in the paint colours when the Finish tab asks
+  const paintShow = useStore(ui, (s) => s.paintShow) === m.sid;
+  const [paintNow] = usePaint(m);
+  const paint = paintShow ? JSON.stringify(paintArgs(paintNow)) : "";
   // the Textures tab's chosen texture draped over every part, to see it on the model
   const texturePreview = useStore(ui, (s) => s.texturePreview);
   const draped = texturePreview?.sid === m.sid && m.textures.some((t) => t.key === texturePreview.key) ? texturePreview.key : "";
   const textures = useMemo(() => {
     const have = new Set(m.textures.map((t) => t.key));
     const out = {};
+    const sources = paint && !draped ? paintNow.sources : {};
     m.materials.forEach((mat, i) => {
-      const key = draped || mat.albedo;
+      if (sources[i] === "none") return; // not painted
+      const key = draped || sources[i] || mat.albedo;
       if (!key || !have.has(key)) return;
       out[i] = paint && !draped ? binUrl("paint_texture", { sid: m.sid, key, max: 2048, settings: paint, ...args.url })
         : binUrl("texture", { sid: m.sid, key, max: 2048 });
@@ -1043,8 +1072,9 @@ function FinishTab({ m, args, stats, run, setRun, result, finished, which, setWh
         <li><span>Separate pieces</span><span>${st.shells}</span></li></ul>
       ${finished.notes.map((n, i) => html`<p class="insp-note" key=${i}>${n}</p>`)}
       ${which !== "finished" ? html`<div class="insp-actions"><button type="button" class="ghost compact" id="finish-show" onClick=${() => setWhich("finished")}>Show it</button></div>` : null}
-      <p class="muted">Export and Cut can use it: choose Finished there. It has no textures, as it's for printing.</p>
+      <p class="muted">Export and Cut can use it: choose Finished there. It has no textures; it is painted from the textured model for a painted 3MF (below).</p>
     </section>` : null}
+    <${PaintSection} m=${m} args=${args} which=${which} />
   </div>`;
 }
 
@@ -1222,12 +1252,7 @@ function ExportTab({ m, args, result, finished, which: shownWhich, pose, call, p
   const formats = info().formats || [];
   const textured = o.format === ".obj" || o.format === ".glb";
   const painted = o.format === ".3mf";
-  const paint = { ...PAINT, ...(o.paint || {}) };
-  const setPaint = (patch) => set({ paint: { ...paint, ...patch } });
-  // the painted 3MF's colours on the model in the 3D view, while asked for and while the format is 3MF
-  const preview = painted && paint.preview && which !== "finished" && which !== "pieces";
-  const previewKey = preview ? JSON.stringify([m.sid, paintArgs(paint)]) : "";
-  useEffect(() => { ui.set({ paintPreview: preview ? { sid: m.sid, settings: paintArgs(paint) } : null }); }, [previewKey]);
+  const [paint] = usePaint(m);
   const browse = async () => { const p = await pickFolder("Export to", folder || fallback); if (p) { setFolder(p); set({ folder: p }); } };
   const go = async () => {
     setBusy(true); setError(null); setDone(null);
@@ -1253,7 +1278,7 @@ function ExportTab({ m, args, result, finished, which: shownWhich, pose, call, p
     ${many ? html`<label class="check-row" title="Each piece turned so its biggest flat cut face (without pegs or a tongue on it) lies on the bed; dowels stand on end">
       <input type="checkbox" id="export-lay-flat" checked=${cutOpts.lay_flat} onChange=${(e) => setPref({ cutOpts: { ...cutOpts, lay_flat: e.target.checked } })} />
       <span>Lay each piece on a cut face<small class="muted">Off: the pieces keep their place in the model.</small></span></label>` : null}
-    ${painted ? html`<${PaintOptions} m=${m} args=${args} paint=${paint} setPaint=${setPaint} which=${which} />`
+    ${painted ? html`<${PaintSummary} m=${m} args=${args} paint=${paint} which=${which} />`
       : many ? null
       : html`<label class="check-row"><input type="checkbox" id="export-textures" checked=${o.textures && textured && which !== "finished"} disabled=${!textured || which === "finished"} onChange=${(e) => set({ textures: e.target.checked })} />
       <span>Include the colour textures${textured ? "" : " (OBJ and GLB only)"}</span></label>`}
@@ -1273,37 +1298,94 @@ function ExportTab({ m, args, result, finished, which: shownWhich, pose, call, p
 }
 
 
-/** The painted 3MF's colours: how many (chosen from the textures) or which (each swatch can be changed), how
- *  fine the paint goes at the print size, and the clean-up of specks; shown on the model when asked. */
-function PaintOptions({ m, args, paint, setPaint, which }) {
-  const [suggested, setSuggested] = useState(null); // { colours, coverage } from the engine for paint.colours
-  const [error, setError] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const canPreview = which !== "finished" && which !== "pieces";
+/** The colours suggested for the paint settings (kept by the engine): { suggested, error, busy }. */
+function usePalette(m, args, paint) {
+  const [state, setState] = useState({ suggested: null, error: null, busy: true });
+  const want = JSON.stringify(paletteArgs(paint));
   useEffect(() => {
     let live = true;
-    setBusy(true); setError(null);
-    api("paint_palette", { sid: m.sid, ...args.json, colours: paint.colours })
-      .then((r) => { if (live) { setSuggested(r); setBusy(false); } }, (e) => { if (live) { setSuggested(null); setError(msg(e)); setBusy(false); } });
+    setState((st) => ({ ...st, error: null, busy: true }));
+    api("paint_palette", { sid: m.sid, ...args.json, settings: JSON.parse(want) })
+      .then((r) => { if (live) setState({ suggested: r, error: null, busy: false }); },
+        (e) => { if (live) setState({ suggested: null, error: msg(e), busy: false }); });
     return () => { live = false; };
-  }, [m.sid, args.key, paint.colours]);
+  }, [m.sid, args.key, want]);
+  return state;
+}
+
+/** The filament slots' colours as swatches; each one can be changed by hand when `change` is given. */
+function Swatches({ id, colours, coverage, change }) {
+  return html`<div class="paint-swatches" id=${id}>${colours.map((c, i) => {
+    const title = `Filament ${i + 1}: ${c}${coverage?.[i] != null ? `, ${Math.round(coverage[i] * 100)}% of the surface` : ""}${change ? ". Click to change it." : ""}`;
+    return change ? html`<label key=${i} class="paint-swatch" style=${`background:${c}`} title=${title}>
+        <span>${i + 1}</span><input type="color" value=${c} onChange=${(e) => change(i, e.target.value)} /></label>`
+      : html`<span key=${i} class="paint-swatch" style=${`background:${c}`} title=${title}><span>${i + 1}</span></span>`;
+  })}</div>`;
+}
+
+/** A range slider whose value is sent when let go (each change chooses the colours again), shown as it moves. */
+function Slider({ id, label, value, min, max, step, text, hint, onChange }) {
+  const [moving, setMoving] = useState(null);
+  const shown = moving ?? value;
+  return html`<label class="field-block"><span>${label} <b class="slider-value" id=${`${id}-value`}>${text(shown)}</b></span>
+    <input type="range" id=${id} min=${min} max=${max} step=${step} value=${shown} onInput=${(e) => setMoving(Number(e.target.value))}
+      onChange=${(e) => { setMoving(null); onChange(Number(e.target.value)); }} />
+    ${hint ? html`<small class="muted">${hint}</small>` : null}</label>`;
+}
+
+const signed = (v) => (v > 0 ? `+${Math.round(v * 100)}` : `${Math.round(v * 100)}`);
+const times = (v) => `${Math.round(v * 100)}%`;
+
+/** Finish tab: the painted 3MF's colours. How many (chosen from the textures, colours closer than the tolerance
+ *  merged, the rarest dropped) or which (each swatch can be changed), the texture each material is painted from,
+ *  the textures' brightness, contrast and saturation, how fine the paint goes at the print size, and the clean-up
+ *  of specks; shown on the model when asked. The Export tab writes the 3MF with these. */
+function PaintSection({ m, args, which }) {
+  const [paint, setPaint] = usePaint(m);
+  const { suggested, error, busy } = usePalette(m, args, paint);
+  const showing = useStore(ui, (s) => s.paintShow) === m.sid;
+  const canPreview = which !== "finished" && which !== "pieces";
   const shown = paint.palette || suggested?.colours || [];
   const change = (i, colour) => { const next = shown.slice(); next[i] = colour.toUpperCase(); setPaint({ palette: next }); };
   const count = (n) => { n = Math.min(12, Math.max(2, Math.round(Number(n) || 4))); setPaint({ colours: n, palette: null }); };
-  return html`<div class="paint-options" id="paint-options">
-    <label class="field-block"><span>Colours</span><div class="field-row">
+  const fewer = !paint.palette && (paint.tolerance > 0 || paint.min_share > 0);
+  const adjusted = paint.brightness !== 0 || paint.contrast !== 1 || paint.saturation !== 1;
+  const nameOf = (k) => m.textures.find((t) => t.key === k)?.name || k;
+  const setSource = (i, key) => {
+    const next = { ...paint.sources };
+    if (key) next[i] = key; else delete next[i];
+    setPaint({ sources: next });
+  };
+  const anyTexture = m.textures.length > 0;
+  return html`<section class="insp-section" id="paint-section"><h3>Paint for colour printing</h3>
+    <p class="muted">The colours of a painted 3MF (Export tab, 3MF format): the textures are reduced to a few filament colours and painted on the model,
+      finer than its triangles. The Finished model and cut pieces are painted from the textured model they were made from.</p>
+    ${anyTexture ? null : html`<p class="warn-note">This model has no textures to paint from.</p>`}
+    <div class="paint-options" id="paint-options">
+    <label class="field-block"><span>${fewer ? "Colours at most" : "Colours"}</span><div class="field-row">
       <input type="range" id="paint-colours" min="2" max="12" step="1" value=${paint.colours} onInput=${(e) => count(e.target.value)} />
       <input type="number" id="paint-colours-n" class="num-short" min="2" max="12" step="1" value=${paint.colours} onChange=${(e) => count(e.target.value)} /></div>
-      <small class="muted">Filaments the print uses: the textures' colours are reduced to this many.</small></label>
-    <div class="field-block"><span>Palette ${paint.palette ? html`<small class="muted">(changed by hand)</small>` : null}</span>
-      <div class="paint-swatches" id="paint-swatches">${shown.map((c, i) => html`<label key=${i} class="paint-swatch" style=${`background:${c}`} title=${`Filament ${i + 1}: ${c}${suggested?.coverage?.[i] != null && !paint.palette ? `, ${Math.round(suggested.coverage[i] * 100)}% of the surface` : ""}. Click to change it.`}>
-        <span>${i + 1}</span><input type="color" value=${c} onChange=${(e) => change(i, e.target.value)} /></label>`)}
-        ${busy && !shown.length ? html`<span class="muted">Choosing the colours…</span>` : null}</div>
+      <small class="muted">Filaments the print uses: the textures' colours are reduced to this many${fewer ? ", fewer when colours are merged or dropped below" : ""}.</small></label>
+    <${Slider} id="paint-tolerance" label="Colour tolerance" value=${paint.tolerance} min=${0} max=${30} step=${1} text=${(v) => (v ? String(v) : "off")}
+      hint="Colours closer than this are merged into one: raise it when two filaments come out nearly the same shade (two greys, two reds). 5 is a just-visible difference, 20 merges light and dark shades of one colour."
+      onChange=${(v) => setPaint({ tolerance: v, palette: null })} />
+    <${Slider} id="paint-min-share" label="Smallest colour" value=${paint.min_share} min=${0} max=${10} step=${0.5} text=${(v) => (v ? `${v}% of the surface` : "off")}
+      hint="A colour covering less of the surface than this is dropped and painted in the nearest colour left. Small details (eyes, gems) are often under 1%."
+      onChange=${(v) => setPaint({ min_share: v, palette: null })} />
+    <div class="field-block"><span>Palette ${paint.palette ? html`<small class="muted">(changed by hand)</small>` : suggested ? html`<small class="muted" id="paint-count">${plural(shown.length, "colour")}</small>` : null}</span>
+      <${Swatches} id="paint-swatches" colours=${shown} coverage=${paint.palette ? null : suggested?.coverage} change=${change} />
+      ${busy && !shown.length ? html`<span class="muted">Choosing the colours…</span>` : null}
       ${error ? html`<small class="warn-note" role="alert" id="paint-error">${error}</small>` : null}
       <div class="insp-actions"><button type="button" class="ghost compact" id="paint-suggest" disabled=${!paint.palette} onClick=${() => setPaint({ palette: null })}>Back to the suggested colours</button></div></div>
-    <label class="check-row"><input type="checkbox" id="paint-preview" checked=${paint.preview && canPreview} disabled=${!canPreview} onChange=${(e) => setPaint({ preview: e.target.checked })} />
-      <span>Show the colours on the model<small class="muted">${canPreview ? "The 3D view's textured shading in these colours, as the print will be." : "Shown on the Enhanced or Original model."}</small></span></label>
-    ${canPreview ? null : html`<small class="muted" id="paint-from-note">${which === "pieces" ? "The pieces have" : "The Finished model has"} no textures of its own, so ${which === "pieces" ? "they are" : "it is"} painted from the textured model ${which === "pieces" ? "they were" : "it was"} made from: each part of the surface takes the colour of the textured surface at that place. Cut faces, joints and filled gaps take filament 1.</small>`}
+    <label class="check-row"><input type="checkbox" id="paint-preview" checked=${showing} onChange=${(e) => ui.set({ paintShow: e.target.checked ? m.sid : null })} />
+      <span>Show the colours on the model<small class="muted">${canPreview ? "The 3D view's textured shading in these colours, as the print will be." : "Shown on the Enhanced or Original model: the Finished model and the pieces have no textures of their own."}</small></span></label>
+    ${m.materials.length ? html`<div class="field-block" id="paint-sources"><span>Texture each material is painted from</span>
+      ${m.materials.map((mat, i) => html`<label class="mat-row paint-src" key=${i} title=${mat.details.join("\n")}><span class="mat-name">${mat.name}</span>
+        <select data-paint-material=${i} value=${paint.sources[i] || ""} onChange=${(e) => setSource(i, e.target.value)}>
+          <option value="">${mat.albedo ? `Its colour texture (${nameOf(mat.albedo)})` : "Its colour texture (it has none)"}</option>
+          ${m.textures.filter((t) => t.key !== mat.albedo).map((t) => html`<option key=${t.key} value=${t.key}>${t.name}</option>`)}
+          <option value="none">Not painted (filament 1)</option></select></label>`)}
+      <small class="muted">A material without a colour texture, or set to not painted, takes filament 1.</small></div>` : null}
     <div class="field-row">
       <label class="field-block"><span>Print height (mm)</span><input type="number" id="paint-height" min="1" step="1" value=${paint.print_height_mm} onChange=${(e) => setPaint({ print_height_mm: Math.max(1, Number(e.target.value) || 150) })} /></label>
       <label class="field-block"><span>Smallest feature (mm)</span><input type="number" id="paint-feature" min="0.05" step="0.05" value=${paint.feature_mm} onChange=${(e) => setPaint({ feature_mm: Math.max(0.05, Number(e.target.value) || 0.5) })} /></label></div>
@@ -1311,5 +1393,31 @@ function PaintOptions({ m, args, paint, setPaint, which }) {
     <label class="field-block"><span>Clean-up</span><select id="paint-cleanup" value=${paint.cleanup} onChange=${(e) => setPaint({ cleanup: e.target.value })}>
       ${CLEANUPS.map(([k, l]) => html`<option key=${k} value=${k}>${l}</option>`)}</select>
       <small class="muted">Specks in the reduced textures that would be single dots of filament are given the colour around them.</small></label>
+    <details class="more-settings" id="paint-adjust" open=${adjusted}><summary>Adjust the texture colours${adjusted ? " (changed)" : ""}</summary>
+      <p class="muted">Changes the textures' colours before they are reduced: game textures are often dark or dull, as the game's lighting brightens them.</p>
+      <${Slider} id="paint-brightness" label="Brightness" value=${paint.brightness} min=${-0.5} max=${0.5} step=${0.02} text=${signed}
+        onChange=${(v) => setPaint({ brightness: v, palette: null })} />
+      <${Slider} id="paint-contrast" label="Contrast" value=${paint.contrast} min=${0.5} max=${2} step=${0.05} text=${times}
+        onChange=${(v) => setPaint({ contrast: v, palette: null })} />
+      <${Slider} id="paint-saturation" label="Saturation" value=${paint.saturation} min=${0} max=${2} step=${0.05} text=${times}
+        onChange=${(v) => setPaint({ saturation: v, palette: null })} />
+      <div class="insp-actions"><button type="button" class="ghost compact" id="paint-adjust-reset" disabled=${!adjusted}
+        onClick=${() => setPaint({ brightness: 0, contrast: 1, saturation: 1, palette: null })}>Reset</button></div>
+    </details>
+    </div>
+  </section>`;
+}
+
+/** Export tab, 3MF format: the colours it will be painted with (set in the Finish tab). */
+function PaintSummary({ m, args, paint, which }) {
+  const { suggested, error, busy } = usePalette(m, args, paint);
+  const shown = paint.palette || suggested?.colours || [];
+  return html`<div class="paint-options" id="paint-summary"><div class="field-block"><span>Paint</span>
+    <${Swatches} id="export-swatches" colours=${shown} coverage=${paint.palette ? null : suggested?.coverage} />
+    ${busy && !shown.length ? html`<span class="muted">Choosing the colours…</span>` : null}
+    ${error ? html`<small class="warn-note" role="alert" id="paint-error">${error}</small>` : null}
+    <small class="muted">${plural(shown.length, "filament colour")}, painted down to ${paint.feature_mm} mm on a ${paint.print_height_mm} mm print. The colours, the textures they come from and the tolerance are set in the Finish tab.</small>
+    <div class="insp-actions"><button type="button" class="ghost compact" id="paint-settings" onClick=${() => ui.set({ inspectorAsk: { page: "model", tab: "finish", focus: "paint-colours-n" } })}>${Icon.drop(14)} Paint settings</button></div></div>
+    ${which === "finished" || which === "pieces" ? html`<small class="muted" id="paint-from-note">${which === "pieces" ? "The pieces have" : "The Finished model has"} no textures of its own, so ${which === "pieces" ? "they are" : "it is"} painted from the textured model ${which === "pieces" ? "they were" : "it was"} made from: each part of the surface takes the colour of the textured surface at that place. Cut faces, joints and filled gaps take filament 1.</small>` : null}
   </div>`;
 }
