@@ -327,6 +327,19 @@ def test_previews_stay_shown_and_a_job_stops_from_the_status_bar(page, app, weap
     page.click('#layout-switch [data-view="grid"]')
     assert [u for u in asked if any(f"id={w}&" in u for w in weapons)] == []  # (the game's page shows others too)
 
+    # Redraw preview (a card's menu): only that model's picture is drawn again, the others stay shown
+    first = page.locator(f'.results [data-model="{weapons[0]}"]').first
+    first.click(button="right")
+    page.click('[data-action="redraw-preview"]')
+    page.wait_for_selector("text=Drawing its preview again.")
+    page.wait_for_function(f"document.querySelector('.results [data-model=\"{weapons[0]}\"] [data-thumb]').dataset.thumb !== 'wait'", timeout=30000)
+    assert [u for u in asked if f"id={weapons[0]}&" in u and "cached" not in u]  # drawn, not read from the cache
+    assert [u for u in asked if f"id={weapons[1]}&" in u] == []
+    # and a whole kind, from the page's ⋯ menu
+    page.click("#browse-more")
+    page.click('[data-action="game-redraw"]')
+    page.wait_for_selector("text=previews in Weapons again")
+
     # a long step 1, stopped by clicking its status at the foot of the window
     page.click(".results [data-model]")
     page.click("#summary-open")

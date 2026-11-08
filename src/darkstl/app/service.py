@@ -2116,6 +2116,26 @@ class Service:
     def cmd_thumbs_clear(self, args: dict) -> dict:
         return {"removed": self.thumbs.clear()}
 
+    def cmd_thumbs_redraw(self, args: dict) -> dict:
+        """Forget the previews of some models, so they're drawn again the next time they're shown: the models
+        ``ids``, or every model of a place (``game``, and ``category`` and ``group`` in it), low-detail copies too.
+        For previews drawn by an older version (without their textures, say) that the file's date can't tell apart."""
+        with self.lock:
+            if args.get("ids"):
+                entries = [e for e in (self.library.find(str(i)) for i in args["ids"]) if e is not None]
+                paths = {e.path for e in entries}
+                paths |= {self.opened[str(i)] for i in args["ids"] if str(i) in self.opened}
+                count = len(args["ids"])
+            elif args.get("game"):
+                entries = self.library.query(str(args["game"]), args.get("category") or None,
+                                             args.get("group") if args.get("group") is not None else None, "", True)
+                paths = {e.path for e in entries}
+                count = len(entries)
+            else:
+                raise AppError("Say which models' previews to draw again.")
+        removed = self.thumbs.forget(paths)
+        return {"removed": removed, "models": count}
+
     # ------------------------------------------------------------ enhance and export
 
     @staticmethod

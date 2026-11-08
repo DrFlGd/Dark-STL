@@ -118,7 +118,7 @@ function Engine() {
     </section>
     <section class="ls-section" id="settings-previews">
       <h2>Previews</h2>
-      <p class="muted">The pictures on the cards are drawn the first time each model comes into view, and kept in <span class="note-path">${s.previews}</span> until the model's folder is rescanned.</p>
+      <p class="muted">The pictures on the cards are drawn the first time each model comes into view, and kept in <span class="note-path">${s.previews}</span> until the model's folder is rescanned. To draw one model's again, use Redraw preview in its ⋯ menu; a game's, Redraw this game's previews in its menu.</p>
       <div><button type="button" class="ghost" id="previews-clear" onClick=${async () => {
         try { const r = await api("thumbs_clear"); forgetThumbs(); toast(`Cleared ${plural(r.removed, "preview")}. They're drawn again as they come into view.`); } catch (e) { toast(msg(e)); }
       }}>Draw them again</button></div>

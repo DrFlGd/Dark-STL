@@ -25,10 +25,14 @@ function remember(id, entry) {
   return entry;
 }
 
-/** Let go of every picture shown, so they're asked for again (after a rescan, or Settings' Draw them again). */
-export function forgetThumbs() {
-  for (const e of known.values()) if (e.src) URL.revokeObjectURL(e.src);
-  known.clear();
+/** Let go of every picture shown (or only those of the models `ids`), so they're asked for again: after a rescan,
+ *  Settings' Draw them again, or a model's Redraw preview. */
+export function forgetThumbs(ids = null) {
+  for (const [id, e] of [...known.entries()]) {
+    if (ids && !ids.includes(id)) continue;
+    if (e.src) URL.revokeObjectURL(e.src);
+    known.delete(id);
+  }
   ui.set((s) => ({ thumbGen: (s.thumbGen || 0) + 1 }));
 }
 

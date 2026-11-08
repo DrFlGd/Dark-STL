@@ -14,7 +14,7 @@ import { Inspector } from "./inspector.js";
 import { openMenu, usePageKeys } from "./actions.js";
 import { Thumb } from "./thumbs.js";
 import { GameBadge, CategoryIcon } from "./gameicons.js";
-import { gameMenu, rescanFolder, collectItem, collectModelItem, modelFilesItem, unpackFolder, UNPACK_HINT, arrangeModel, combineModels } from "./games.js";
+import { gameMenu, rescanFolder, collectItem, collectModelItem, modelFilesItem, redrawModelItem, unpackFolder, UNPACK_HINT, arrangeModel, combineModels } from "./games.js";
 
 const PAGE = 300;
 const VIEWS = [["grid", "Grid", "grid"], ["list", "List", "list"]];
@@ -40,6 +40,7 @@ function modelMenu(m) {
     { sep: true },
     collectModelItem(m),
     modelFilesItem(m),
+    redrawModelItem(m),
   ];
 }
 
