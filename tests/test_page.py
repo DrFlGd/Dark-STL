@@ -738,8 +738,9 @@ def test_export_a_painted_3mf(page, app, tmp_path):
         page.wait_for_function(f"document.querySelectorAll('#paint-swatches .paint-swatch').length === {n}", timeout=30000)
 
     def first_swatch(colour):
-        page.wait_for_function(f"document.querySelector('#paint-swatches .paint-swatch').title.startsWith('Filament 1: {colour}')",
-                               timeout=30000)
+        # the swatches are drawn again after each change: wait through the moment there are none
+        page.wait_for_function(f"(document.querySelector('#paint-swatches .paint-swatch')?.title || '')"
+                               f".startsWith('Filament 1: {colour}')", timeout=30000)
 
     page.wait_for_selector("#first-run")
     page.click("#first-add-folder")
@@ -770,7 +771,8 @@ def test_export_a_painted_3mf(page, app, tmp_path):
     # without saturation the red and blue are two greys, which a wide tolerance merges into one
     page.click("#paint-adjust summary")
     slide("#paint-saturation", 0)
-    page.wait_for_function("/^Filament 1: #(..)\\1\\1/.test(document.querySelector('#paint-swatches .paint-swatch').title)", timeout=30000)
+    page.wait_for_function("/^Filament 1: #(..)\\1\\1/.test(document.querySelector('#paint-swatches .paint-swatch')?.title || '')",
+                           timeout=30000)
     slide("#paint-tolerance", 20)
     swatches(1)
     assert page.text_content("#paint-tolerance-value") == "20"
