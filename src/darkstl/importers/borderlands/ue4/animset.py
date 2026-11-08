@@ -2,8 +2,10 @@
 
 A skeletal mesh is animated through its ``Skeleton`` asset: every ``AnimSequence`` made for that skeleton
 can pose it. They are found by reading the header of each package that may be an animation (its name or
-folder says so) and keeping those whose ``Skeleton`` import is the mesh's. What that finds, and each
-animation's length, is kept in the importer's cache per game, so the list comes back at once next time.
+folder says so) and keeping those whose ``Skeleton`` import is the mesh's; in a game that names them
+otherwise, every package whose name doesn't say it is something else is looked through, once. What that
+finds, and each animation's length, is kept in the importer's cache per game, so the list comes back at once
+next time. When nothing is found, the Pose tab says what was looked through and what was found instead.
 
 Animations key the skeleton's bones; a mesh's bones are matched to them by name. Rotations come from the
 animation; translations are the mesh's bone offsets moved by the animation's change from the skeleton's
@@ -21,7 +23,8 @@ import logging
 import os
 import re
 import threading
-from collections import OrderedDict
+from collections import Counter, OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,13 +38,20 @@ from .asset import Package
 
 log = logging.getLogger(__name__)
 
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 ANIM_CLASSES = ("AnimSequence",)
 # names an animation package goes by: Epic's style guide (A_, AS_) and others' (Anim_, ANIM_, AN_...)
 ANIM_NAME = re.compile(r"^(a|as|an|am|anm|ani|anim|anims|animation|seq)_", re.I)
 NOT_ANIM_NAME = re.compile(r"^(t|tex|m|mi|mic|mf|mat|sk|skm|sm|sk_|bp|abp|wbp|phys|pa|pha|ps|p|fx|ns|niagara|s|sw|"
                            r"sc|snd|cue|ak|dt|da|curve|ao|bs|blendspace|mont|am_mont|cr|ctrl|ik|rig|lv|map|l|wb|ui)_",
                            re.I)
+# folders that hold no animations, left out when every package is looked through
+NOT_ANIM_FOLDERS = {"audio", "sound", "sounds", "wwise", "wwiseaudio", "wwiseassets", "music", "ui", "hud", "umg",
+                    "movies", "localization", "fonts", "textures", "texture", "materials", "material",
+                    "materiallibrary", "niagara", "particles", "shaders", "splash", "icons", "slate", "lighting"}
+WIDE_PEEKS = 250000  # at most this many packages are looked through when the names find nothing
+WIDE_FAILURES = 300  # stop looking through when this many in a row can't be read (an Oodle pak with no DLL)
+WIDE_THREADS = 4
 UNIT = 0.01  # centimetres -> metres
 _TO_EXPORT = np.diag([UNIT, -UNIT, UNIT, 1.0])  # Unreal (left-handed, cm) -> export frame (right-handed, m)
 _FROM_EXPORT = np.linalg.inv(_TO_EXPORT)
@@ -65,12 +75,28 @@ def maybe_animation(virtual: str) -> bool:
     return any("anim" in part or part in ("mocap", "sequences", "motions") for part in low.split("/")[:-1])
 
 
+def could_be_animation(virtual: str) -> bool:
+    """Whether a package might be an animation at all: its name and folders don't say it is something else."""
+    low = virtual.lower()
+    if not low.endswith(".uasset"):
+        return False
+    stem = virtual.rsplit("/", 1)[-1][:-7]
+    if NOT_ANIM_NAME.match(stem):
+        return False
+    return not any(part in NOT_ANIM_FOLDERS for part in low.split("/")[:-1])
+
+
+def is_animation_class(cls: str) -> bool:
+    """An ``AnimSequence``, or a game's own class made from it (``...AnimSequence``)."""
+    return cls in ANIM_CLASSES or cls.endswith("AnimSequence")
+
+
 def _skeleton_package(pkg: Package) -> str | None:
-    """The package of the Skeleton a package imports (lower case), if it imports exactly one."""
-    found = {pkg.import_package(-(i + 1)).lower() for i, imp in enumerate(pkg.imports) if imp.class_name == "Skeleton"}
+    """The package of the Skeleton a package imports, if it imports exactly one."""
+    found = {pkg.import_package(-(i + 1)) for i, imp in enumerate(pkg.imports) if imp.class_name == "Skeleton"}
     if not found:
-        found = {pkg.name.lower() for e in pkg.exports if e.class_name == "Skeleton"}
-    return next(iter(found)) if len(found) == 1 else None
+        found = {pkg.name for e in pkg.exports if e.class_name == "Skeleton"}
+    return next(iter(found)) if len({f.lower() for f in found}) == 1 else None
 
 
 def _main_class(pkg: Package, virtual: str) -> str:
@@ -88,16 +114,37 @@ def _main_class(pkg: Package, virtual: str) -> str:
 # Which packages are animations, and of which skeleton (kept per game)
 
 
+@dataclass
+class Survey:
+    """What looking for a skeleton's animations went through, to say why none were found."""
+    looked: int  # packages whose header was read
+    wide: bool  # every package that may be an animation was looked through, not only those named like one
+    animations: int  # animations found, of any skeleton
+    skeletons: list[tuple[str, int]]  # the other skeletons animations were made for, with how many, most first
+    users: list[tuple[str, int]]  # classes of the other packages that use this skeleton, with how many
+    anim_like: list[tuple[str, int]]  # other classes seen whose name says animation (AnimMontage...)
+    unreadable: int  # packages whose header couldn't be read
+    first_error: str
+    stopped: str  # why looking through stopped early, if it did
+    locked: int  # paks no key opened: their files weren't looked at
+
+
 class AnimIndex:
-    """For one game folder: each animation package's skeleton, and what listing an animation read from it."""
+    """For one game folder: each animation package's skeleton, and what listing an animation read from it.
+
+    Packages named like animations (or in animation folders) are looked at first. When none of them is made
+    for the skeleton asked about, in a game that may name its animations otherwise (or where nothing named like
+    one is), every package whose name and folders don't say it is something else is looked through, once."""
 
     def __init__(self, gf: vfs.GameFiles, cache: Path | None):
         self.gf = gf
         self.cache = cache
         self._lock = threading.Lock()
-        self._files: dict[str, list] | None = None  # virtual (lower) -> [class, skeleton package, spelled]
-        self._info: dict[str, list] = {}  # virtual (lower) -> [frames, length, additive, codec, error]
+        self._files: dict[str, list] | None = None  # virtual (lower) -> [class, skeleton package, virtual, error]
+        self._info: dict[str, list] = {}  # virtual (lower) -> [frames, length, additive, codec, error, moved]
         self._fingerprint = ""
+        self._wide = False  # every package that may be an animation has been looked through
+        self._stopped = ""  # why that stopped early, if it did
         self._dirty = False
 
     def _file(self) -> Path | None:
@@ -105,6 +152,10 @@ class AnimIndex:
             return None
         tag = hashlib.sha1(os.path.normcase(str(self.gf.root)).encode()).hexdigest()[:16]
         return Path(self.cache) / f"unreal-animations-{tag}.json"
+
+    def _every(self) -> list[str]:
+        return [v for v in self.gf.assets() + (self.gf.zen.assets() if self.gf.zen is not None else [])
+                if v.lower().endswith(".uasset")]
 
     def _make_fingerprint(self, names: list[str]) -> str:
         h = hashlib.sha1(f"{INDEX_VERSION}\n".encode())
@@ -128,9 +179,8 @@ class AnimIndex:
     def _load(self) -> None:
         if self._files is not None:
             return
-        names = [v for v in self.gf.assets() + (self.gf.zen.assets() if self.gf.zen is not None else [])
-                 if maybe_animation(v)]
-        self._fingerprint = self._make_fingerprint(names)
+        every = self._every()
+        self._fingerprint = self._make_fingerprint(every)
         files: dict[str, list] = {}
         f = self._file()
         if f is not None and f.is_file():
@@ -139,15 +189,12 @@ class AnimIndex:
                 if data.get("fingerprint") == self._fingerprint:
                     files = data.get("files", {})
                     self._info = data.get("info", {})
+                    self._wide = bool(data.get("wide"))
+                    self._stopped = str(data.get("stopped") or "")
             except (OSError, ValueError):
                 files = {}
-        for v in names:
-            key = v.lower()
-            if key in files:
-                continue
-            files[key] = self._peek(v)
-            self._dirty = True
         self._files = files
+        self._peek_many([v for v in every if maybe_animation(v) and v.lower() not in files])
         self.save()
 
     def _peek(self, virtual: str) -> list:
@@ -159,11 +206,46 @@ class AnimIndex:
 
                 pkg = asset.read_package(vfs.package_name(virtual) or virtual, self.gf.read(virtual),
                                          assume_engine=self.gf.assumed_engine)
-            cls = _main_class(pkg, virtual)
-            return [cls, _skeleton_package(pkg) or "" if cls in ANIM_CLASSES else "", virtual]
+            return [_main_class(pkg, virtual), _skeleton_package(pkg) or "", virtual, ""]
         except Exception as e:  # noqa: BLE001 - an unreadable package is just not an animation
             log.debug("Couldn't read the header of %s: %s", virtual, e)
-            return ["", "", virtual]
+            return ["", "", virtual, (str(e) or type(e).__name__)[:300]]
+
+    def _peek_many(self, todo: list[str]) -> str:
+        """Read the headers of ``todo`` into the index; why it stopped early (``""`` if it didn't): when that
+        many in a row can't be read, the rest won't be either, and those read so far are left out."""
+        if not todo:
+            return ""
+        threads = 1 if self.gf.zen is not None else WIDE_THREADS
+        failures, run = 0, []
+        with ThreadPoolExecutor(threads) as pool:
+            for start in range(0, len(todo), 512):
+                chunk = todo[start:start + 512]
+                for v, row in zip(chunk, pool.map(self._peek, chunk)):
+                    self._files[v.lower()] = row
+                    run.append(v.lower())
+                    failures = failures + 1 if row[3] else 0
+                self._dirty = True
+                if failures >= WIDE_FAILURES:
+                    for k in run:  # tried again next time (an Oodle library may be found by then)
+                        if self._files[k][3]:
+                            del self._files[k]
+                    return f"the game's packages stopped being readable ({row[3]})"
+        return ""
+
+    def _widen(self) -> None:
+        """Look through every package that may be an animation."""
+        todo = [v for v in self._every() if could_be_animation(v) and v.lower() not in self._files]
+        stopped = ""
+        if len(todo) > WIDE_PEEKS:
+            stopped = f"only the first {WIDE_PEEKS:,} of {len(todo):,} packages were looked through"
+            todo = todo[:WIDE_PEEKS]
+        log.info("Looking through %d packages for animations", len(todo))
+        failed = self._peek_many(todo)
+        self._stopped = failed or stopped
+        self._wide = not failed
+        self._dirty = True
+        self.save()
 
     def save(self) -> None:
         f = self._file()
@@ -172,20 +254,49 @@ class AnimIndex:
         try:
             f.parent.mkdir(parents=True, exist_ok=True)
             tmp = f.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"fingerprint": self._fingerprint, "files": self._files, "info": self._info}),
-                           "utf-8")
+            tmp.write_text(json.dumps({"fingerprint": self._fingerprint, "files": self._files, "info": self._info,
+                                       "wide": self._wide, "stopped": self._stopped}), "utf-8")
             tmp.replace(f)
             self._dirty = False
         except OSError:
             log.warning("Couldn't keep the animation index in %s", f, exc_info=True)
+
+    def _of(self, want: str) -> list[str]:
+        return sorted((row[2] for row in self._files.values()
+                       if is_animation_class(row[0]) and row[1].lower() == want), key=str.lower)
 
     def of_skeleton(self, skeleton_package: str) -> list[str]:
         """The virtual paths of the animations made for a skeleton (its package, ``/Game/...``)."""
         with self._lock:
             self._load()
             want = skeleton_package.lower()
-            return sorted((row[2] for row in self._files.values() if row[0] in ANIM_CLASSES and row[1] == want),
-                          key=str.lower)
+            found = self._of(want)
+            if not found and not self._wide and self._may_widen():
+                self._widen()
+                found = self._of(want)
+            return found
+
+    def _may_widen(self) -> bool:
+        """Whether to look through every package: for a game whose importer asks for it, or one none of whose
+        packages named like animations is one."""
+        return self.gf.game in vfs.LOOK_THROUGH_FOR_ANIMATIONS or \
+            not any(is_animation_class(row[0]) for row in self._files.values())
+
+    def survey(self, skeleton_package: str) -> Survey:
+        """What the index went through, for a skeleton none of whose animations it found."""
+        with self._lock:
+            self._load()
+            want = skeleton_package.lower()
+            rows = list(self._files.values())
+            anims = [r for r in rows if is_animation_class(r[0])]
+            skeletons = Counter(r[1] for r in anims if r[1].lower() != want)
+            users = Counter(r[0] for r in rows if r[1].lower() == want and r[0] and r[0] != "Skeleton"
+                            and not is_animation_class(r[0]))
+            anim_like = Counter(r[0] for r in rows if "anim" in r[0].lower() and not is_animation_class(r[0]))
+            bad = [r for r in rows if r[3]]
+            return Survey(len(rows), self._wide, len(anims), skeletons.most_common(), users.most_common(),
+                          anim_like.most_common(), len(bad), bad[0][3] if bad else "", self._stopped,
+                          len(self.gf.locked))
 
     def info(self, virtual: str) -> list | None:
         with self._lock:
@@ -256,8 +367,7 @@ class UEAnimations:
         if self._entries is None:
             return text
         if not self._entries:
-            return (f"No animations made for its skeleton ({self.skeleton_package.rsplit('/', 1)[-1]}) were "
-                    "found in the game's files.")
+            return self._none_found()
         bad = self.unreadable()
         if bad:
             acl = [n for n, why in bad if "ACL" in why]
@@ -268,6 +378,46 @@ class UEAnimations:
             if other:
                 first = next(why for _n, why in bad if "ACL" not in why)
                 text += f" {other} couldn't be read ({first})."
+        return text
+
+    def _none_found(self) -> str:
+        """Why no animations are listed: what was looked through, and what was found instead."""
+        s = self.index.survey(self.skeleton_package)
+        mine = self.skeleton_package.rsplit("/", 1)[-1]
+
+        def short(package: str) -> str:
+            if not package:
+                return "no single skeleton"
+            stem = package.rsplit("/", 1)[-1]
+            return package if stem.lower() == mine.lower() else stem  # another folder's skeleton of that name
+
+        def counted(pairs, most=4) -> str:
+            text = ", ".join(f"{name}: {n:,}" for name, n in pairs[:most])
+            return text + (f" and {len(pairs) - most} more" if len(pairs) > most else "")
+
+        how = "every package that may be one" if s.wide else "those named like animations"
+        text = (f"No animations made for its skeleton ({mine}) were found in the game's files. Dark STL looked "
+                f"through {s.looked:,} {'package' if s.looked == 1 else 'packages'} ({how})")
+        if s.animations:
+            text += (f": {s.animations:,} {'is an animation' if s.animations == 1 else 'are animations'}, made "
+                     f"for other skeletons ({counted([(short(k), n) for k, n in s.skeletons])}).")
+        else:
+            text += ", and none of them is an animation (AnimSequence)."
+        if s.anim_like:
+            text += f" Other animation assets found: {counted(s.anim_like)}."
+        if s.users:
+            text += f" Other assets made for its skeleton: {counted(s.users)}."
+        if self.gf.virtual_of_package(self.skeleton_package) is None and (
+                self.gf.zen is None or self.gf.zen.by_name.get(self.skeleton_package.lower()) is None):
+            text += f" Its skeleton ({self.skeleton_package}) isn't in the game's files either."
+        if s.unreadable:
+            text += (f" {s.unreadable:,} {'package' if s.unreadable == 1 else 'packages'} couldn't be read "
+                     f"({s.first_error}).")
+        if s.stopped:
+            text += f" Looking through stopped early: {s.stopped}."
+        if s.locked:
+            text += (f" {s.locked} of the game's paks couldn't be opened (they need another AES key), so their "
+                     "files weren't looked at.")
         return text
 
     # -- the skeleton
@@ -388,7 +538,8 @@ class UEAnimations:
     # -- poses
     def _read(self, virtual: str) -> AnimSequence:
         pkg = self.gf.open_package(virtual)
-        e = pkg.main_export(("AnimSequence",))
+        e = pkg.main_export(ANIM_CLASSES) or next(
+            (x for x in pkg.exports if x.outer == 0 and is_animation_class(x.class_name)), None)
         if e is None:
             raise FormatError(f"{virtual} isn't an animation")
         bones = len(self._skeleton.bones) if self._skeleton is not None else None
@@ -473,4 +624,5 @@ def skin(positions: np.ndarray, normals: np.ndarray | None, joints: np.ndarray, 
     return p, n
 
 
-__all__ = ["AnimIndex", "UEAnimations", "index_for", "maybe_animation", "skin", "to_export"]
+__all__ = ["AnimIndex", "Survey", "UEAnimations", "could_be_animation", "index_for", "is_animation_class",
+           "maybe_animation", "skin", "to_export"]

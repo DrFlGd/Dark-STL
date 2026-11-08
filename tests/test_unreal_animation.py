@@ -32,7 +32,8 @@ TURN = [IDENTITY, (0, 0, math.sin(math.pi / 8), math.cos(math.pi / 8)), (0, 0, S
 RISE = [(0, 0, 35)] * 3  # the pelvis 10 cm above its reference place
 
 
-def _packages(engine=426, unversioned=False, rotation_format=A.ACF_FLOAT96, per_track=False, acl=False):
+def _packages(engine=426, unversioned=False, rotation_format=A.ACF_FLOAT96, per_track=False, acl=False,
+              folder="Characters/Selene/Animations", prefix="A_", own=True):
     out = {}
     anim_engine, engine = engine, (420 if engine == 420 else 426)  # the synthetic meshes are 4.20 or 4.26 ones
     b = S.Ue4Package(SKEL_PKG, engine, unversioned=unversioned)
@@ -63,10 +64,11 @@ def _packages(engine=426, unversioned=False, rotation_format=A.ACF_FLOAT96, per_
         out[f"{path}/{stem}"] = b
 
     # tracks keyed by skeleton bone index: arm 2, pelvis 1
-    anim("Characters/Selene/Animations", "A_Selene_Wave", [2, 1], [(None, TURN), (RISE, None)])
-    anim("Characters/Selene/Animations", "A_Selene_Idle", [1], [([(0, 0, 25)], [IDENTITY])], frames=1, length=0)
-    anim("Characters/Selene/Animations/Additive", "A_Selene_Lean", [2], [(None, [(0, 0, S45, S45)])], frames=1,
-         length=0, additive=True)
+    if own:
+        anim(folder, f"{prefix}Selene_Wave", [2, 1], [(None, TURN), (RISE, None)])
+        anim(folder, f"{prefix}Selene_Idle", [1], [([(0, 0, 25)], [IDENTITY])], frames=1, length=0)
+        anim(f"{folder}/Additive", f"{prefix}Selene_Lean", [2], [(None, [(0, 0, S45, S45)])], frames=1, length=0,
+             additive=True)
     if acl:
         b = S.Ue4Package("/Game/Characters/Selene/Animations/A_Selene_Run", engine, unversioned=unversioned)
         skel = b.import_object(SKEL_PKG, "Skeleton", "SK_Selene_Skeleton")
@@ -177,6 +179,50 @@ def test_acl_animations_are_named_not_offered(tmp_path):
     (name, why), = m.animations.unreadable()
     assert name == "A_Selene_Run" and "ACL" in why
     assert "1 of its skeleton's animations are compressed with the ACL plugin" in m.animations.note
+
+
+def test_animations_not_named_like_animations_are_found(tmp_path):
+    """Returnal's animations may go without A_/AS_ and outside an animation folder: when the names find none for
+    a skeleton, every package that may be one is looked through (once: what's found is kept)."""
+    imp, path = _suit(tmp_path, folder="Gameplay/Player/Selene/Moves", prefix="")
+    m = imp.load(path)
+    assert [i.name for i in m.animations.list()] == ["Selene_Idle", "Selene_Lean", "Selene_Wave"]
+    last = m.build(MeshOptions(pose=("Selene_Wave", 2)))
+    assert np.allclose(_vertex(last, (0, -1, 0.6)), (0, -1, 0.6), atol=1e-4)
+    import json
+
+    kept, = (tmp_path / "cache").glob("unreal-animations-*.json")
+    data = json.loads(kept.read_text("utf-8"))
+    assert data["wide"] is True
+    assert any(k.endswith("selene_wave.uasset") for k in data["files"])
+
+
+def test_says_why_no_animations_were_found(tmp_path):
+    """None made for the model's skeleton: the Pose tab says what was looked through and what was found."""
+    imp, path = _suit(tmp_path, own=False)
+    m = imp.load(path)
+    assert m.animations.list() == []
+    note = m.animations.note
+    assert "No animations made for its skeleton (SK_Selene_Skeleton) were found" in note
+    assert "every package that may be one" in note
+    assert "1 is an animation, made for other skeletons (SK_Severed_Skeleton: 1)" in note
+
+
+def test_says_why_a_model_cant_be_posed(tmp_path):
+    """A model with no animations to list still says why on the Pose tab."""
+    from types import SimpleNamespace
+
+    from darkstl.app.config import Config
+    from darkstl.app.service import Service
+
+    imp, path = _suit(tmp_path, own=False)
+    service = Service(Config(), tmp_path / "service-cache")
+    service.sessions["a"] = SimpleNamespace(model=imp.load(path))
+    got = service.call("model_animations", {"sid": "a"})
+    assert got["animations"] == [] and "SK_Severed_Skeleton: 1" in got["note"]
+    unposable = SimpleNamespace(animations=None, pose_note="It's a static mesh: it has no bones to pose.")
+    service.sessions["b"] = SimpleNamespace(model=unposable)
+    assert service.call("model_animations", {"sid": "b"})["note"].startswith("It's a static mesh")
 
 
 def test_unversioned_without_type_mappings(tmp_path, monkeypatch):

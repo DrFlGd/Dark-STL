@@ -100,6 +100,7 @@ def _branch_in(exe: Path) -> int | None:
 
 
 vfs.ENGINE_OF_GAME[GAME] = engine_version
+vfs.LOOK_THROUGH_FOR_ANIMATIONS.add(GAME)  # what its animations are named isn't known
 
 
 def _label(folder: str) -> str:

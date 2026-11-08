@@ -785,8 +785,9 @@ function PoseTab({ m, pose, setPose, busy, call }) {
   const seconds = (f) => (anim && anim.fps ? (f / anim.fps).toFixed(2) : "0.00");
   return html`<div class="tab-pad" id="pose-tab">
     ${error ? html`<p class="warn-note" role="alert" id="pose-error">${error}</p>` : null}
-    ${!list && !error ? html`<p class="muted" id="pose-loading">Reading the animations…</p>` : null}
+    ${!list && !error ? html`<p class="muted" id="pose-loading">Reading the animations… The first time for an Unreal game this can look through all of its files, which may take a few minutes.</p>` : null}
     ${list && !list.length ? html`<p id="pose-none">No animations were found for this model.</p>` : null}
+    ${list && !list.length && note ? html`<p class="muted" id="pose-none-why">${note}</p>` : null}
     ${list && list.length ? html`<section class="insp-section" id="pose-pick"><h3>Animation</h3>
       <input type="search" id="pose-filter" placeholder=${`Find among ${plural(list.length, "animation")}…`} value=${filter} onInput=${(e) => setFilter(e.target.value)} aria-label="Find an animation" />
       <select id="pose-anim" size="8" value=${pose?.anim || ""} onChange=${(e) => choose(e.target.value)} aria-label="Animation">

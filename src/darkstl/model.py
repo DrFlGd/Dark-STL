@@ -141,6 +141,7 @@ class SourceModel:
     info: list[str] = field(default_factory=list)  # description lines (format, version, counts)
     notes: list[str] = field(default_factory=list)  # things the user should know
     animations: Animations | None = field(default=None, repr=False)  # how the model can be posed, if it can
+    pose_note: str | None = None  # why it can't be posed, when it can't (shown on the Pose tab)
     # named points parts can be fitted to (a weapon's magazine or sight socket): 4x4 matrices, column vectors,
     # in the export frame (metres, Z up), in the bind pose. See configs.Attach.
     sockets: dict[str, np.ndarray] = field(default_factory=dict, repr=False)

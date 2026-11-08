@@ -1881,7 +1881,7 @@ class Service:
         session = self._session(args)
         anims = session.model.animations
         if anims is None:
-            return {"animations": [], "bones": 0}
+            return {"animations": [], "bones": 0, "note": getattr(session.model, "pose_note", None)}
         try:
             infos = anims.list()
             bones = len(anims.skeleton)

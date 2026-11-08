@@ -92,12 +92,17 @@ def _materials(mesh: Mesh4, dirs) -> tuple[list[Material], dict[str, Texture], l
 
 
 def _animations(pkg: Package, m: Mesh4, cache: Path | None):
-    """The animations that can pose a skeletal mesh (None when it has no skeleton or skin weights), and a note
-    saying why it can't be posed when it can't."""
+    """The animations that can pose a skeletal mesh (None when it has no skeleton or skin weights), and why it
+    can't be posed when it can't."""
     from .ue4.animset import UEAnimations
 
-    if m.kind != "SkeletalMesh" or m.joints is None or m.ref_pose is None or not m.bones:
-        return None, None
+    if m.kind != "SkeletalMesh":
+        return None, "It's a static mesh: it has no bones to pose."
+    if m.ref_pose is None or not m.bones:
+        return None, "It has no bones to pose."
+    if m.joints is None:
+        return None, next((n for n in m.notes if "skin weights" in n),
+                          "Its skin weights couldn't be read, so it can't be posed.")
     files = getattr(pkg, "files", None)
     if m.skeleton is None or files is None:
         return None, "Its Skeleton asset isn't named, so the animations made for it can't be found."
@@ -144,7 +149,7 @@ def load(importer_key: str, path: Path, dirs: list[Path], game: str | None = Non
     if not len(tris):
         notes.append(f"{m.name} has no geometry.")
     anims, why = _animations(pkg, m, cache)
-    if why:
+    if why and why not in notes and m.kind == "SkeletalMesh":
         notes.append(why)
     skin = (m.joints, m.weights) if anims is not None else None
 
@@ -172,7 +177,7 @@ def load(importer_key: str, path: Path, dirs: list[Path], game: str | None = Non
     if m.skeleton is not None and m.kind == "SkeletalMesh":
         info.append(f"skeleton {m.skeleton.path}")
     return SourceModel(name=m.name, path=path, importer=importer_key, build=build, game=game, parts=parts,
-                       materials=mats, textures=textures, info=info, notes=notes, animations=anims,
+                       materials=mats, textures=textures, info=info, notes=notes, animations=anims, pose_note=why,
                        rig=_rig(anims) if anims is not None else None)
 
 

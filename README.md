@@ -136,7 +136,9 @@ neither.
 - **Posing Unreal 4/5 models** (Returnal, Borderlands 3, Wonderlands, Borderlands 4): a skeletal
   mesh can be posed on the Pose tab with every `AnimSequence` made for its `Skeleton` asset. The
   first time a game's animations are listed, Dark STL reads the header of each package that looks
-  like an animation (named `A_`, `AS_`, `Anim_`... or in an animation folder) and keeps what it found.
+  like an animation (named `A_`, `AS_`, `Anim_`... or in an animation folder) and keeps what it found;
+  for Returnal, whose animations may be named otherwise, it looks through every package that may be
+  one when the names find none. When none are found, the Pose tab says what was looked through.
   Animations compressed with Unreal's own codecs are read (4.12 to 5.x); those compressed with the
   ACL plugin are counted on the Pose tab but not read yet.
 
