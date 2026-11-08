@@ -213,14 +213,15 @@ def _vertex_buffer(engine: int, normals, uvs) -> bytes:
     return out
 
 
-def _skel_section(engine: int, material: int, first: int, tris: int) -> bytes:
+def _skel_section(engine: int, material: int, first: int, tris: int, bone_map=(0,), base: int = 0,
+                  count: int = 0) -> bytes:
     out = b"\0\0" + struct.pack("<hii", material, first, tris) + struct.pack("<i", 0)
     if engine >= 426:
         out += b"\0"  # recompute tangents vertex mask
     out += struct.pack("<i", 1)  # cast shadow
-    out += struct.pack("<I", 0) + struct.pack("<i", 0)  # base vertex, cloth mapping
-    out += struct.pack("<i", 1) + struct.pack("<H", 0)  # bone map
-    out += struct.pack("<iih", 0, 4, -1) + bytes(20)
+    out += struct.pack("<I", base) + struct.pack("<i", 0)  # base vertex, cloth mapping
+    out += struct.pack("<i", len(bone_map)) + struct.pack(f"<{len(bone_map)}H", *bone_map)  # bone map
+    out += struct.pack("<iih", count, 4, -1) + bytes(20)
     out += struct.pack("<ii", 0, 0)  # duplicated vertices
     out += struct.pack("<i", 0)  # disabled
     return out
@@ -242,30 +243,64 @@ def _bounds(positions) -> bytes:
     return struct.pack("<7f", *origin, *extent, radius)
 
 
+def reference_skeleton(b: Ue4Package, bones) -> bytes:
+    """``FReferenceSkeleton``: ``bones`` as (name, parent, (qx, qy, qz, qw), (tx, ty, tz)), unit scale."""
+    out = struct.pack("<i", len(bones)) + b"".join(b.fname(n) + struct.pack("<i", p) for n, p, _q, _t in bones)
+    out += struct.pack("<i", len(bones)) + b"".join(struct.pack("<10f", *q, *t, 1, 1, 1) for _n, _p, q, t in bones)
+    out += struct.pack("<i", len(bones)) + b"".join(b.fname(n) + struct.pack("<i", i)
+                                                    for i, (n, _p, _q, _t) in enumerate(bones))
+    return out
+
+
+ROOT_ONLY = [("root", -1, (0, 0, 0, 0), (0, 0, 0))]
+
+
+def skin_weights(engine: int, joints, weights) -> bytes:
+    """``FSkinWeightVertexBuffer`` for (V, 4) section bone indices and 0-255 weights."""
+    j = np.asarray(joints, np.uint8).reshape(-1, 4)
+    w = np.asarray(weights, np.uint8).reshape(-1, 4)
+    rows = np.concatenate([j, w], axis=1).tobytes()
+    n = len(j)
+    if engine < 424:
+        return b"\0\0" + struct.pack("<iI", 0, n) + bulk_array(8, rows)
+    if engine < 425:
+        return b"\0\0" + struct.pack("<iII", 0, 8, n) + bulk_array(8, rows)
+    out = b"\0\0" + struct.pack("<iIII", 0, 4, 4 * n, n) + struct.pack("<i", 0)  # 8-bit bone indices
+    out += bulk_array(1, rows)
+    lookup = np.array([(i * 8) << 8 | 4 for i in range(n)], "<u4").tobytes()
+    return out + b"\0\0" + struct.pack("<i", n) + bulk_array(4, lookup)
+
+
 def skeletal_data(b: Ue4Package, materials: list[int], positions, normals, uvs, indices, sections,
-                  in_bulk: bool = False, cooked_out_first: bool = False) -> bytes:
-    """``sections``: (material, first index, triangles)."""
+                  in_bulk: bool = False, cooked_out_first: bool = False, bones=None, joints=None, weights=None,
+                  skeleton: int = 0) -> bytes:
+    """``sections``: (material, first index, triangles[, bone map, base vertex, vertices]). ``bones``: see
+    :func:`reference_skeleton`; ``joints``/``weights`` (V, 4) write skin weights; ``skeleton`` the Skeleton
+    the mesh names."""
     e = b.engine
-    out = b.props(b.p_bool("bHasVertexColors", False))
+    items = [b.p_bool("bHasVertexColors", False)]
+    if skeleton:
+        items.append(b.p_obj("Skeleton", skeleton))
+    out = b.props(*items)
     out += bytes([1, 0]) + _bounds(positions)
     out += struct.pack("<i", len(materials))
     for i, m in enumerate(materials):
         out += _skeletal_material(e, m, b.fname(f"Slot{i}"))
-    out += struct.pack("<i", 1) + b.fname("root") + struct.pack("<i", -1)
-    out += struct.pack("<i", 1) + bytes(40)
-    out += struct.pack("<i", 1) + b.fname("root") + struct.pack("<i", 0)
+    out += reference_skeleton(b, bones or ROOT_ONLY)
     out += struct.pack("<i", 1)  # cooked
     idx = np.asarray(indices, "<u2").tobytes()
     secs = struct.pack("<i", len(sections)) + b"".join(_skel_section(e, *s) for s in sections)
+    skin = skin_weights(e, joints, weights) if joints is not None else b""
     lods = []
     if e < 424:
         lod = b"\0\0" + secs + b"\x02" + bulk_array(2, idx) + struct.pack("<ii", 0, 0)
-        lod += _positions(positions) + _vertex_buffer(e, normals, uvs)
+        lod += _positions(positions) + _vertex_buffer(e, normals, uvs) + skin
         lods.append(lod)
     else:
         if cooked_out_first:
             lods.append(b"\0\0" + struct.pack("<ii", 1, 1) + struct.pack("<i", 0))
         streamed = b"\0\0" + b"\x02" + bulk_array(2, idx) + _positions(positions) + _vertex_buffer(e, normals, uvs)
+        streamed += skin
         lod = b"\0\0" + struct.pack("<ii", 0, 0 if in_bulk else 1) + struct.pack("<i", 0) + secs
         lod += struct.pack("<i", 0) + struct.pack("<I", 0)
         lod += b.add_bulk(streamed) if in_bulk else streamed

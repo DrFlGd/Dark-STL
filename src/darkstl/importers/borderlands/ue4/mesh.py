@@ -44,6 +44,9 @@ class Section4:
     material: int
     first_index: int
     triangles: int
+    base_vertex: int = 0  # skeletal meshes: the section's vertices, and the bones its weights index
+    vertices: int = 0
+    bone_map: np.ndarray | None = None
 
 
 @dataclass
@@ -62,6 +65,12 @@ class Mesh4:
     lod: int = 0
     sockets: list[ObjectRef] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # skeletal meshes: each bone's reference pose (B, 10: rotation x y z w, translation, scale), the
+    # Skeleton asset the mesh is animated with, and per vertex its bones (indices into ``bones``) and weights
+    ref_pose: np.ndarray | None = None
+    skeleton: ObjectRef | None = None
+    joints: np.ndarray | None = None
+    weights: np.ndarray | None = None
 
     def triangles(self) -> np.ndarray:
         return self.indices.reshape(-1, 3)
@@ -205,14 +214,15 @@ def _skel_section(r: Reader, v: asset.Versions) -> Section4:
         r.i32()  # cast shadow
     if v.cv("UE5Main") >= 54:  # SkelMeshSectionVisibleInRayTracingFlagAdded
         r.i32()
-    r.u32()  # base vertex index
+    base = r.u32()  # base vertex index
     if v.cv("UE5Release") >= 15:  # AddClothMappingLODBias: an array per LOD
         for _ in range(r.count(64)):
             r.skip(64 * r.count())
     else:
         r.skip(64 * r.count())  # cloth mapping data
-    r.skip(2 * r.count())  # bone map
-    r.i32()  # vertices
+    n = r.count(1 << 16)
+    bone_map = np.frombuffer(r.bytes(2 * n), "<u2").astype(np.int64)
+    count = r.i32()  # vertices
     r.i32()  # max bone influences
     r.i16()  # cloth asset index
     r.skip(20)  # clothing data
@@ -221,7 +231,79 @@ def _skel_section(r: Reader, v: asset.Versions) -> Section4:
         r.skip(8 * r.count())
     if v.cv("Release") >= asset.RELEASE_ADD_SKELETAL_MESH_SECTION_DISABLE:
         r.i32()
-    return Section4(mat, first, tris)
+    return Section4(mat, first, tris, int(base), int(count), bone_map)
+
+
+def _skin_weights(r: Reader, v: asset.Versions) -> tuple[np.ndarray, np.ndarray] | None:
+    """``FSkinWeightVertexBuffer``: per vertex its bones (indices into its section's bone map) and weights (0-1),
+    (V, k) each; None when the buffer was stripped. Layouts after CUE4Parse's reader."""
+    unlimited = v.cv("Anim") >= 5  # UnlimitedBoneInfluences (4.25)
+    g, _c = _strip(r)
+    variable, wide_index, wide_weight = False, False, False
+    if v.engine < 424:
+        extra = bool(r.i32())
+        nv = r.u32()
+    elif not unlimited:
+        extra = bool(r.i32())
+        if v.cv("SkeletalMesh") >= asset.SKELETAL_SPLIT_MODEL_AND_RENDER_DATA:
+            r.u32()  # stride
+        nv = r.u32()
+    else:
+        variable = bool(r.i32())
+        most = r.u32()
+        r.u32()  # bone entries
+        nv = r.u32()
+        extra = most > 4
+        if v.cv("Anim") >= 4:  # IncreaseBoneIndexLimitPerChunk
+            wide_index = bool(r.i32())
+        if v.cv("UE5Main") >= 90:  # IncreasedSkinWeightPrecision
+            wide_weight = bool(r.i32())
+    raw = b""
+    if not g & 2:
+        _esize, _n, raw = r.bulk_array()
+    lookup = None
+    if unlimited:
+        lg, _lc = _strip(r)
+        r.i32()  # vertices
+        if not lg & 2:
+            _e, _n, lraw = r.bulk_array()
+            lookup = np.frombuffer(lraw, "<u4").astype(np.int64)
+    if not raw or nv <= 0:
+        return None
+    isz, wsz = (2 if wide_index else 1), (2 if wide_weight else 1)
+    data = np.frombuffer(raw, np.uint8)
+    if variable and lookup is not None and len(lookup) == nv:
+        offsets, counts = lookup >> 8, lookup & 0xFF
+        k = max(int(counts.max()), 1)
+        joints = np.full((nv, k), -1, np.int64)
+        weights = np.zeros((nv, k), np.float64)
+        for j in range(k):
+            has = counts > j
+            o = offsets[has]
+            joints[has, j] = _unpack(data, o + j * isz, isz)
+            weights[has, j] = _unpack(data, o + counts[has] * isz + j * wsz, wsz)
+    else:
+        stride = len(raw) // nv
+        k = stride // (isz + wsz) if stride else 0
+        if k == 0 or k * (isz + wsz) != stride:
+            k = 8 if extra else 4
+            stride = k * (isz + wsz)
+        if stride * nv > len(raw):
+            raise FormatError("the skin weights don't match the vertex count")
+        rows = np.arange(nv, dtype=np.int64)[:, None] * stride
+        cols = np.arange(k, dtype=np.int64)[None, :]
+        joints = _unpack(data, rows + cols * isz, isz)
+        weights = _unpack(data, rows + k * isz + cols * wsz, wsz).astype(np.float64)
+    weights = weights / (65535.0 if wide_weight else 255.0)
+    joints = np.where(weights > 0, joints, -1)
+    return joints, weights
+
+
+def _unpack(data: np.ndarray, at: np.ndarray, size: int) -> np.ndarray:
+    at = np.asarray(at, np.int64)
+    if size == 1:
+        return data[at].astype(np.int64)
+    return data[at].astype(np.int64) | (data[at + 1].astype(np.int64) << 8)
 
 
 def _skel_streamed(r: Reader, v: asset.Versions):
@@ -229,7 +311,15 @@ def _skel_streamed(r: Reader, v: asset.Versions):
     indices = _index_container(r)
     positions = _positions(r)
     normals, uvs, _n = _vertex_buffer(r, v)
-    return indices, positions, normals, uvs
+    return indices, positions, normals, uvs, _weights_after(r, v)
+
+
+def _weights_after(r: Reader, v: asset.Versions):
+    """The skin weights that follow the vertex buffers, or None (with the reason) when they can't be read."""
+    try:
+        return _skin_weights(r, v)
+    except (FormatError, ValueError, IndexError) as e:
+        return str(e) or "the skin weights couldn't be read"
 
 
 def _skel_lod(r: Reader, pkg: Package, new_format: bool):
@@ -245,7 +335,7 @@ def _skel_lod(r: Reader, pkg: Package, new_format: bool):
             return None
         positions = _positions(r)
         normals, uvs, _n = _vertex_buffer(r, v)
-        return sections, indices, positions, normals, uvs
+        return sections, indices, positions, normals, uvs, _weights_after(r, v)
     cooked_out = bool(r.i32())
     inlined = bool(r.i32())
     r.skip(2 * r.count())  # required bones
@@ -255,13 +345,13 @@ def _skel_lod(r: Reader, pkg: Package, new_format: bool):
     r.skip(2 * r.count())  # active bones
     r.u32()  # buffers size
     if inlined:
-        indices, positions, normals, uvs = _skel_streamed(r, v)
+        streamed = _skel_streamed(r, v)
     else:
         data = asset.read_bulk(r)
         if not data:
             return None
-        indices, positions, normals, uvs = _skel_streamed(Reader(data, pkg), v)
-    return sections, indices, positions, normals, uvs
+        streamed = _skel_streamed(Reader(data, pkg), v)
+    return (sections,) + streamed
 
 
 def read_skeletal_mesh(pkg: Package, e: Export) -> Mesh4:
@@ -275,13 +365,7 @@ def read_skeletal_mesh(pkg: Package, e: Export) -> Mesh4:
         ref, slot = _skeletal_material(r, pkg)
         mats.append(ref)
         slots.append(slot)
-    bones = []
-    for _ in range(r.count(1 << 16)):
-        bones.append((r.name(), r.i32()))
-    r.skip((80 if v.engine >= 500 else 40) * r.count(1 << 16))  # reference pose
-    for _ in range(r.count(1 << 16)):  # name -> index
-        r.name()
-        r.i32()
+    bones, ref_pose = read_reference_skeleton(r, v)
     if v.cv("SkeletalMesh") < asset.SKELETAL_SPLIT_MODEL_AND_RENDER_DATA:
         raise FormatError(f"{e.name}: skeletal meshes from before Unreal 4.19 aren't supported")
     if not g & 1:
@@ -289,6 +373,7 @@ def read_skeletal_mesh(pkg: Package, e: Export) -> Mesh4:
     cooked = bool(r.i32())
     if not cooked:
         raise FormatError(f"{e.name} has no cooked render data")
+    skeleton = skeleton_of(pkg, props)
     sockets = []
     arr = props.get("Sockets")
     if isinstance(arr, Array4):
@@ -300,15 +385,67 @@ def read_skeletal_mesh(pkg: Package, e: Export) -> Mesh4:
         got = _skel_lod(r, pkg, new_format)
         if got is None:
             continue
-        sections, indices, positions, normals, uvs = got
+        sections, indices, positions, normals, uvs, skin = got
         if len(positions) == 0:
             continue
         if lod:
             notes.append(f"Level of detail {lod} is the most detailed one this mesh ships with.")
+        joints = weights = None
+        if isinstance(skin, tuple):
+            joints, weights = _global_joints(skin[0], sections, len(positions)), skin[1]
+            if len(joints) != len(positions):
+                joints = weights = None
+        if joints is None and bones:
+            why = skin if isinstance(skin, str) else "the mesh ships without them"
+            notes.append(f"Its skin weights couldn't be read ({why}), so it can't be posed.")
         return Mesh4(e.name, "SkeletalMesh", positions, normals, uvs, indices, sections, mats, slots, bones, n, lod,
-                     sockets, notes)
+                     sockets, notes, ref_pose, skeleton, joints, weights)
     return Mesh4(e.name, "SkeletalMesh", np.zeros((0, 3)), None, [], np.zeros(0, np.int64), [], mats, slots, bones,
-                 n, 0, sockets, ["No level of detail has geometry."])
+                 n, 0, sockets, ["No level of detail has geometry."], ref_pose, skeleton)
+
+
+def read_reference_skeleton(r: Reader, v: asset.Versions) -> tuple[list[tuple[str, int]], np.ndarray]:
+    """``FReferenceSkeleton``: the bones (name, parent index) and their reference pose, (B, 10) as rotation
+    (x, y, z, w), translation and scale, in Unreal's frame and units."""
+    bones = []
+    for _ in range(r.count(1 << 16)):
+        bones.append((r.name(), r.i32()))
+    n = r.count(1 << 16)
+    wide = v.engine >= 500
+    raw = r.bytes((80 if wide else 40) * n)
+    pose = np.frombuffer(raw, "<f8" if wide else "<f4").reshape(n, 10).astype(np.float64) if n else np.zeros((0, 10))
+    for _ in range(r.count(1 << 16)):  # name -> index
+        r.name()
+        r.i32()
+    if len(pose) != len(bones):
+        raise FormatError(f"the skeleton has {len(bones)} bones but {len(pose)} reference transforms")
+    return bones, pose
+
+
+def skeleton_of(pkg: Package, props: Props) -> ObjectRef | None:
+    """The Skeleton asset a skeletal mesh (or animation) names; without readable properties, the package's
+    only Skeleton import."""
+    ref = props.get("Skeleton")
+    if isinstance(ref, ObjectRef) and ref:
+        return ref
+    found = [-(i + 1) for i, imp in enumerate(pkg.imports) if imp.class_name == "Skeleton"]
+    found += [e.index + 1 for e in pkg.exports if e.class_name == "Skeleton"]
+    return ObjectRef(pkg, found[0]) if len(found) == 1 else None
+
+
+def _global_joints(local: np.ndarray, sections: list[Section4], count: int) -> np.ndarray:
+    """Per-vertex bone indices into the mesh's skeleton: each section's weights index its own bone map."""
+    out = np.full(local.shape, -1, np.int64)
+    for s in sections:
+        if s.bone_map is None or not len(s.bone_map):
+            continue
+        lo, hi = s.base_vertex, min(s.base_vertex + (s.vertices or count), count, len(local))
+        if hi <= lo:
+            continue
+        j = local[lo:hi]
+        ok = (j >= 0) & (j < len(s.bone_map))
+        out[lo:hi] = np.where(ok, s.bone_map[np.clip(j, 0, len(s.bone_map) - 1)], -1)
+    return out
 
 
 # -- static meshes --------------------------------------------------------------------

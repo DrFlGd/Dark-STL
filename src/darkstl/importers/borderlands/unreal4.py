@@ -14,7 +14,7 @@ import numpy as np
 
 from ...collect import RelatedFile
 from ...errors import FormatError
-from ...model import Material, MeshOptions, Part, SourceModel, Texture
+from ...model import Material, MeshOptions, Part, Rig, SourceModel, Texture
 from . import materials as ue3_materials
 from .files import GAME_BL3, GAME_BL4, GAME_WL
 from .mesh import build_trimesh
@@ -91,7 +91,38 @@ def _materials(mesh: Mesh4, dirs) -> tuple[list[Material], dict[str, Texture], l
     return mats, textures, notes
 
 
-def load(importer_key: str, path: Path, dirs: list[Path], game: str | None = None) -> SourceModel:
+def _animations(pkg: Package, m: Mesh4, cache: Path | None):
+    """The animations that can pose a skeletal mesh (None when it has no skeleton or skin weights), and a note
+    saying why it can't be posed when it can't."""
+    from .ue4.animset import UEAnimations
+
+    if m.kind != "SkeletalMesh" or m.joints is None or m.ref_pose is None or not m.bones:
+        return None, None
+    files = getattr(pkg, "files", None)
+    if m.skeleton is None or files is None:
+        return None, "Its Skeleton asset isn't named, so the animations made for it can't be found."
+    ref = m.skeleton.ref
+    skeleton_package = pkg.import_package(ref) if ref < 0 else pkg.name
+    used = np.unique(m.joints[(m.weights > 0) & (m.joints >= 0)])
+    return UEAnimations(m.bones, m.ref_pose, skeleton_package, files, cache, used_bones=used), None
+
+
+def _rig(anims) -> Rig:
+    """The mesh's bones in the export frame, posed from its skeleton's animations."""
+    from .ue4.animset import to_export
+
+    def pose_locals(anim: str, frame: int):
+        return list(anims.names_), to_export(anims.local_pose(anim, anims.clamp(anim, frame)))
+
+    def pose_all(anim: str):
+        return list(anims.names_), to_export(anims.local_poses(anim))
+
+    return Rig(list(anims.names_), anims.parents.copy(), to_export(anims.local), to_export(anims.bind_world),
+               pose_locals, pose_all)
+
+
+def load(importer_key: str, path: Path, dirs: list[Path], game: str | None = None,
+         cache: Path | None = None) -> SourceModel:
     path = Path(path)
     pkg = open_asset(path, game)
     e = pkg.main_export(MODEL_CLASSES)
@@ -112,13 +143,24 @@ def load(importer_key: str, path: Path, dirs: list[Path], game: str | None = Non
         parts.append(Part(f"Section {i} ({name})", s.material, len(np.unique(seg)) if len(seg) else 0, s.triangles))
     if not len(tris):
         notes.append(f"{m.name} has no geometry.")
+    anims, why = _animations(pkg, m, cache)
+    if why:
+        notes.append(why)
+    skin = (m.joints, m.weights) if anims is not None else None
 
     def build(options: MeshOptions):
+        positions, normals = m.positions, m.normals
         if options.pose is not None:
-            raise FormatError(f"{m.name} can't be posed yet")
+            if anims is None:
+                raise FormatError(f"{m.name} has no animations to pose it with")
+            from .ue4.animset import skin as skin_vertices
+
+            name, frame = options.pose
+            matrices = anims.skin_matrices(name, anims.clamp(name, frame))
+            positions, normals = skin_vertices(m.positions, m.normals, m.joints, m.weights, matrices)
         ranges = [(tris[s.first_index // 3:s.first_index // 3 + s.triangles], s.material, i)
                   for i, s in enumerate(m.sections) if options.parts is None or i in options.parts]
-        return build_trimesh(m.positions, m.normals, uv, ranges)
+        return build_trimesh(positions, normals, uv, ranges, skin=skin if options.pose is None else None)
 
     v = pkg.versions
     engine = f"Unreal {v.engine // 100}.{v.engine % 100}"
@@ -127,8 +169,11 @@ def load(importer_key: str, path: Path, dirs: list[Path], game: str | None = Non
             + (f", {len(m.bones)} bones" if m.bones else "") + f", level of detail {m.lod} of {m.lod_count}"]
     if m.sockets:
         info.append("sockets: " + ", ".join(s.name for s in m.sockets[:12]))
+    if m.skeleton is not None and m.kind == "SkeletalMesh":
+        info.append(f"skeleton {m.skeleton.path}")
     return SourceModel(name=m.name, path=path, importer=importer_key, build=build, game=game, parts=parts,
-                       materials=mats, textures=textures, info=info, notes=notes)
+                       materials=mats, textures=textures, info=info, notes=notes, animations=anims,
+                       rig=_rig(anims) if anims is not None else None)
 
 
 # Unreal's naming convention for textures; the paks' indexes give no classes, so textures are found by name
@@ -187,7 +232,8 @@ def _package_files(gf, virtual: str, kind: str) -> list[RelatedFile]:
     return out
 
 
-def related_files(path: Path, textures: bool = True) -> list[RelatedFile]:
+def related_files(path: Path, textures: bool = True, animations: bool = False,
+                  cache: Path | None = None) -> list[RelatedFile]:
     path = Path(path)
     try:
         pkg = open_asset(path)
@@ -197,13 +243,15 @@ def related_files(path: Path, textures: bool = True) -> list[RelatedFile]:
     if gf is None or not gf.exists(pkg.virtual):
         return [RelatedFile(path, "model")]
     out = _package_files(gf, pkg.virtual, "model")
-    if not textures:
-        return out
     seen = {pkg.virtual.lower()}
     e = pkg.main_export(MODEL_CLASSES)
     try:
         m = read_skeletal_mesh(pkg, e) if e and e.class_name == "SkeletalMesh" else read_static_mesh(pkg, e)
     except (FormatError, TypeError):
+        return out
+    if animations:
+        out += _animation_files(gf, pkg, m, cache, seen)
+    if not textures:
         return out
     for ref in m.materials:
         queue = [ref]
@@ -221,6 +269,24 @@ def related_files(path: Path, textures: bool = True) -> list[RelatedFile]:
             for i, imp in enumerate(opkg.imports):
                 if imp.class_name in ("Texture2D", "MaterialInstanceConstant", "Material") and opkg is not pkg:
                     queue.append(type(r)(opkg, -(i + 1)))
+    return out
+
+
+def _animation_files(gf, pkg: Package, m: Mesh4, cache: Path | None, seen: set[str]) -> list[RelatedFile]:
+    """The skeleton and the animations that pose a skeletal mesh, each package with its .uexp/.ubulk."""
+    anims, _why = _animations(pkg, m, cache)
+    if anims is None:
+        return []
+    out = []
+    try:
+        virtuals = anims.files_used()
+    except FormatError:
+        return []
+    for v in virtuals:
+        if v.lower() in seen or not gf.exists(v):
+            continue
+        seen.add(v.lower())
+        out += _package_files(gf, v, "animation")
     return out
 
 

@@ -126,8 +126,50 @@ def _texture_start(pkg, data: bytes, q: int) -> bool:
     return 0 <= idx < len(pkg.names) and num == 0 and pkg.names[idx].startswith("PF_")
 
 
+def _skeleton_start(pkg, data: bytes, q: int) -> bool:
+    """A ``Skeleton``'s reference skeleton: bones with names and parents before them, as many reference
+    transforms (unit rotations), and the name-to-index map."""
+    if q + 4 > len(data):
+        return False
+    n = struct.unpack_from("<i", data, q)[0]
+    if not 0 < n <= 4096 or q + 4 + 12 * n + 4 > len(data):
+        return False
+    for i in range(n):
+        idx, num, parent = struct.unpack_from("<iii", data, q + 4 + 12 * i)
+        if not 0 <= idx < len(pkg.names) or not 0 <= num < 1 << 16 or not (parent < i if i else parent == -1):
+            return False
+    p = q + 4 + 12 * n
+    if struct.unpack_from("<i", data, p)[0] != n:
+        return False
+    wide = pkg.versions.engine >= 500
+    size = 80 if wide else 40
+    if p + 4 + size * n > len(data):
+        return False
+    for i in range(min(n, 8)):
+        x, y, z, w = struct.unpack_from("<4d" if wide else "<4f", data, p + 4 + size * i)
+        if not _floats_ok((x, y, z, w)) or abs(x * x + y * y + z * z + w * w - 1) > 1e-2:
+            return False
+    return True
+
+
+def _anim_start(pkg, data: bytes, q: int) -> bool:
+    """An ``AnimSequence``'s compressed data: strip flags, the flag that it follows, a track map of bones."""
+    if q + 2 + 4 + 4 + 4 > len(data):
+        return False
+    g, c = data[q], data[q + 1]
+    if not g & 1 or g > 3 or c > 7 or struct.unpack_from("<i", data, q + 2)[0] != 1:
+        return False
+    from .anim import read_compressed
+
+    try:
+        found = read_compressed(Reader(data, pkg, pos=q), pkg)
+    except (FormatError, struct.error, ValueError, IndexError, UnicodeDecodeError):
+        return False
+    return bool(found.track_bones)
+
+
 _STARTS = {"SkeletalMesh": _skeletal_start, "StaticMesh": _static_start, "Texture2D": _texture_start,
-           "VirtualTexture2D": _texture_start}
+           "VirtualTexture2D": _texture_start, "Skeleton": _skeleton_start, "AnimSequence": _anim_start}
 
 
 def _material_refs(pkg, values: bytes) -> list[ObjectRef]:
