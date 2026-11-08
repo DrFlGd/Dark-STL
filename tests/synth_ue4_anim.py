@@ -90,6 +90,10 @@ def encode_tracks(tracks, rotation_format: int = ACF_FLOAT96, per_track: bool = 
     return bytes(stream), offsets
 
 
+# UAnimationAsset::Serialize writes the skeleton's GUID after the object's own (every 4.x/5.x animation)
+SKELETON_GUID = bytes.fromhex("c7a1e05b4f3d9e2a8b6c1d0e5f4a3b29")
+
+
 def anim_data(b: Ue4Package, skeleton: int, track_bones: list[int], tracks, frames: int, length: float,
               rotation_format: int = ACF_FLOAT96, per_track: bool = False, additive: bool = False,
               codec: str = "/Script/Engine.AnimCompress_BitwiseCompressOnly") -> bytes:
@@ -97,7 +101,7 @@ def anim_data(b: Ue4Package, skeleton: int, track_bones: list[int], tracks, fram
     items = [b.p_int("NumFrames", frames), p_float(b, "SequenceLength", length), b.p_obj("Skeleton", skeleton)]
     if additive:
         items.append(b.p_enum("AdditiveAnimType", "EAdditiveAnimationType", "AAT_LocalSpaceBase"))
-    out = b.props(*items)
+    out = b.props(*items) + SKELETON_GUID
     out += bytes([1, 0]) + struct.pack("<I", 1)  # strip flags, bSerializeCompressedData
     stream, offsets = encode_tracks(tracks, rotation_format, per_track)
     key = AKF_PER_TRACK if per_track else AKF_CONSTANT
@@ -134,7 +138,7 @@ def anim_data(b: Ue4Package, skeleton: int, track_bones: list[int], tracks, fram
 def acl_anim_data(b: Ue4Package, skeleton: int, frames: int, length: float) -> bytes:
     """An animation whose keys are compressed with the ACL plugin (4.25+ layout; the ACL buffer is a stub)."""
     out = b.props(b.p_int("NumFrames", frames), p_float(b, "SequenceLength", length), b.p_obj("Skeleton", skeleton))
-    out += bytes([1, 0]) + struct.pack("<I", 1)
+    out += SKELETON_GUID + bytes([1, 0]) + struct.pack("<I", 1)
     data = struct.pack("<III", 64, 0, 0xAC11AC11) + bytes(52)
     out += struct.pack("<i", 0) + struct.pack("<ii", 1, 0) + struct.pack("<i", 0) + struct.pack("<iI", len(data), 0)
     out += data + fstring("AnimBoneCompressionCodec_ACL_0") + fstring("") + struct.pack("<i", 0)

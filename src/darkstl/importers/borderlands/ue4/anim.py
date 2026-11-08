@@ -156,6 +156,27 @@ def read_compressed(r: Reader, pkg: Package, bones: int | None = None) -> _Compr
     return out
 
 
+SKELETON_GUID = 16  # UAnimationAsset::Serialize: the skeleton's GUID, after the object's own
+
+
+def read_after_properties(r: Reader, pkg: Package, bones: int | None = None) -> _Compressed:
+    """The compressed data of an animation whose reader stands after its properties and object GUID: past
+    the skeleton's GUID that every animation asset writes next, else (should a game leave it out) right
+    there."""
+    start = r.pos
+    first: Exception | None = None
+    for at in (start + SKELETON_GUID, start):
+        if at + 6 > len(r.data):
+            continue
+        r.pos = at
+        try:
+            return read_compressed(r, pkg, bones)
+        except (FormatError, struct.error, ValueError, IndexError) as exc:
+            first = first or exc
+    r.pos = start
+    raise first if first is not None else FormatError("not an animation's data")
+
+
 def _track_map(r: Reader, limit: int) -> list[int]:
     n = r.count(4096)
     bones = [int(x) for x in _ints(r, n)]
@@ -602,7 +623,7 @@ def read_anim(pkg: Package, e: Export, bones: int | None = None) -> AnimSequence
 
     r = pkg.export_data(e)
     props = object_props(pkg, r, e)
-    c = read_compressed(r, pkg, bones)
+    c = read_after_properties(r, pkg, bones)
     tracks = decode(c)
     keys = _prop_number(props, "NumberOfKeys", "NumFrames")
     frames = int(keys) if keys else (c.frames or 0)
@@ -677,5 +698,6 @@ def transforms_to_matrices(rot: np.ndarray, trans: np.ndarray, scale: np.ndarray
     return out.reshape(*shape, 4, 4)
 
 
-__all__ = ["AnimSequence", "Skeleton", "Track", "decode", "quat_matrices", "read_anim", "read_compressed",
+__all__ = ["AnimSequence", "Skeleton", "Track", "decode", "quat_matrices", "read_after_properties", "read_anim",
+           "read_compressed",
            "read_skeleton", "sample", "transforms_to_matrices"]
