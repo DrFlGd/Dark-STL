@@ -181,26 +181,28 @@ def test_collected_files_open_loose(tmp_path):
 
 # -- packages cooked unversioned, as the real game's are ----------------------------------
 
-def _unversioned_files() -> dict[str, bytes]:
+def _unversioned_files(normal: str = "T_KineticRifle_N", normal_in_material: bool = True) -> dict[str, bytes]:
     from test_borderlands_ue5 import _header
 
     out = {}
     tex_dir = "/Game/Gameplay/Weapons/Player_KineticRifle/Textures/"
     pk = {}
-    for tex, color, normal in (("T_KineticRifle_A", RED, False), ("T_KineticRifle_N", FLAT_NORMAL, True)):
+    albedo = "T_KineticRifle_A" if normal_in_material else "T_KineticRifle_BaseColor"
+    for tex, color, is_normal in ((albedo, RED, False), (normal, FLAT_NORMAL, True)):
         b = S.Ue4Package(tex_dir + tex, 426, unversioned=True)
         e = b.add_export("Texture2D", tex)
-        b.set_data(e, S.texture_data(b, 8, 8, S.bc1_solid(8, 8, color), normal=normal))
+        b.set_data(e, S.texture_data(b, 8, 8, S.bc1_solid(8, 8, color), normal=is_normal))
         pk[f"Gameplay/Weapons/Player_KineticRifle/Textures/{tex}"] = b
     mi = "/Game/Gameplay/Weapons/Player_KineticRifle/Materials/MI_KineticRifle"
     b = S.Ue4Package(mi, 426, unversioned=True)
-    refs = [b.import_object(tex_dir + t, "Texture2D", t) for t in ("T_KineticRifle_A", "T_KineticRifle_N")]
+    used = [albedo, normal] if normal_in_material else [albedo]
+    refs = [b.import_object(tex_dir + t, "Texture2D", t) for t in used]
     elems = b""
     for name, ref in zip(("BaseColor", "Normal"), refs):
         info = _header([(0, True), (1, True)]) + b.fname(name) + b"\x02"
         elems += _header([(0, True), (1, True)]) + info + struct.pack("<i", ref)
     e = b.add_export("MaterialInstanceConstant", "MI_KineticRifle")
-    b.set_data(e, _header([(4, True)]) + struct.pack("<i", 2) + elems + struct.pack("<i", 0))
+    b.set_data(e, _header([(4, True)]) + struct.pack("<i", len(refs)) + elems + struct.pack("<i", 0))
     pk["Gameplay/Weapons/Player_KineticRifle/Materials/MI_KineticRifle"] = b
     b = S.Ue4Package("/Game/Gameplay/Weapons/Player_KineticRifle/SK_KineticRifle", 426, unversioned=True)
     m = b.import_object(mi, "MaterialInstanceConstant", "MI_KineticRifle")
@@ -316,3 +318,38 @@ def test_generic_textures_of_master_materials_are_not_taken_for_a_models_own():
              for n in ("T_Pinpointer_BaseColor", "T_Pinpointer_BC", "T_Pinpointer_ORM", "T_Pinpointer_Normal")}
     assert roles == {"T_Pinpointer_BaseColor": "albedo", "T_Pinpointer_BC": "albedo",
                      "T_Pinpointer_ORM": "specular", "T_Pinpointer_Normal": "normal"}
+
+
+@pytest.mark.parametrize("normal", ["T_KineticRifle_Comp", "T_KineticRifle_Normal", "T_KineticRifle_N",
+                                    "T_KineticRifle_Normals", "T_KineticRifle_NRM"])
+def test_a_normal_map_the_material_doesnt_name_is_found_beside_its_colour_map(tmp_path, monkeypatch, normal):
+    from darkstl.importers.borderlands.ue4 import unversioned
+
+    monkeypatch.setattr(unversioned, "_settings_dir", lambda: None)
+    root = tmp_path / "Returnal"
+    paks = root / "Returnal" / "Content" / "Paks"
+    paks.mkdir(parents=True)
+    win64 = root / "Returnal" / "Binaries" / "Win64"
+    win64.mkdir(parents=True)
+    (win64 / "Returnal-Win64-Shipping.exe").write_bytes(b"MZ" + bytes(5000) + "++UE4+Release-4.26".encode("utf-16-le"))
+    files = _unversioned_files(normal=normal, normal_in_material=False)
+    (paks / "pakchunk0-WindowsNoEditor.pak").write_bytes(S.build_pak(files, version=8, compress=True))
+    vfs.forget(root)
+    unversioned.forget_mappings()
+    imp = ReturnalImporter()
+    imp.cache = tmp_path / "cache"
+    found = {e.stem: e for e in imp.scan(root, GAME)}
+    m = open_model(found["SK_KineticRifle"].path)
+    mat = m.materials[0]
+    assert mat.albedo and mat.albedo.endswith("T_KineticRifle_BaseColor"), mat.details
+    assert mat.normal and mat.normal.endswith(normal), mat.details
+    assert any(d.startswith("normal (beside T_KineticRifle_BaseColor)") for d in mat.details), mat.details
+
+
+def test_returnal_comp_textures_are_normal_maps_only_in_returnal():
+    from darkstl.importers.borderlands.ue4.materials import _name_role
+
+    assert _name_role("T_KineticPistol_A_Comp", "Returnal") == "normal"
+    assert _name_role("T_KineticPistol_A_Comp", "Borderlands 3") == "other"
+    assert _name_role("T_KineticPistol_A_Metalness", "Returnal") == "specular"
+    assert _name_role("T_KineticPistol_AO", "Returnal") == "other"

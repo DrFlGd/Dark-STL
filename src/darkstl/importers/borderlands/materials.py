@@ -30,10 +30,11 @@ _PARAM_RULES = [
     (re.compile(r"spec|gloss|mask|rough|metal", re.I), SPECULAR),
 ]
 _NAME_RULES = [
-    (re.compile(r"(_|^)(n|nrm|norm|normal|nm)(_|\d*$)", re.I), NORMAL),
+    (re.compile(r"(_|^)(n|nrm|nrml|nml|nor|norm|normal|normals|normalmap|nm|nmap|nrma|nrmr|nr)(_|\d*$)", re.I),
+     NORMAL),
     (re.compile(r"(_|^)(d|dif|diff|diffuse|alb|albedo|c|col|color|colour|bc|basecolou?r|base_colou?r)(_|\d*$)",
                 re.I), ALBEDO),
-    (re.compile(r"(_|^)(s|spec|specular|m|mask|msk|masks|g|gloss|orm|mra|rma|arm|mr|rm|r|rough|roughness)(_|\d*$)",
+    (re.compile(r"(_|^)(s|spec|specular|m|mask|msk|masks|g|gloss|orm|mra|rma|arm|mr|rm|r|rough|roughness|metal|metalness|metallic)(_|\d*$)",
                 re.I), SPECULAR),
     (re.compile(r"(_|^)(h|height|disp|bump)(_|\d*$)", re.I), HEIGHT),
 ]
@@ -41,6 +42,14 @@ _NAME_RULES = [
 
 def role_from_param(name: str) -> str:
     for rx, role in _PARAM_RULES:
+        if rx.search(name or ""):
+            return role
+    return OTHER
+
+
+def role_from_name(name: str) -> str:
+    """The role a texture's name gives it (``_D``, ``_N``, ``_BaseColor``...), or OTHER."""
+    for rx, role in _NAME_RULES:
         if rx.search(name or ""):
             return role
     return OTHER

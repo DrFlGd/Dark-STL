@@ -619,7 +619,8 @@ function TexturesTab({ m, args, s, set, run, setRun, call, sendSettings, over, u
             ${m.assigned?.[i]?.[role] ? html` <small class="muted" title="Chosen in the app (texture picker), in place of the one the model names">(chosen)</small>` : null}
             ${canPick ? html` <button type="button" class="link-btn" data-pick=${`${i}:${role}`} title=${`Find a texture of the game by its name and use it as this material's ${label.toLowerCase()} map`}
               onClick=${() => ui.set({ dialog: { type: "texture-picker", sid: m.sid, game: m.entry.game, material: i, materialName: mat.name, role,
-                current: nameOf(mat[role]) || "", assigned: !!m.assigned?.[i]?.[role] } })}>Change…</button>` : null}</dd>`)}</dl></div>`)}
+                current: nameOf(mat[role]) || "", assigned: !!m.assigned?.[i]?.[role] } })}>Change…</button>` : null}</dd>`)}</dl>
+      ${mat.details.length ? html`<details class="mat-trace"><summary>How its textures were found</summary><pre>${mat.details.join("\n")}</pre></details>` : null}</div>`)}
       ${canPick ? html`<p class="muted small" id="materials-pick-note">Change… finds any texture of the game by its name and uses it for that material. The choice is kept apart from the game's files, and the texture is kept in the app's library, so it stays after the game is uninstalled.</p>` : null}</section>
   </div>`;
 }

@@ -13,7 +13,8 @@ import re
 
 from ....errors import FormatError
 from ..formats.props import ObjectRef
-from ..materials import ALBEDO, NORMAL, OTHER, SPECULAR, ResolvedMaterial, role_from_param, role_from_texture
+from ..materials import (ALBEDO, NORMAL, OTHER, SPECULAR, ResolvedMaterial, role_from_name, role_from_param,
+                         role_from_texture)
 from . import guess
 from .asset import Export, Package
 from .mesh import object_props
@@ -152,9 +153,10 @@ def resolve_material(ref: ObjectRef) -> ResolvedMaterial:
             continue
         tex = texture(ref_t)
         if tex is None:
+            out.details.append(f"{name}: {ref_t.name} couldn't be read")
             continue
         if role == OTHER:
-            role = role_from_texture(tex)
+            role = _texture_role(tex)
             if role == OTHER or role in out.roles:
                 continue
         out.roles[role] = tex
@@ -170,12 +172,94 @@ def resolve_material(ref: ObjectRef) -> ResolvedMaterial:
         tex = texture(ref_t)
         if tex is None:
             continue
-        role = role_from_texture(tex)
+        role = _texture_role(tex)
         if role != OTHER and role not in out.roles:
             out.roles[role] = tex
             out.guessed = True
             out.details.append(f"{role} (from the material): {tex.name}")
+    if out.roles and not all(r in out.roles for r in (ALBEDO, NORMAL)):
+        _siblings(pkg, out)
     return out
+
+
+_SUFFIX = re.compile(r"_[A-Za-z]+\d*$")
+
+# Texture names particular to one game's studio, read before the usual suffixes. Returnal (Housemarque) keeps
+# its normal maps as ``_Comp``: the normal's X and Y in red and green, a mask in blue (Displace only reads red
+# and green, so the mask doesn't disturb it).
+_GAME_NAMES = {
+    "Returnal": [(re.compile(r"_comp\d*$", re.I), NORMAL)],
+}
+
+
+def _name_role(name: str, game: str | None) -> str:
+    for rx, role in _GAME_NAMES.get(game or "", ()):
+        if rx.search(name or ""):
+            return role
+    return role_from_name(name)
+
+
+def _texture_role(tex) -> str:
+    """A texture's role from what it is (a normal map's compression) and its name, the game's own names first."""
+    game = getattr(getattr(tex.pkg, "files", None), "game", None)
+    for rx, role in _GAME_NAMES.get(game or "", ()):
+        if rx.search(tex.name or ""):
+            return role
+    return role_from_texture(tex)
+
+
+def _folder_index(files) -> dict[str, list[str]]:
+    """The game's packages by folder (lower-case): kept on the game's file list, built once."""
+    index = getattr(files, "_texture_folders", None)
+    if index is None:
+        index = {}
+        for name in files.packages:
+            folder, _, leaf = name.rpartition("/")
+            index.setdefault(folder, []).append(leaf)
+        try:
+            files._texture_folders = index
+        except AttributeError:
+            pass
+    return index
+
+
+def _siblings(pkg: Package, out: ResolvedMaterial) -> None:
+    """Fill a missing colour or normal map from the textures beside the ones found, by their shared name:
+    ``T_Gun_BaseColor`` found, ``T_Gun_Normal`` in the same folder. Games whose materials take their maps
+    through layers or functions the material instance doesn't name still keep them side by side."""
+    files = getattr(pkg, "files", None)
+    if files is None or not hasattr(files, "packages"):
+        return
+    index = _folder_index(files)
+    game = getattr(files, "game", None)
+    for have in list(out.roles.values()):
+        if all(r in out.roles for r in (ALBEDO, NORMAL)):
+            return
+        name = getattr(have.pkg, "name", "") or ""
+        folder, _, leaf = name.lower().rpartition("/")
+        if not leaf or _name_role(leaf, game) == OTHER:
+            continue
+        stem = _SUFFIX.sub("", leaf)
+        candidates = sorted((x for x in index.get(folder, []) if x != leaf and x.startswith(stem + "_")), key=len)
+        for x in candidates:
+            role = _name_role(x, game)
+            if role not in (ALBEDO, NORMAL) or role in out.roles:
+                continue
+            try:
+                other = files.open_named(f"{folder}/{x}")
+            except (FormatError, OSError):
+                other = None
+            e = other.main_export(tuple(TEXTURE_CLASSES)) if other is not None else None
+            if e is None:
+                continue
+            try:
+                tex = read_texture(other, e)
+            except (FormatError, OSError):
+                out.details.append(f"{role} (beside {have.name}): {e.name} couldn't be read")
+                continue
+            out.roles[role] = tex
+            out.guessed = True
+            out.details.append(f"{role} (beside {have.name}): {tex.name}")
 
 
 __all__ = ["TEXTURE_CLASSES", "resolve", "resolve_material", "texture"]
