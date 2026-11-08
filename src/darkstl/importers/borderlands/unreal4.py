@@ -126,9 +126,10 @@ def _named_materials(pkg: Package, mesh: Mesh4) -> dict[int, str]:
 
 
 def _materials(mesh: Mesh4, dirs, named: dict[int, str] | None = None
-               ) -> tuple[list[Material], dict[str, Texture], list[str], dict[int, list]]:
-    """The mesh's materials (one per slot, then one per layer of a layered material its vertex colours show),
-    the textures they use, notes, and per slot its layers: (channel weights (R, G, B, A), material index)."""
+               ) -> tuple[list[Material], dict[str, Texture], list[str], dict[int, tuple]]:
+    """The mesh's materials (one per slot, then one per layer of a layered material the mesh shows), the
+    textures they use, notes, and per slot of a layered material how its layers are picked: (a function giving
+    each of a section's triangles its layer, -1 for the material's own, and per layer its material index)."""
     mats, textures, notes = [], {}, []
     infos = []
 
@@ -161,33 +162,81 @@ def _materials(mesh: Mesh4, dirs, named: dict[int, str] | None = None
             info.guessed = True
         infos.append((ref, info))
         mats.append(material(info.name, keys_of(info.roles), info.guessed, info.details))
-    layers: dict[int, list] = {}
-    if mesh.colors is None:
-        return mats, textures, notes, layers
+    layers: dict[int, tuple] = {}
     tris = mesh.triangles()
+    uv = mesh.uvs[0] if mesh.uvs else None
     made: dict[tuple[str, int], int] = {}  # (material, layer) -> its material index, shared by the slots using it
     for i, (ref, info) in enumerate(infos):
         if not info.layers:
             continue
-        channels = [np.asarray(layer.channel, np.float64) for layer in info.layers]
-        used = set()
-        for s in mesh.sections:
-            if s.material == i:
-                picks = _layer_picks(tris[s.first_index // 3:s.first_index // 3 + s.triangles], channels,
-                                     mesh.colors)
-                used.update(int(k) for k in np.unique(picks) if k >= 0)
+        segs = [tris[s.first_index // 3:s.first_index // 3 + s.triangles] for s in mesh.sections if s.material == i]
+        found = _layer_picker(info, segs, mesh.colors, uv)
+        if found is None:
+            continue
+        pick, where = found
+        used = {int(k) for seg in segs for k in np.unique(pick(seg)) if k >= 0}
+        indices: list[int | None] = []
         for k, layer in enumerate(info.layers):
             if k not in used:
+                indices.append(None)
                 continue
             key = (getattr(ref, "path", "") or info.name, layer.index)
             if key not in made:
                 made[key] = len(mats)
-                shown = f"Layer {layer.index} of {info.name}: shown where the mesh's vertex colour is "
-                details = [shown + layer.channel_name(), *layer.details]
+                details = [f"Layer {layer.index} of {info.name}: shown {where(layer)}", *layer.details]
                 mats.append(material(f"{info.name} layer {layer.index}", keys_of(layer.roles), info.guessed,
                                      details))
-            layers.setdefault(i, []).append((channels[k], made[key]))
+            indices.append(made[key])
+        layers[i] = (pick, indices)
     return mats, textures, notes, layers
+
+
+def _layer_picker(info, segs: list[np.ndarray], colors: np.ndarray | None, uv: np.ndarray | None):
+    """How a layered material's layers are picked on the mesh: by its vertex colours when the material says so,
+    or else by the UV tile each triangle sits in when its triangles keep to whole tiles numbered as its layers
+    (UDIM texture sets: Returnal's player suits). (pick per triangle, wording of where a layer shows), or None
+    when neither fits and the material's own textures are shown everywhere."""
+    if info.by_vertex_colour and colors is not None:
+        channels = [np.asarray(layer.channel, np.float64) for layer in info.layers]
+        return (lambda seg: _layer_picks(seg, channels, colors),
+                lambda layer: f"where the mesh's vertex colour is {layer.channel_name()}")
+    if uv is None or not segs:
+        return None
+    every = np.concatenate(segs)
+    if not len(every):
+        return None
+    tiles = _uv_tiles(every, uv)
+    wanted = [layer.index for layer in info.layers]
+    inside = np.isin(tiles, wanted)
+    known = inside | (tiles == 0)
+    corner = uv[every] - _tile_corner(tiles)[:, None, :]
+    straddle = ((corner < -0.01) | (corner > 1.01)).any(axis=(1, 2))
+    if not inside.any() or known.mean() < 0.95 or straddle.mean() > 0.01:
+        return None
+
+    def pick(seg: np.ndarray) -> np.ndarray:
+        t = _uv_tiles(seg, uv) if len(seg) else np.zeros(0, np.int64)
+        out = np.full(len(seg), -1)
+        for k, n in enumerate(wanted):
+            out[t == n] = k
+        return out
+
+    def where(layer) -> str:
+        u, v = layer.index % 10, layer.index // 10
+        return f"on the triangles whose UVs sit in tile {layer.index} (u {u} to {u + 1}, v {v} to {v + 1})"
+
+    return pick, where
+
+
+def _uv_tiles(seg: np.ndarray, uv: np.ndarray) -> np.ndarray:
+    """The UV tile each triangle sits in, numbered as UDIM tiles from 0: u's whole part, plus ten per v."""
+    c = np.floor(np.asarray(uv, np.float64)[seg].mean(axis=1)).astype(np.int64)
+    return np.where((c >= 0).all(axis=1) & (c[:, 0] < 10), c[:, 0] + 10 * c[:, 1], -1)
+
+
+def _tile_corner(tiles: np.ndarray) -> np.ndarray:
+    t = np.maximum(tiles, 0)
+    return np.stack([t % 10, t // 10], axis=1).astype(np.float64)
 
 
 def _layer_picks(seg: np.ndarray, channels: list, colors: np.ndarray) -> np.ndarray:
@@ -202,14 +251,15 @@ def _layer_picks(seg: np.ndarray, channels: list, colors: np.ndarray) -> np.ndar
     return pick
 
 
-def _layer_ranges(seg: np.ndarray, material: int, part: int, layers: dict, colors) -> list:
-    """A section's triangles by the material layer their vertex colours show."""
+def _layer_ranges(seg: np.ndarray, material: int, part: int, layers: dict) -> list:
+    """A section's triangles by the material layer each shows."""
     found = layers.get(material)
-    if not found or colors is None or not len(seg):
+    if not found or not len(seg):
         return [(seg, material, part)]
-    pick = _layer_picks(seg, [channel for channel, _index in found], colors)
-    out = [(seg[pick == -1], material, part)]
-    out += [(seg[pick == k], index, part) for k, (_channel, index) in enumerate(found)]
+    pick, indices = found
+    k_of = pick(seg)
+    out = [(seg[k_of == -1], material, part)]
+    out += [(seg[k_of == k], index, part) for k, index in enumerate(indices) if index is not None]
     return [r for r in out if len(r[0])]
 
 
@@ -288,7 +338,7 @@ def load(importer_key: str, path: Path, dirs: list[Path], game: str | None = Non
             positions, normals = skin_vertices(m.positions, m.normals, m.joints, m.weights, matrices)
         ranges = [r for i, s in enumerate(m.sections) if options.parts is None or i in options.parts
                   for r in _layer_ranges(tris[s.first_index // 3:s.first_index // 3 + s.triangles], s.material, i,
-                                         layers, m.colors)]
+                                         layers)]
         return build_trimesh(positions, normals, uv, ranges, skin=skin if options.pose is None else None)
 
     v = pkg.versions

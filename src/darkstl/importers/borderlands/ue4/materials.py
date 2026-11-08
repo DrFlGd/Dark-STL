@@ -77,6 +77,8 @@ def _param_name(p) -> str:
 # A layered material's parameters name their layer: "BaseColor Texture (L1)". With the static switch
 # "UseVertexColorsAsBlendSource" on, layer n shows where the vertex colour channel its "Layern_SourceChannel"
 # vector picks is (Returnal's M_MonsterMaster_Layered: red, green and blue for layers 1-3 over layer 0).
+# Without it the layers are picked another way: Returnal's player suits (M_PlayerCharacter_Master, its
+# "LayerBlendUVBased") show layer n on the triangles whose UVs sit in UV tile n, as UDIM texture sets do.
 _LAYER_PARAM = re.compile(r"^(.*?)\s*\(L(\d+)\)\s*$")
 _LAYER_SOURCE = re.compile(r"^layer\s*(\d+)_?source_?channel$", re.I)
 _LAYER_ENABLE = re.compile(r"^layer\s*(\d+)_?enable$", re.I)
@@ -87,7 +89,8 @@ _CHANNELS = "RGBA"
 @dataclass
 class MaterialLayer:
     """A layer of a layered material: shown over the layers before it where the mesh's vertex colours,
-    weighted by ``channel`` (R, G, B, A), come to half or more."""
+    weighted by ``channel`` (R, G, B, A), come to half or more (when the material blends by vertex colour), or
+    on the triangles in UV tile ``index``."""
 
     index: int
     channel: tuple[float, float, float, float]
@@ -143,10 +146,12 @@ def _vectors_and_switches(props, vectors: dict, switches: dict) -> None:
             pass
 
 
+def _by_vertex_colour(switches: dict) -> bool:
+    return any(_VERTEX_BLEND.match(k) and v for k, v in switches.items())
+
+
 def _layers(params: list[tuple[str, ObjectRef]], vectors: dict, switches: dict) -> list[MaterialLayer]:
-    """The layers vertex colours pick, with their textures, when the material blends layers by them."""
-    if not any(_VERTEX_BLEND.match(k) and v for k, v in switches.items()):
-        return []
+    """A layered material's layers after its first (the ones it doesn't switch off), with their textures."""
     enabled = {int(m.group(1)): v for k, v in switches.items() if (m := _LAYER_ENABLE.match(k))}
     sources = {int(m.group(1)): v for k, v in vectors.items() if (m := _LAYER_SOURCE.match(k))}
     by_layer: dict[int, list[tuple[str, ObjectRef]]] = {}
@@ -159,10 +164,8 @@ def _layers(params: list[tuple[str, ObjectRef]], vectors: dict, switches: dict) 
         if enabled.get(n) is False:
             continue
         channel = sources.get(n)
-        if channel is None:
-            if n > 4:
-                continue
-            channel = tuple(1.0 if i == n - 1 else 0.0 for i in range(4))  # layer 1 red, 2 green, 3 blue, 4 alpha
+        if channel is None:  # layer 1 red, 2 green, 3 blue, 4 alpha; no vertex colour picks the others
+            channel = tuple(1.0 if i == n - 1 else 0.0 for i in range(4))
         layer = MaterialLayer(n, tuple(float(x) for x in channel))
         _assign(by_layer[n], layer.roles, layer.details)
         if layer.roles:
@@ -267,11 +270,13 @@ def resolve_material(ref: ObjectRef) -> ResolvedMaterial:
             break
         pkg, e = nxt
     out.layers = _layers(params, vectors, switches)
+    out.by_vertex_colour = _by_vertex_colour(switches)
     if out.layers:  # the material's own textures are its first layer's; the others' are shown on their own
         params = [(name, ref_t) for name, ref_t in params if _layer_of(name)[1] <= 0]
     _assign(params, out.roles, out.details)  # nearest instance first: it overrides its parents
     for layer in out.layers:
-        out.details.append(f"layer {layer.index}, shown where the vertex colour is {layer.channel_name()}: "
+        where = f", shown where the vertex colour is {layer.channel_name()}" if out.by_vertex_colour else ""
+        out.details.append(f"layer {layer.index}{where}: "
                            + ", ".join(f"{role} {tex.name}" for role, tex in layer.roles.items()))
     seen = set()
     for ref_t in leftovers:

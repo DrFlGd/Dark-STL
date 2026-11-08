@@ -141,3 +141,92 @@ def test_collect_takes_every_texture_a_layered_material_names(tmp_path):
     want |= {f"T_UV1_Extra{k}.uasset" for k in range(EXTRAS)}
     want |= {"MI_Kid.uasset", "M_Kid_Head.uasset", "T_Kid_Head_BaseColor.uasset"}
     assert want <= names, sorted(want - names)
+
+
+# -- layers picked by UV tile: Returnal's player suits (M_PlayerCharacter_Master's "LayerBlendUVBased") keep five
+# texture sets as layers L0-L4, and each triangle shows the one whose number is the UV tile it sits in
+SUIT = "/Game/Gameplay/Player/DLC_Suits/Proto"
+TILE_COLOURS = [0x0000, 0xF800, 0x07E0]
+
+
+def _suit_packages(uv_offsets) -> dict[str, S.Ue4Package]:
+    out = {}
+    for layer, colour in enumerate(TILE_COLOURS):
+        for kind, c, normal in (("BaseColor", colour, False), ("Comp", FLAT_NORMAL, True)):
+            name = f"T_Proto_Uv0{layer + 1}_{kind}"
+            b = S.Ue4Package(f"{SUIT}/Maps/{name}", 426)
+            e = b.add_export("Texture2D", name)
+            b.set_data(e, S.texture_data(b, 8, 8, S.bc1_solid(8, 8, c), normal=normal))
+            out[f"Gameplay/Player/DLC_Suits/Proto/Maps/{name}"] = b
+    b = S.Ue4Package(f"{SUIT}/MI_Proto", 426)
+    params = []
+    for layer in range(3):
+        for kind in ("BaseColor", "Comp"):
+            name = f"T_Proto_Uv0{layer + 1}_{kind}"
+            params.append((f"{kind} Texture (L{layer})", b.import_object(f"{SUIT}/Maps/{name}", "Texture2D", name)))
+    e = b.add_export("MaterialInstanceConstant", "MI_Proto")
+    b.set_data(e, S.mic_data(b, 0, params, switches=[("Layer1_Enable", True), ("Layer2_Enable", True)]))
+    out["Gameplay/Player/DLC_Suits/Proto/MI_Proto"] = b
+
+    # one triangle per entry of uv_offsets, its UVs moved by it; every vertex black, so no colour picks a layer
+    n = len(uv_offsets)
+    pos = np.array([p for i in range(n) for p in _tri(i)], float)
+    corners = np.array([(0.1, 0.1), (0.9, 0.1), (0.1, 0.9)])
+    uv = np.concatenate([corners + np.asarray(off, float) for off in uv_offsets])
+    rgba = np.zeros((3 * n, 4), np.uint8)
+    rgba[:, 3] = 255
+    b = S.Ue4Package("/Game/Gameplay/Player/Mesh/SK_PlayerFP_Proto", 426)
+    mi = b.import_object(f"{SUIT}/MI_Proto", "MaterialInstanceConstant", "MI_Proto")
+    e = b.add_export("SkeletalMesh", "SK_PlayerFP_Proto")
+    b.set_data(e, S.skeletal_data(b, [mi], pos, np.tile([0.0, -1.0, 0.0], (3 * n, 1)), uv, list(range(3 * n)),
+                                  [(0, 0, n, (0,), 0, 3 * n)], joints=[[0, 0, 0, 0]] * (3 * n),
+                                  weights=[[255, 0, 0, 0]] * (3 * n), colors=rgba))
+    out["Gameplay/Player/Mesh/SK_PlayerFP_Proto"] = b
+    return out
+
+
+def _suit(tmp_path, uv_offsets):
+    root = tmp_path / "Returnal"
+    paks = root / "Returnal" / "Content" / "Paks"
+    paks.mkdir(parents=True)
+    (root / "Returnal" / "Binaries" / "Win64").mkdir(parents=True)
+    (root / "Returnal" / "Binaries" / "Win64" / "Returnal-Win64-Shipping.exe").write_bytes(b"MZ")
+    files = {}
+    for path, b in _suit_packages(uv_offsets).items():
+        uasset, uexp, ubulk = b.build()
+        files[f"Returnal/Content/{path}.uasset"] = uasset
+        files[f"Returnal/Content/{path}.uexp"] = uexp
+        if ubulk:
+            files[f"Returnal/Content/{path}.ubulk"] = ubulk
+    (paks / "pakchunk0-WindowsNoEditor.pak").write_bytes(S.build_pak(files, compress=True))
+    vfs.forget(root)
+    imp = ReturnalImporter()
+    imp.cache = tmp_path / "cache"
+    found = {e.stem: e for e in imp.scan(root, GAME)}
+    return imp.load(found["SK_PlayerFP_Proto"].path)
+
+
+def _faces_left_to_right(m) -> list[int]:
+    mesh = m.build(MeshOptions())
+    order = np.argsort(mesh.vertices[mesh.faces].mean(axis=1)[:, 0])
+    return mesh.face_material[order].tolist()
+
+
+def test_uv_tiles_pick_the_layer_each_triangle_shows(tmp_path):
+    """Triangles in UV tiles 0, 2, 1 and 0 (u 0-1, 2-3, 1-2, 0-1) show layers 0, 2, 1 and 0: each texture set
+    where the game's suit material puts it, not the first set everywhere."""
+    m = _suit(tmp_path, [(0, 0), (2, 0), (1, 0), (0, 0)])
+    names = [x.name for x in m.materials]
+    assert names == ["MI_Proto", "MI_Proto layer 1", "MI_Proto layer 2"]
+    assert [_albedo(m, i) for i in range(3)] == ["T_Proto_Uv01_BaseColor", "T_Proto_Uv02_BaseColor",
+                                                 "T_Proto_Uv03_BaseColor"]
+    assert _faces_left_to_right(m) == [0, 2, 1, 0]
+    assert "UVs sit in tile 2 (u 2 to 3" in m.materials[2].details[0]
+
+
+def test_uvs_that_tile_across_whole_tiles_pick_no_layer(tmp_path):
+    """UVs that repeat a texture (triangles reaching across tiles) aren't texture-set tiles: the material's own
+    textures are shown on every triangle, as before."""
+    m = _suit(tmp_path, [(0, 0), (1.5, 0), (2.5, 0)])
+    assert [x.name for x in m.materials] == ["MI_Proto"]
+    assert _faces_left_to_right(m) == [0, 0, 0]
