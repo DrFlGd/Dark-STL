@@ -70,9 +70,11 @@ class ResolvedMaterial:
     roles: dict[str, Texture2D] = field(default_factory=dict)  # role -> texture
     details: list[str] = field(default_factory=list)
     guessed: bool = False
-    # the layers a layered material shows over its own textures where the mesh's vertex colours say so (Unreal
-    # 4 material layers): see ``ue4.materials.MaterialLayer``
+    # the layers a layered material shows over its own textures (Unreal 4 material layers): see
+    # ``ue4.materials.MaterialLayer``. ``by_vertex_colour``: the material says the mesh's vertex colours pick
+    # them; otherwise the importer looks for what does (the UV tile each triangle sits in)
     layers: list = field(default_factory=list)
+    by_vertex_colour: bool = False
 
 
 def _texture(ref: ObjectRef) -> Texture2D | None:
