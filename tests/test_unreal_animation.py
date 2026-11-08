@@ -33,12 +33,12 @@ RISE = [(0, 0, 35)] * 3  # the pelvis 10 cm above its reference place
 
 
 def _packages(engine=426, unversioned=False, rotation_format=A.ACF_FLOAT96, per_track=False, acl=False,
-              folder="Characters/Selene/Animations", prefix="A_", own=True):
+              folder="Characters/Selene/Animations", prefix="A_", own=True, virtual=False):
     out = {}
     anim_engine, engine = engine, (420 if engine == 420 else 426)  # the synthetic meshes are 4.20 or 4.26 ones
     b = S.Ue4Package(SKEL_PKG, engine, unversioned=unversioned)
     e = b.add_export("Skeleton", "SK_Selene_Skeleton")
-    b.set_data(e, A.skeleton_data(b, SKELETON))
+    b.set_data(e, A.skeleton_data(b, SKELETON, [("VB root_arm", "root", "arm")] if virtual else ()))
     out["Characters/Selene/SK_Selene_Skeleton"] = b
 
     material = 0
@@ -65,7 +65,10 @@ def _packages(engine=426, unversioned=False, rotation_format=A.ACF_FLOAT96, per_
 
     # tracks keyed by skeleton bone index: arm 2, pelvis 1
     if own:
-        anim(folder, f"{prefix}Selene_Wave", [2, 1], [(None, TURN), (RISE, None)])
+        if virtual:  # a track for the virtual bone too, numbered after the skeleton's own bones
+            anim(folder, f"{prefix}Selene_Wave", [2, 1, 4], [(None, TURN), (RISE, None), ([(0, 0, 50)] * 3, None)])
+        else:
+            anim(folder, f"{prefix}Selene_Wave", [2, 1], [(None, TURN), (RISE, None)])
         anim(folder, f"{prefix}Selene_Idle", [1], [([(0, 0, 25)], [IDENTITY])], frames=1, length=0)
         anim(f"{folder}/Additive", f"{prefix}Selene_Lean", [2], [(None, [(0, 0, S45, S45)])], frames=1, length=0,
              additive=True)
@@ -302,6 +305,18 @@ def test_animations_kept_as_unreadable_before_are_read_again(tmp_path):
     kept.write_text(json.dumps(data))
     vfs.forget(tmp_path / "Returnal")
     _check_wave(imp.load(path))
+
+
+def test_animations_may_move_the_skeletons_virtual_bones(tmp_path):
+    """A skeleton's virtual bones (Returnal's Hulk keeps five, IK targets) come after its own bones, and its
+    animations keep tracks for them: those are read, and pose nothing the mesh has."""
+    imp, path = _suit(tmp_path, virtual=True)
+    m = imp.load(path)
+    _check_wave(m)
+    assert m.animations.unreadable() == []
+    debug = m.animations.debug()
+    assert debug["skeleton_bones"] == 4
+    assert debug["virtual_bones"] == [{"name": "VB root_arm", "source": "root", "target": "arm"}]
 
 
 def test_says_which_bones_a_track_names_that_the_skeleton_doesnt_have(tmp_path):

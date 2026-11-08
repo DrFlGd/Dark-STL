@@ -22,8 +22,14 @@ def p_float(b: Ue4Package, name: str, v: float) -> bytes:
     return b.tag(name, "FloatProperty", 4) + struct.pack("<f", v)
 
 
-def skeleton_data(b: Ue4Package, bones) -> bytes:
-    return b.props() + reference_skeleton(b, bones)
+def skeleton_data(b: Ue4Package, bones, virtual=()) -> bytes:
+    """``virtual``: its virtual bones, (name, source bone, target bone), as the ``VirtualBones`` property."""
+    props = []
+    if virtual:
+        props.append(b.p_struct_array("VirtualBones", "VirtualBone", [
+            b.p_name("SourceBoneName", src) + b.p_name("TargetBoneName", dst) + b.p_name("VirtualBoneName", name)
+            + b.end() for name, src, dst in virtual]))
+    return b.props(*props) + reference_skeleton(b, bones)
 
 
 def _w_positive(q) -> np.ndarray:

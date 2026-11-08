@@ -273,24 +273,28 @@ def skin_weights(engine: int, joints, weights) -> bytes:
 
 def skeletal_data(b: Ue4Package, materials: list[int], positions, normals, uvs, indices, sections,
                   in_bulk: bool = False, cooked_out_first: bool = False, bones=None, joints=None, weights=None,
-                  skeleton: int = 0) -> bytes:
+                  skeleton: int = 0, colors=None, slots=None) -> bytes:
     """``sections``: (material, first index, triangles[, bone map, base vertex, vertices]). ``bones``: see
     :func:`reference_skeleton`; ``joints``/``weights`` (V, 4) write skin weights; ``skeleton`` the Skeleton
-    the mesh names."""
+    the mesh names; ``colors`` (V, 4) R, G, B, A 0-255 vertex colours (after the skin weights); ``slots`` the
+    material slots' names."""
     e = b.engine
-    items = [b.p_bool("bHasVertexColors", False)]
+    items = [b.p_bool("bHasVertexColors", colors is not None)]
     if skeleton:
         items.append(b.p_obj("Skeleton", skeleton))
     out = b.props(*items)
     out += bytes([1, 0]) + _bounds(positions)
     out += struct.pack("<i", len(materials))
     for i, m in enumerate(materials):
-        out += _skeletal_material(e, m, b.fname(f"Slot{i}"))
+        out += _skeletal_material(e, m, b.fname(slots[i] if slots else f"Slot{i}"))
     out += reference_skeleton(b, bones or ROOT_ONLY)
     out += struct.pack("<i", 1)  # cooked
     idx = np.asarray(indices, "<u2").tobytes()
     secs = struct.pack("<i", len(sections)) + b"".join(_skel_section(e, *s) for s in sections)
     skin = skin_weights(e, joints, weights) if joints is not None else b""
+    if colors is not None:
+        rgba = np.asarray(colors, np.uint8).reshape(-1, 4)
+        skin += b"\0\0" + struct.pack("<ii", 4, len(rgba)) + bulk_array(4, rgba[:, [2, 1, 0, 3]].tobytes())
     lods = []
     if e < 424:
         lod = b"\0\0" + secs + b"\x02" + bulk_array(2, idx) + struct.pack("<ii", 0, 0)
@@ -352,13 +356,23 @@ def texture_data(b: Ue4Package, width: int, height: int, mip0: bytes, fmt: str =
     return out + b.fname("None")
 
 
-def mic_data(b: Ue4Package, parent: int, params: list[tuple[str, int]]) -> bytes:
-    elems = []
-    for name, tex in params:
-        info = b.p_name("Name", name) + b.end()
-        elems.append(b.p_struct("ParameterInfo", "MaterialParameterInfo", info) + b.p_obj("ParameterValue", tex)
-                     + b.end())
+def mic_data(b: Ue4Package, parent: int, params: list[tuple[str, int]], vectors=(), switches=()) -> bytes:
+    """``params``: texture parameters (name, texture); ``vectors``: (name, (r, g, b, a)); ``switches``: static
+    switches (name, value)."""
+    def info(name: str) -> bytes:
+        return b.p_struct("ParameterInfo", "MaterialParameterInfo", b.p_name("Name", name) + b.end())
+
+    elems = [info(name) + b.p_obj("ParameterValue", tex) + b.end() for name, tex in params]
     items = [b.p_struct_array("TextureParameterValues", "TextureParameterValue", elems)]
+    if vectors:
+        items.append(b.p_struct_array("VectorParameterValues", "VectorParameterValue", [
+            info(name) + b.p_struct("ParameterValue", "LinearColor", struct.pack("<4f", *rgba)) + b.end()
+            for name, rgba in vectors]))
+    if switches:
+        found = b.p_struct_array("StaticSwitchParameters", "StaticSwitchParameter", [
+            info(name) + b.p_bool("Value", value) + b.p_bool("bOverride", True) + b.end()
+            for name, value in switches])
+        items.append(b.p_struct("StaticParameters", "StaticParameterSet", found + b.end()))
     if parent:
         items.insert(0, b.p_obj("Parent", parent))
     return b.props(*items)

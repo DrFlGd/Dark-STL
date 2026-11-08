@@ -47,19 +47,41 @@ class Skeleton:
     name: str
     bones: list[tuple[str, int]]
     ref_pose: np.ndarray  # (B, 10): rotation x y z w, translation, scale
+    # its virtual bones (name, source bone, target bone): bones that follow another (an IK target), numbered
+    # after the real ones, which animations keep tracks for too
+    virtual: list[tuple[str, str, str]] = field(default_factory=list)
 
     @property
     def names(self) -> list[str]:
         return [b[0] for b in self.bones]
 
+    @property
+    def tracks(self) -> int:
+        """How many bones an animation of it may have tracks for: its bones, then its virtual bones."""
+        return len(self.bones) + len(self.virtual)
+
+
+def _virtual_bones(props: Props) -> list[tuple[str, str, str]]:
+    found = props.get("VirtualBones") if props is not None else None
+    if found is None or not getattr(found, "count", 0):
+        return []
+    try:
+        rows = found.structs()
+    except (FormatError, struct.error, ValueError, IndexError):
+        rows = []
+    out = [(str(v.get("VirtualBoneName", "")), str(v.get("SourceBoneName", "")), str(v.get("TargetBoneName", "")))
+           for v in rows]
+    # numbered even when their names can't be read, so their animations' tracks still count
+    return out + [(f"virtual bone {i + 1}", "", "") for i in range(len(out), found.count)]
+
 
 def read_skeleton(pkg: Package, e: Export) -> Skeleton:
     r = pkg.export_data(e)
-    object_props(pkg, r, e)
+    props = object_props(pkg, r, e)
     bones, pose = read_reference_skeleton(r, pkg.versions)
     if not bones:
         raise FormatError(f"{e.name} has no bones")
-    return Skeleton(e.name, bones, pose)
+    return Skeleton(e.name, bones, pose, _virtual_bones(props))
 
 
 @dataclass

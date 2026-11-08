@@ -15,6 +15,7 @@ which tracks these differences, and UE Viewer (MIT).
 
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -71,6 +72,9 @@ class Mesh4:
     skeleton: ObjectRef | None = None
     joints: np.ndarray | None = None
     weights: np.ndarray | None = None
+    # per vertex its colour (V, 4) as R, G, B, A 0-255, when the mesh keeps them: a layered material may pick
+    # its layers by them
+    colors: np.ndarray | None = None
 
     def triangles(self) -> np.ndarray:
         return self.indices.reshape(-1, 3)
@@ -311,7 +315,32 @@ def _skel_streamed(r: Reader, v: asset.Versions):
     indices = _index_container(r)
     positions = _positions(r)
     normals, uvs, _n = _vertex_buffer(r, v)
-    return indices, positions, normals, uvs, _weights_after(r, v)
+    skin = _weights_after(r, v)
+    return indices, positions, normals, uvs, skin, _colors_after(r, skin, len(positions))
+
+
+def _colors_after(r: Reader, skin, count: int) -> np.ndarray | None:
+    """``FColorVertexBuffer``, which follows the skin weights when the mesh keeps vertex colours: (V, 4) R, G, B,
+    A per vertex, or None. Read only when its header says it is one (four bytes for each of the mesh's
+    vertices), as whether a mesh keeps them is a property that can't always be read."""
+    if not isinstance(skin, tuple) or r.remaining() < 10:
+        return None
+    start = r.pos
+    try:
+        g, _c = _strip(r)
+        stride, n = r.i32(), r.i32()
+        if stride != 4 or n != count or g & 2:
+            r.pos = start
+            return None
+        _e, _n, raw = r.bulk_array()
+        bgra = np.frombuffer(raw, np.uint8)
+        if len(bgra) != 4 * count:
+            r.pos = start
+            return None
+        return np.ascontiguousarray(bgra.reshape(-1, 4)[:, [2, 1, 0, 3]])
+    except (FormatError, ValueError, IndexError, struct.error):
+        r.pos = start
+        return None
 
 
 def _weights_after(r: Reader, v: asset.Versions):
@@ -335,7 +364,8 @@ def _skel_lod(r: Reader, pkg: Package, new_format: bool):
             return None
         positions = _positions(r)
         normals, uvs, _n = _vertex_buffer(r, v)
-        return sections, indices, positions, normals, uvs, _weights_after(r, v)
+        skin = _weights_after(r, v)
+        return sections, indices, positions, normals, uvs, skin, _colors_after(r, skin, len(positions))
     cooked_out = bool(r.i32())
     inlined = bool(r.i32())
     r.skip(2 * r.count())  # required bones
@@ -385,7 +415,7 @@ def read_skeletal_mesh(pkg: Package, e: Export) -> Mesh4:
         got = _skel_lod(r, pkg, new_format)
         if got is None:
             continue
-        sections, indices, positions, normals, uvs, skin = got
+        sections, indices, positions, normals, uvs, skin, colors = got
         if len(positions) == 0:
             continue
         if lod:
@@ -399,7 +429,7 @@ def read_skeletal_mesh(pkg: Package, e: Export) -> Mesh4:
             why = skin if isinstance(skin, str) else "the mesh ships without them"
             notes.append(f"Its skin weights couldn't be read ({why}), so it can't be posed.")
         return Mesh4(e.name, "SkeletalMesh", positions, normals, uvs, indices, sections, mats, slots, bones, n, lod,
-                     sockets, notes, ref_pose, skeleton, joints, weights)
+                     sockets, notes, ref_pose, skeleton, joints, weights, colors)
     return Mesh4(e.name, "SkeletalMesh", np.zeros((0, 3)), None, [], np.zeros(0, np.int64), [], mats, slots, bones,
                  n, 0, sockets, ["No level of detail has geometry."], ref_pose, skeleton)
 
