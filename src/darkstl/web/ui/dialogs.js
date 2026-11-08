@@ -1,6 +1,6 @@
 // Dialogs: adding a game folder, changing a folder's game, opening one model
 // file, collecting models into the app, unpacking a game's archives, and confirming. Which one is open is
-// `ui.dialog` ({ type: "add-folder" | "change-game" | "open-file" | "collect" | "unpack" | "confirm" | "texture-picker" |
+// `ui.dialog` ({ type: "add-folder" | "change-game" | "open-file" | "collect" | "model-files" | "unpack" | "confirm" | "texture-picker" |
 // "arrange" | "arrange-folder" | "combine", ... }); the last three keep the user's own names, folders and combined
 // models (the library overlay and the user's configurations).
 import { html, useState, useLayoutEffect, useRef, useEffect } from "../lib/html.js";
@@ -326,6 +326,78 @@ function Collect({ game, category, group, model }) {
   <//>`;
 }
 
+/** Export one model's files into a zip, to send for review when it doesn't open, pose or texture as it should:
+ *  the game's own files it is read from and/or the model package Dark STL imports it as, with a report of what
+ *  Dark STL made of it. `model`: { id, label }; `variant`: the model in its file shown. */
+function ModelFiles({ model, variant }) {
+  const [opts, setOpts] = useState({ game_files: true, package: false, textures: true, animations: true });
+  const [plan, setPlan] = useState(null);
+  const [planError, setPlanError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [progress, setProgress] = useState("");
+  const running = useRef(null);
+  const shown = useRef(true);
+  useEffect(() => () => { shown.current = false; }, []);
+  const args = { id: model.id, variant: variant || undefined, ...opts };
+  const planKey = JSON.stringify([model.id, opts.textures, opts.animations]);
+  useEffect(() => {
+    let live = true;
+    let job = null;
+    setPlan(null); setPlanError(null);
+    (async () => {
+      try {
+        ({ job } = await api("model_files_plan", { id: model.id, textures: opts.textures, animations: opts.animations, job: 1 }));
+        if (!live) { api("job_stop", { id: job }).catch(() => {}); return; }
+        const p = await followJob(job, "Working out which files to export");
+        if (live) setPlan(p);
+      } catch (e) { if (live && !e.stopped) setPlanError(String(e.message || e)); }
+    })();
+    return () => { live = false; if (job) api("job_stop", { id: job }).catch(() => {}); };
+  }, [planKey]);
+  const submit = async () => {
+    if (!opts.game_files && !opts.package) { setError("Choose the game's files, the model package, or both."); return; }
+    setBusy(true); setError(null);
+    try {
+      const { job } = await api("model_files_export", args);
+      running.current = job;
+      const r = await followJob(job, `Exporting ${model.label}'s files`, (j) => setProgress(j.message || ""));
+      if (shown.current) close();
+      toast(`Saved ${r.path.split(/[\\/]/).pop()} (${bytesText(r.bytes)})${r.failed ? ` · ${plural(r.failed, "file")} couldn't be added` : ""}`,
+        { ms: 8000, action: { label: "Show in folder", run: () => showInFolder(r.path) } });
+    } catch (e) {
+      if (e.stopped) { if (shown.current) close(); toast("Stopped: no zip was written.", 5000); return; }
+      setBusy(false); setError(String(e.message || e));
+    } finally { running.current = null; }
+  };
+  const stop = () => { if (running.current) { setProgress("Stopping…"); stopJob(running.current); } };
+  const check = (key, label, sub, disabled = false) => html`<label class="check-row">
+    <input type="checkbox" data-files=${key} checked=${!!opts[key]} disabled=${busy || disabled} onChange=${(e) => setOpts({ ...opts, [key]: e.target.checked })} />
+    <span>${label}${sub ? html`<small class="muted">${sub}</small>` : null}</span></label>`;
+  return html`<${Dialog} title="Export model files" id="model-files-dialog" onSubmit=${submit} busy=${busy}
+      error=${error} submitLabel=${busy ? "Exporting…" : "Export zip"} onCancel=${busy ? stop : null} onBackground=${busy ? close : null}>
+    <p class="muted">Puts <b>${model.label}</b>'s files into one zip, with a report of what Dark STL made of the model (its
+      materials and textures, its animations and those that couldn't be read) and what it logged. Send the zip when a model
+      doesn't open, pose or texture as it should, so the problem can be looked at without the game.</p>
+    <div class="field-block"><span class="field-label">Put in</span>
+      ${check("game_files", "The game's own files", "the model and what it is read from, as the game keeps them (pulled out of its archives)")}
+      ${check("package", "Dark STL's model package", "the model as Dark STL imports it: glTF, materials, textures and sampled animations")}
+    </div>
+    <div class="field-block"><span class="field-label">With</span>
+      ${check("textures", "Textures", "the model's textures", !opts.game_files)}
+      ${check("animations", "Animations", "its skeleton and the animations it can be posed with")}
+    </div>
+    <div class="collect-plan" id="model-files-plan" aria-live="polite">
+      ${planError ? html`<p class="warn-text" id="model-files-plan-error">${planError}</p>`
+      : !plan ? html`<p class="muted">Working out which files to export…</p>`
+      : html`${opts.game_files ? html`<p id="model-files-plan-text">${plural(plan.files, "file")} · ${bytesText(plan.bytes)} before compression</p>` : null}
+        ${opts.package && plan.configurable ? html`<p class="warn-text">A configurable model has no package of its own: export one of its parts for that.</p>` : null}
+        <p class="muted">Into <span class="note-path" id="model-files-dest">${plan.dest}</span> · <a href=${routeHash("settings")} onClick=${close}>change where</a></p>`}
+    </div>
+    ${busy ? html`<p class="muted" id="model-files-progress">${progress || "Exporting…"}</p>` : null}
+  <//>`;
+}
+
 /** Unpack a game folder's archives (Data0.bhd/.bdt ...) into the app's library: which kinds of model, where to. */
 function Unpack({ path, game, added }) {
   const [plan, setPlan] = useState(null);
@@ -633,6 +705,7 @@ export function Dialogs() {
   if (dialog.type === "open-file") return html`<${OpenFile} />`;
   if (dialog.type === "confirm") return html`<${ConfirmDialog} ...${dialog} />`;
   if (dialog.type === "collect") return html`<${Collect} ...${dialog} />`;
+  if (dialog.type === "model-files") return html`<${ModelFiles} key=${dialog.model.id} model=${dialog.model} variant=${dialog.variant} />`;
   if (dialog.type === "arrange") return html`<${Arrange} key=${dialog.model.id} model=${dialog.model} />`;
   if (dialog.type === "combine") return html`<${Combine} key=${dialog.model.id} model=${dialog.model} />`;
   if (dialog.type === "arrange-folder") return html`<${ArrangeFolder} key=${`${dialog.category}/${dialog.group || ""}`} ...${dialog} />`;

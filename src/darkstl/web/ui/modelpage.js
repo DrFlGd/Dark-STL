@@ -13,7 +13,7 @@ import { useStore } from "../lib/store.js";
 import { ui, setPref, resolvedTheme } from "./state.js";
 import { routeHash, placeRoute, modelOf } from "./context.js";
 import { Icon } from "./icons.js";
-import { collectModelItem, arrangeModel, combineModels } from "./games.js";
+import { collectModelItem, modelFilesItem, arrangeModel, combineModels } from "./games.js";
 import { api, binUrl, info, plural, bytesText, followJob, stopJob, toast, showInFolder, pickFolder, pickFile } from "./api.js";
 import { CommandBar } from "./layout.js";
 import { openMenu } from "./actions.js";
@@ -145,6 +145,7 @@ export function ModelPage({ route }) {
     { id: "copy-path", label: "Copy file path", icon: "copy", run: () => navigator.clipboard?.writeText(m.file).then(() => toast("Copied the file's path")) },
     { sep: true },
     collectModelItem({ id: m.id, file: m.file, label: entry?.label || m.name, category: entry?.category, group: entry?.group }, entry?.game),
+    modelFilesItem({ id: m.id, label: entry?.label || m.name }, m.variant),
     { sep: true },
     { id: "open-file", label: "Open another model file…", icon: "file", run: () => ui.set({ dialog: { type: "open-file" } }) },
     ...(entry && !m.configuration ? [{ sep: true },

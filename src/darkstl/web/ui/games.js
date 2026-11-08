@@ -74,6 +74,12 @@ export function collectModelItem(m, game = m.game) {
     run: () => collectInto({ game: game || null, model: { id: m.id, label: m.label || m.name, category: m.category || null, group: m.group || null } }) };
 }
 
+/** The menu item that exports one model's files into a zip, to send for review. */
+export function modelFilesItem(m, variant = null) {
+  return { id: "model-files", label: "Export model files…", sub: "a zip of its files and a report, to send for review", icon: "download",
+    run: () => ui.set({ dialog: { type: "model-files", model: { id: m.id, label: m.label || m.name }, variant } }) };
+}
+
 /** The game's menu: add a folder to it, collect it, and each of its folders' actions. */
 export function gameMenu(game, place) {
   const items = [

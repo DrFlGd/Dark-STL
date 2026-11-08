@@ -77,5 +77,8 @@ class ReturnalImporter(Importer):
                       lod: bool = False) -> list[RelatedFile]:
         return unreal4.related_files(Path(path), textures, animations, self.cache)
 
+    def review_info(self, path: Path, files: list[str]) -> dict:
+        return unreal4.review_info(Path(path), files)
+
 
 __all__ = ["GAME", "ReturnalImporter"]

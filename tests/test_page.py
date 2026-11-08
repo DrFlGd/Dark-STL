@@ -690,6 +690,31 @@ def test_cancel_stops_an_import_and_it_can_run_in_the_background(page, app, weap
     assert jobs[-1].state == "done" and len(list(root.rglob("package.json"))) > len(written)
 
 
+def test_export_model_files_for_review(page, app, weapon_dir, tmp_path):  # noqa: F811
+    """A model's files go into a zip in the export folder, from its page's menu."""
+    import zipfile
+
+    from test_app import wait
+
+    app.service.config.export_dir = str(tmp_path / "exports")
+    wait(app.service, app.service.call("folder_add", {"path": str(weapon_dir)})["job"])
+    item = app.service.call("models_query", {"game": "Dark Souls III", "limit": 100})["items"][0]
+    page.goto(app.url + f"#/model/{item['id']}")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    page.click("#mp-more")
+    page.click('[data-action="model-files"]')
+    page.wait_for_selector("#model-files-plan-text", timeout=30000)
+    assert "file" in page.text_content("#model-files-plan-text")
+    page.click('[data-files="package"]')
+    page.click("#model-files-dialog-ok")
+    page.wait_for_selector("#model-files-dialog", state="detached", timeout=60000)
+    (zpath,) = (tmp_path / "exports").glob("*.zip")
+    with zipfile.ZipFile(zpath) as z:
+        names = z.namelist()
+    assert "report.txt" in names and any(n.startswith("Dark Souls III/") for n in names)
+    assert any(n.startswith("Dark Souls III packages/") for n in names)
+
+
 def test_collect_keeps_every_texture_of_the_game_after_saying_how_much(page, app, weapon_dir):  # noqa: F811
     app.service.call("folder_add", {"path": str(weapon_dir)})
     page.goto(app.url + "#/browse/Dark%20Souls%20III")
