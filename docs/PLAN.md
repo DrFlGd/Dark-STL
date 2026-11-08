@@ -221,6 +221,25 @@ pose. Without type mappings (Returnal), the skeleton's and animation's own data 
 their properties by signature, the frame count from the codec's header and the frame rate taken
 as 30.
 
+Unreal 3 skeletal meshes (Borderlands, Borderlands 2, The Pre-Sequel) are posed from the game's
+`AnimSet` objects (`borderlands/animsets.py`, after UE Viewer's `UnAnim3.cpp`). An AnimSet names one
+bone per track (`TrackBoneNames`) and holds its `AnimSequence` objects; nothing ties it to a mesh, so
+a mesh is offered every AnimSet of which at least 80% of the tracks (and at least two) name its bones,
+one of them a bone that moves its vertices. Every package's AnimSets are listed beside its other
+objects in the scan's package lists (`package_contents(anim_sets=True)`; lists kept before 0.38.0
+are read again when first asked), each AnimSet read once from its own package (else the smallest
+holding a copy), and the result kept per game (`borderlands-animsets-<hash>.json`, with each
+sequence's length, checked against every package's size and date). Sequences are decoded with the
+Unreal 4 reader's codecs (the AnimSet's track order, 4 offsets per track, or 2 per track for
+per-track compression) plus Borderlands 2's `PolarEncoded32/48` rotations, `Delta48` translations
+and its own per-track format numbers; delta-compressed rotations aren't read (UE Viewer doesn't
+either). Unreal 3 keys every bone but the root with its rotation conjugated relative to the mesh's
+bones; translations come from the animation for the root, and for other bones only when the
+AnimSet isn't `bAnimRotationOnly` (the default) or names them in `UseTranslationBoneNames`
+(`ForceMeshTranslationBoneNames` keeps the mesh's); the root keeps its place on the floor. A
+skeletal mesh with bones shows the Pose tab until the game's AnimSets are listed, then only if
+one fits. Collect copies the packages its AnimSets are read from.
+
 The library groups models by their FromSoftware naming:
 
 | Prefix | Category | Grouped by |
@@ -579,6 +598,7 @@ The plan in the backlog entry below, built in stages:
 - [x] Borderlands 2 skins mixed for each part kept in packages, and mixed from them (0.33.0)
 - [x] The whole asset store: every texture of a game extracted, kept compressed (DDS, every importer),
       with a size estimate first (0.34.0)
+- [x] Borderlands 1/2/TPS characters posed with the game's AnimSets (0.38.0)
 - [x] Models from other tools imported as packages (0.35.0): glTF (Blender, FModel) and ActorX PSK/PSKX
       (UModel, FModel) importers beside OBJ, PSK materials' textures found through the tools' material
       files, and every loose picture in such a folder offered by the texture picker and kept by "Every

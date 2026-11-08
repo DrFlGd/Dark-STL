@@ -28,9 +28,16 @@ from .mesh import object_props, read_reference_skeleton
 
 # AnimationCompressionFormat
 ACF_NONE, ACF_FLOAT96, ACF_FIXED48, ACF_INTERVAL32, ACF_FIXED32, ACF_FLOAT32, ACF_IDENTITY = range(7)
+# Borderlands 2's own formats (Unreal 3; numbered here past Unreal's, as they are only ever named)
+ACF_DELTA40, ACF_DELTA48, ACF_POLAR32, ACF_POLAR48 = 100, 101, 102, 103
 # AnimationKeyFormat
 AKF_CONSTANT, AKF_VARIABLE, AKF_PER_TRACK = range(3)
 _KEY_NAMES = ("ConstantKeyLerp", "VariableKeyLerp", "PerTrackCompression")
+
+_FORMAT_NAMES = {ACF_NONE: "None", ACF_FLOAT96: "Float96NoW", ACF_FIXED48: "Fixed48NoW",
+                 ACF_INTERVAL32: "IntervalFixed32NoW", ACF_FIXED32: "Fixed32NoW", ACF_FLOAT32: "Float32NoW",
+                 ACF_IDENTITY: "Identity", ACF_DELTA40: "Delta40NoW", ACF_DELTA48: "Delta48NoW",
+                 ACF_POLAR32: "PolarEncoded32", ACF_POLAR48: "PolarEncoded48"}
 
 ACL_TAGS = (0xAC10AC10, 0xAC11AC11)  # compressed_tracks / compressed_database buffer tags of the ACL library
 
@@ -301,6 +308,62 @@ def _fixed32_quat(packed: np.ndarray, mins=None, ranges=None) -> np.ndarray:
     return _w(xyz)
 
 
+def _float32_quat(packed: np.ndarray) -> np.ndarray:
+    """``FQuatFloat32NoW``: x and y as 11-bit floats, z as a 10-bit one (sign, 3-bit exponent, mantissa)."""
+    p = packed.astype(np.uint32)
+    x, y, z = p >> 21, (p >> 10) & 0x7FF, p & 0x3FF
+
+    def wide(v, mantissa_bits):
+        sign = (v >> (mantissa_bits + 3)) & 1
+        exponent = ((v >> mantissa_bits) & 7) + 123
+        mantissa = (v & ((1 << mantissa_bits) - 1)) << (23 - mantissa_bits)
+        return ((sign << 31) | (exponent << 23) | mantissa).astype(np.uint32).view(np.float32).astype(np.float64)
+
+    return _w(np.stack([wide(x, 7), wide(y, 7), wide(z, 6)], axis=1))
+
+
+_POLAR_SCALE = 1.5717963  # Borderlands 2's angle scale (UE Viewer: "not M_PI/2")
+
+
+def _polar_quat(w_part: np.ndarray, w_max: float, d1: np.ndarray, signs: np.ndarray, d2_max: float) -> np.ndarray:
+    """Borderlands 2's polar-encoded rotations (``FQuatPolarEncoded32``/``48``, after UE Viewer): w from its
+    own bits, the axis from two angles packed in ``d1``, and the x, y, z signs from bits 31, 30, 29 of
+    ``signs``."""
+    d0 = w_part.astype(np.float64) / w_max
+    w = 1.0 - d0 * d0
+    d1 = d1.astype(np.int64)
+    d2 = np.floor(np.sqrt(d1.astype(np.float64))).astype(np.int64)
+    d2 = np.where((d2 + 1) * (d2 + 1) <= d1, d2 + 1, d2)
+    span = (d2 + 1) * (d2 + 1) - d2 * d2 - 1
+    a1 = np.where(span == 0, 0.0, _POLAR_SCALE * (d1 - d2 * d2) / np.maximum(span, 1))
+    a2 = _POLAR_SCALE * d2 / d2_max
+    x = np.cos(a1)
+    y = np.sqrt(np.clip(1.0 - x * x, 0.0, None))
+    z = np.cos(a2)
+    s1 = np.sqrt(np.clip(1.0 - z * z, 0.0, None))
+    x, y = x * s1, y * s1
+    norm = np.sqrt(x * x + y * y + z * z)
+    scale = np.sqrt(np.clip(1.0 - w * w, 0.0, None)) / np.where(norm > 0, norm, 1.0)
+    out = np.stack([x * scale, y * scale, z * scale, w], axis=1)
+    signs = signs.astype(np.int64)
+    for axis, bit in enumerate((31, 30, 29)):
+        out[:, axis] = np.where((signs >> bit) & 1, -out[:, axis], out[:, axis])
+    return out
+
+
+def _polar32_quat(packed: np.ndarray) -> np.ndarray:
+    p = packed.astype(np.int64)
+    return _polar_quat(p & 0x7FF, 2047.0, (p >> 11) & 0x3FFFF, p, 511.0)
+
+
+def _polar48_quat(raw: np.ndarray) -> np.ndarray:
+    """``raw``: (n, 6) bytes: a u16 for w, then a u32 holding the angles and signs."""
+    raw = np.ascontiguousarray(np.asarray(raw, np.uint8).reshape(-1, 6))
+    w = raw[:, 0:2].copy().view("<u2").reshape(-1).astype(np.int64)
+    rest = raw[:, 2:6].copy().view("<u4").reshape(-1).astype(np.int64)
+    return _polar_quat(w, 65535.0, rest & 0x1FFFFFFF, rest, 16383.0)
+
+
 def _interval32_vector(packed: np.ndarray, mins, ranges) -> np.ndarray:
     x = (packed & 0x3FF).astype(np.float64) / 511.0 - 1.0
     y = ((packed >> 10) & 0x7FF).astype(np.float64) / 1023.0 - 1.0
@@ -353,7 +416,11 @@ def _uniform_vector(b: _Bytes, fmt: int, keys: int) -> np.ndarray:
         return (b.array("<u2", 3 * keys).astype(np.float64).reshape(keys, 3) - 32767.0) * (128.0 / 32767.0)
     if fmt == ACF_IDENTITY:
         return np.zeros((keys, 3))
-    raise FormatError(f"translation compression {fmt} isn't supported")
+    if fmt == ACF_DELTA48:  # Borderlands 2: ranges and a first key, then each key's step from the one before
+        mins, ranges, base = b.floats(3), b.floats(3), b.floats(3)
+        steps = b.array("<u2", 3 * (keys - 1)).astype(np.float64).reshape(keys - 1, 3) / 65535.0 * ranges + mins
+        return np.concatenate([base[None], base + np.cumsum(steps, axis=0)])
+    raise FormatError(f"translation compression {_FORMAT_NAMES.get(fmt, fmt)} isn't supported")
 
 
 def _uniform_quat(b: _Bytes, fmt: int, keys: int) -> np.ndarray:
@@ -370,9 +437,15 @@ def _uniform_quat(b: _Bytes, fmt: int, keys: int) -> np.ndarray:
     if fmt == ACF_INTERVAL32:
         mins, ranges = b.floats(3), b.floats(3)
         return _fixed32_quat(b.array("<u4", keys).astype(np.int64), mins, ranges)
+    if fmt == ACF_FLOAT32:
+        return _float32_quat(b.array("<u4", keys))
+    if fmt == ACF_POLAR32:
+        return _polar32_quat(b.array("<u4", keys))
+    if fmt == ACF_POLAR48:
+        return _polar48_quat(b.array("<u1", 6 * keys).reshape(keys, 6))
     if fmt == ACF_IDENTITY:
         return np.tile([0.0, 0.0, 0.0, 1.0], (keys, 1))
-    raise FormatError(f"rotation compression {fmt} isn't supported")
+    raise FormatError(f"rotation compression {_FORMAT_NAMES.get(fmt, fmt)} isn't supported")
 
 
 def _decode_uniform(c: _Compressed) -> dict[int, Track]:
@@ -411,9 +484,18 @@ def _decode_uniform(c: _Compressed) -> dict[int, Track]:
     return tracks
 
 
-def _per_track(b: _Bytes, frames: int, rotation: bool) -> tuple[np.ndarray, np.ndarray | None]:
+# Borderlands 2 numbers its per-track formats its own way past Float32NoW (UE Viewer); 6 stays Identity
+# for translations, as UE Viewer reads them
+BL2_PER_TRACK_ROTATION = {6: ACF_DELTA40, 7: ACF_DELTA48, 8: ACF_IDENTITY, 9: ACF_POLAR32, 10: ACF_POLAR48}
+BL2_PER_TRACK_TRANSLATION = {7: ACF_DELTA48, 8: ACF_IDENTITY}
+
+
+def _per_track(b: _Bytes, frames: int, rotation: bool, remap: dict | None = None) -> tuple[np.ndarray,
+                                                                                           np.ndarray | None]:
     info = int(b.array("<u4", 1)[0])
     fmt, mask, keys = info >> 28, (info >> 24) & 0xF, info & 0xFFFFFF
+    if remap:
+        fmt = remap.get(fmt, fmt)
     mins, ranges = np.zeros(3), np.zeros(3)
     if fmt == ACF_INTERVAL32:
         for axis in range(3):
@@ -443,10 +525,16 @@ def _per_track(b: _Bytes, frames: int, rotation: bool) -> tuple[np.ndarray, np.n
         values = _fixed32_quat(packed, mins, ranges) if rotation else _interval32_vector(packed, mins, ranges)
     elif fmt == ACF_FIXED32 and rotation:
         values = _fixed32_quat(b.array("<u4", keys).astype(np.int64))
+    elif fmt == ACF_FLOAT32 and rotation:
+        values = _float32_quat(b.array("<u4", keys))
+    elif fmt == ACF_POLAR32 and rotation:
+        values = _polar32_quat(b.array("<u4", keys))
+    elif fmt == ACF_POLAR48 and rotation:
+        values = _polar48_quat(b.array("<u1", 6 * keys).reshape(keys, 6))
     elif fmt == ACF_IDENTITY:
         values = np.tile([0.0, 0.0, 0.0, 1.0], (keys, 1)) if rotation else np.zeros((keys, 3))
     else:
-        raise FormatError(f"per-track compression {fmt} isn't supported")
+        raise FormatError(f"per-track compression {_FORMAT_NAMES.get(fmt, fmt)} isn't supported")
     b.align()
     times = _times(b, keys, frames) if mask & 8 else None
     return values, times

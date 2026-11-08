@@ -142,6 +142,15 @@ neither.
   Animations compressed with Unreal's own codecs are read (4.12 to 5.x); those compressed with the
   ACL plugin are counted on the Pose tab but not read yet.
 
+- **Posing Borderlands, Borderlands 2 and The Pre-Sequel characters (Unreal Engine 3):** a skeletal
+  mesh can be posed on the Pose tab with the sequences of every `AnimSet` in the game whose bones are
+  the mesh's (listed as *AnimSet: sequence*). Nothing in the packages says which AnimSets a mesh
+  uses, so the first time a game's animations are listed Dark STL lists the AnimSets of every package
+  (a few minutes for Borderlands 2 when the folder was scanned with an earlier version) and keeps
+  them; each is read from its own package, or from a map that carries a copy when that is all there
+  is. Borderlands 2's polar-encoded rotations are read; the mesh keeps its own bone lengths unless
+  the AnimSet moves them, as the game does. Gun meshes made of parts aren't posed.
+
 ## Using the app
 
 Start *Dark STL* from the Start menu, or from a source install:
