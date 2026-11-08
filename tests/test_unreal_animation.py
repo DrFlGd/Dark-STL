@@ -33,12 +33,13 @@ RISE = [(0, 0, 35)] * 3  # the pelvis 10 cm above its reference place
 
 
 def _packages(engine=426, unversioned=False, rotation_format=A.ACF_FLOAT96, per_track=False, acl=False,
-              folder="Characters/Selene/Animations", prefix="A_", own=True, virtual=False):
+              folder="Characters/Selene/Animations", prefix="A_", own=True, virtual=False, skeleton=SKELETON,
+              mesh_bones=MESH_BONES):
     out = {}
     anim_engine, engine = engine, (420 if engine == 420 else 426)  # the synthetic meshes are 4.20 or 4.26 ones
     b = S.Ue4Package(SKEL_PKG, engine, unversioned=unversioned)
     e = b.add_export("Skeleton", "SK_Selene_Skeleton")
-    b.set_data(e, A.skeleton_data(b, SKELETON, [("VB root_arm", "root", "arm")] if virtual else ()))
+    b.set_data(e, A.skeleton_data(b, skeleton, [("VB root_arm", "root", "arm")] if virtual else ()))
     out["Characters/Selene/SK_Selene_Skeleton"] = b
 
     material = 0
@@ -52,7 +53,7 @@ def _packages(engine=426, unversioned=False, rotation_format=A.ACF_FLOAT96, per_
                                    "MI_Selene_Suit")
     skel = b.import_object(SKEL_PKG, "Skeleton", "SK_Selene_Skeleton")
     e = b.add_export("SkeletalMesh", "SK_Selene_Suit")
-    b.set_data(e, S.skeletal_data(b, [material], POS, NRM, UV, IDX, [(0, 0, 4, (0, 1, 2), 0, 6)], bones=MESH_BONES,
+    b.set_data(e, S.skeletal_data(b, [material], POS, NRM, UV, IDX, [(0, 0, 4, (0, 1, 2), 0, 6)], bones=mesh_bones,
                                   joints=JOINTS, weights=WEIGHTS, skeleton=skel))
     out["Characters/Selene/Meshes/SK_Selene_Suit"] = b
 
@@ -317,6 +318,31 @@ def test_animations_may_move_the_skeletons_virtual_bones(tmp_path):
     debug = m.animations.debug()
     assert debug["skeleton_bones"] == 4
     assert debug["virtual_bones"] == [{"name": "VB root_arm", "source": "root", "target": "arm"}]
+
+
+# the same bones, each turned a quarter about X (bones along -Y under a root turned back: Maya's Y-up), as a
+# skeleton kept from an earlier version of a model holds them (Returnal's Spore Wizard B)
+TURNED = [("root", -1, (-S45, 0, 0, S45), (0, 0, 0)), ("pelvis", 0, IDENTITY, (0, -25, 0)),
+          ("arm", 1, IDENTITY, (0, -25, 0)), ("tail", 1, IDENTITY, (0, 0, -10))]
+
+
+def test_animations_made_on_the_mesh_when_its_skeleton_turns_its_bones_another_way(tmp_path):
+    """The animations key the mesh's own bones while its skeleton's reference pose has them turned another way:
+    their translations are the mesh's own, not offsets from the skeleton's (which blew the model up)."""
+    imp, path = _suit(tmp_path, skeleton=TURNED)
+    m = imp.load(path)
+    _check_wave(m)
+    assert m.animations.made_on_the_mesh("A_Selene_Wave")
+
+
+def test_a_mesh_of_other_proportions_keeps_its_own(tmp_path):
+    """Animations made on the skeleton move a mesh of other proportions (its pelvis twice as high) by their change
+    from the skeleton's reference pose."""
+    tall = [SKELETON[0], ("pelvis", 0, IDENTITY, (0, 0, 50)), ("arm", 1, IDENTITY, (0, 0, 25))]
+    imp, path = _suit(tmp_path, mesh_bones=tall)
+    m = imp.load(path)
+    _check_wave(m)
+    assert not m.animations.made_on_the_mesh("A_Selene_Wave")
 
 
 def test_says_which_bones_a_track_names_that_the_skeleton_doesnt_have(tmp_path):

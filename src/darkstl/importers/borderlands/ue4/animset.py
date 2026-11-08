@@ -9,7 +9,9 @@ next time. When nothing is found, the Pose tab says what was looked through and 
 
 Animations key the skeleton's bones; a mesh's bones are matched to them by name. Rotations come from the
 animation; translations are the mesh's bone offsets moved by the animation's change from the skeleton's
-reference pose, so a mesh that shares a skeleton with others of other proportions keeps its own. The root
+reference pose, so a mesh that shares a skeleton with others of other proportions keeps its own. An animation
+made on the mesh itself, where the skeleton's reference pose holds the bones turned another way (a skeleton
+kept from an earlier version of the model), is measured from the mesh's own bones instead. The root
 bone's travel across the floor (root motion) is left out, as for the other games: the model stays where its
 bind pose puts it, rising and falling with the animation. Additive animations (offsets meant to be layered
 on another animation) are shown on the bind pose.
@@ -362,6 +364,7 @@ class UEAnimations:
         self._map: np.ndarray | None = None  # mesh bone -> skeleton bone (-1)
         self._entries: dict[str, _Entry] | None = None
         self._decoded: OrderedDict[str, AnimSequence] = OrderedDict()
+        self._made_on: dict[str, bool] = {}
         self._lock = threading.RLock()
 
     @property
@@ -603,12 +606,14 @@ class UEAnimations:
         trans = np.repeat(self.ref_pose[None, :, 4:7], n, axis=0)
         scale = np.repeat(self.ref_pose[None, :, 7:10], n, axis=0)
         additive = bool(anim.additive)
+        on_mesh = not additive and self.made_on_the_mesh(name)
         for i in range(b):
             s = int(self._map[i])
             if s < 0:
                 continue
             t, q, sc = sample(anim, s, at)
-            ref = skel.ref_pose[s]
+            # the pose its offsets are measured from: the skeleton's, or the mesh's own when it was made on it
+            ref = self.ref_pose[i] if on_mesh else skel.ref_pose[s]
             if q is not None:
                 if additive:
                     q = _quat_mul(q, rot[:, i])
@@ -623,6 +628,38 @@ class UEAnimations:
                 scale[:, i] = scale[:, i] * (1 + sc) if additive else sc
         return transforms_to_matrices(rot, trans, scale)
 
+    def made_on_the_mesh(self, name: str) -> bool:
+        """Whether the animation was made on this mesh's own bones rather than on its skeleton's reference
+        pose: when the two differ (a skeleton kept from an earlier version of the model, with its bones
+        turned another way), the animation's keys sit near one of them, and that is the pose they are
+        offsets from. With the same bones in both it makes no difference."""
+        with self._lock:
+            known = self._made_on.get(name)
+            if known is not None:
+                return known
+            anim = self._anim(name)
+            skel = self._skel()
+            at = np.unique(np.linspace(0, max(anim.frames - 1, 0), 8).round())
+            mesh_votes = skel_votes = 0
+            for i, s in enumerate(self._map):
+                if s < 0:
+                    continue
+                mine, theirs = self.ref_pose[i], skel.ref_pose[s]
+                t, q, _sc = sample(anim, int(s), at)
+                apart = float(np.linalg.norm(mine[4:7] - theirs[4:7]))
+                if t is not None and apart > 1e-3 * max(1.0, float(np.linalg.norm(mine[4:7]))):
+                    near = np.linalg.norm(t - mine[4:7], axis=1) < np.linalg.norm(t - theirs[4:7], axis=1)
+                    mesh_votes += int(near.sum())
+                    skel_votes += int((~near).sum())
+                if q is not None and _angle(mine[:4], theirs[:4]) > 2.0:
+                    near = _angle(q, mine[:4]) < _angle(q, theirs[:4])
+                    mesh_votes += int(near.sum())
+                    skel_votes += int((~near).sum())
+            self._made_on[name] = found = mesh_votes > skel_votes
+            if found:
+                log.info("%s was made on the mesh's own bones, not its skeleton's reference pose", name)
+            return found
+
     def local_pose(self, name: str, frame: float) -> np.ndarray:
         return self.local_poses(name, np.array([float(frame)]))[0]
 
@@ -630,6 +667,15 @@ class UEAnimations:
         """(B, 4, 4) matrices carrying a vertex from the bind pose into the pose (Unreal's frame and units)."""
         world = compose_hierarchy(self.local_pose(name, frame), self.parents)
         return world @ np.linalg.pinv(self.bind_world)
+
+
+def _angle(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Degrees between quaternions (x, y, z, w), either sign of each being the same turn."""
+    a = np.asarray(a, np.float64)
+    b = np.asarray(b, np.float64)
+    a = a / np.maximum(np.linalg.norm(a, axis=-1, keepdims=True), 1e-12)
+    b = b / np.maximum(np.linalg.norm(b, axis=-1, keepdims=True), 1e-12)
+    return 2 * np.degrees(np.arccos(np.clip(np.abs(np.sum(a * b, axis=-1)), 0.0, 1.0)))
 
 
 def _quat_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
