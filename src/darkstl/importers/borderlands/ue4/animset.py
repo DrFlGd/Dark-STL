@@ -377,10 +377,13 @@ class UEAnimations:
             if acl:
                 text += (f" {len(acl)} of its skeleton's animations are compressed with the ACL plugin, which Dark "
                          "STL can't read yet, so they aren't listed.")
-            other = len(bad) - len(acl)
+            other = Counter(why for _n, why in bad if "ACL" not in why)
             if other:
-                first = next(why for _n, why in bad if "ACL" not in why)
-                text += f" {other} couldn't be read ({first})."
+                n = sum(other.values())
+                (first, k), *more = other.most_common()
+                text += f" {n} couldn't be read ({first}" + (
+                    f"; {k} of them, and {n - k} for {len(more)} other reason{'s' if len(more) > 1 else ''})." if more
+                    else ").")
         return text
 
     def _none_found(self) -> str:
@@ -440,6 +443,26 @@ class UEAnimations:
             index = {n.lower(): i for i, n in enumerate(self._skeleton.names)}
             self._map = np.array([index.get(n.lower(), -1) for n in self.names_], np.int64)
         return self._skeleton
+
+    def debug(self) -> dict:
+        """The model's bones beside its skeleton's, for a review of a model that poses wrongly."""
+        skel = self._skel()
+        names = skel.names
+        matched = [(i, int(s)) for i, s in enumerate(self._map) if s >= 0]
+        diffs = []
+        for i, s in matched:
+            dt = float(np.linalg.norm(self.ref_pose[i, 4:7] - skel.ref_pose[s, 4:7]))
+            dq = float(abs(np.dot(self.ref_pose[i, :4], skel.ref_pose[s, :4])))
+            diffs.append((dt, 2 * np.degrees(np.arccos(min(dq, 1.0))), self.names_[i]))
+        diffs.sort(reverse=True)
+        return {"package": self.skeleton_package, "skeleton_bones": len(names), "mesh_bones": len(self.names_),
+                "matched": len(matched), "mesh_only": [n for n, s in zip(self.names_, self._map) if s < 0][:40],
+                "skeleton_only": [n for j, n in enumerate(names) if j not in {s for _i, s in matched}][:40],
+                "bind_differences": [{"bone": n, "translation": round(dt, 3), "degrees": round(float(da), 2)}
+                                     for dt, da, n in diffs[:12]],
+                "skeleton_names": names, "skeleton_ref_pose": np.round(skel.ref_pose, 4).tolist(),
+                "mesh_names": self.names_, "mesh_ref_pose": np.round(self.ref_pose, 4).tolist(),
+                "other_skeletons": self.index.survey(self.skeleton_package).skeletons[:40]}
 
     def files_used(self) -> list[str]:
         """The virtual paths of the skeleton and the animations listed (for Collect)."""

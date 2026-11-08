@@ -1052,6 +1052,158 @@ class Service:
         return {"job": self._scan_job(f"Collecting {len(plan.models)} model{'s' if len(plan.models) != 1 else ''} "
                                       f"from {plan.game}", run).id}
 
+    # ------------------------------------------------------------ one model's files, for review
+
+    def _review_entry(self, args: dict) -> CatalogEntry:
+        """The model whose files are exported for review: a library model, or a file opened on its own."""
+        from ..importers import importer_for
+        from ..importers.fromsoft.files import file_stem
+
+        model_id = str(args.get("id") or "")
+        e = self._entry(model_id)
+        if e is None and model_id in self.opened:
+            p = self.opened[model_id]
+            e = CatalogEntry(detect_game(p.parent) or "Other models", "Models", "", file_stem(p.name), p.name, p,
+                             importer_for(p).key, packed=True)
+        if e is None:
+            raise AppError("That model isn't in the library any more.")
+        return e
+
+    def _review_roots(self, entry: CatalogEntry) -> list[Path]:
+        """The game folders a model's files are laid out below (its game's, and the one it is in)."""
+        with self.lock:
+            roots = [r for r, g in self.library.roots.items() if g == entry.game]
+            own = self.library.root_of(entry)
+        if own is not None and own not in roots:
+            roots.append(own)
+        return roots
+
+    def _review_plan(self, args: dict, job: Job | None = None) -> tuple[collect.Plan, CatalogEntry]:
+        """The files exporting a model for review puts in the zip: what Collect would copy for it (textures and
+        animations as asked), without game-wide libraries."""
+        import tempfile
+        import uuid
+
+        from .. import review
+        from ..importers import IMPORTERS, importer_for
+
+        entry = self._review_entry(args)
+        entries, variants = self._expand_configs([entry])
+        options = collect.CollectOptions(textures=bool(args.get("textures", True)),
+                                         animations=bool(args.get("animations", True)), extras=True)
+        by_key = {imp.key: imp for imp in IMPORTERS}
+        importers = {e.importer or importer_for(e.path).key for e in entries}
+
+        def related(e: CatalogEntry) -> list[collect.RelatedFile]:
+            imp = by_key.get(e.importer) or importer_for(e.path)
+            out = list(imp.related_files(e.path, options.textures, options.animations, options.lod))
+            if imp.record_reads:
+                out += self._reads(imp, e.path, variants.get(e.path, {None}), options)
+            return [f for f in out if review.keep(f)]
+
+        def extras(root: Path) -> list[collect.RelatedFile]:
+            return [f for key in importers if key in by_key for f in by_key[key].shared_files(root, entry.game)
+                    if review.keep(f)]
+
+        roots = self._review_roots(entry)
+        progress = (lambda i, name: job.report(0.0, f"Reading {name}")) if job is not None else None  # noqa: E731
+        nowhere = Path(tempfile.gettempdir()) / f"darkstl-review-{uuid.uuid4().hex}"  # never written: nothing is there
+        with self.thumbs.foreground():
+            plan = collect.plan(nowhere, entry.game, entries, roots, options, related, extras, progress)
+        return plan, entry
+
+    def cmd_model_files_plan(self, args: dict) -> dict:
+        """What exporting a model's files for review would put in the zip (worked out in a job with ``job``)."""
+        def summary(job: Job | None) -> dict:
+            plan, entry = self._review_plan(args, job)
+            s = plan.summary()
+            name = f"{_safe_name(entry.label or entry.stem)} - model files.zip"
+            return {**s, "name": name, "dest": str(Path(self.config.export_folder) / name),
+                    "configurable": entry.config is not None}
+
+        if not args.get("job"):
+            return summary(None)
+        return {"job": self.jobs.start("Working out which files to export", summary, stoppable=True).id}
+
+    def cmd_model_files_export(self, args: dict) -> dict:
+        """Write a model's files into a zip in the export folder, to send for review: with ``game_files`` (the
+        default) the game's own files it is read from, with ``package`` the model package Dark STL imports it
+        as; either way a report of what Dark STL made of it and what it logged."""
+        import shutil
+        import tempfile
+
+        from .. import review
+        from ..importers import IMPORTERS, importer_for
+
+        entry = self._review_entry(args)
+        variant = str(args["variant"]) if args.get("variant") else None
+        game_files = bool(args.get("game_files", True))
+        as_package = bool(args.get("package", False))
+        if not game_files and not as_package:
+            raise AppError("Choose the game's files, the model package, or both.")
+        folder = Path(args.get("folder") or self.config.export_folder)
+        dest = _free_name(folder / f"{_safe_name(entry.label or entry.stem)} - model files.zip")
+
+        def run(job: Job):
+            job.report(0.0, "Opening the model")
+            imp = next((i for i in IMPORTERS if i.key == entry.importer), None) or importer_for(entry.path)
+            work = Path(tempfile.mkdtemp(prefix="darkstl-review-"))
+            folders: list[tuple[Path, str]] = []
+            out = {"export": review.header(entry_json(entry), variant)}
+            try:
+                with review.capture_log() as lines:
+                    try:
+                        model = imp.load(entry.path, variant, tuple(self.config.texture_dirs))
+                        out["model"] = review.model_report(model)
+                    except Exception as exc:  # noqa: BLE001 - a model that doesn't open is what's to be reviewed
+                        log.warning("Review: %s didn't open", entry.path, exc_info=True)
+                        out["model"] = review.model_report(None, f"{type(exc).__name__}: {exc}")
+                    plan = None
+                    if game_files:
+                        job.report(0.05, "Working out which files to add")
+                        plan, _ = self._review_plan(args, job)
+                    try:
+                        listed = [f.target.relative_to(plan.folder).as_posix() for f in plan.files] if plan else []
+                        out["game"] = imp.review_info(entry.path, listed)
+                    except Exception as exc:  # noqa: BLE001 - only for the report
+                        out["game"] = {"error": f"{type(exc).__name__}: {exc}"}
+                    if as_package:
+                        job.check()
+                        job.report(0.1, "Writing the model package")
+                        out["package"] = self._review_package(entry, imp, work, bool(args.get("animations", True)), job)
+                        if out["package"].get("folder"):
+                            folders.append((Path(out["package"]["folder"]), Path(out["package"]["folder"]).name))
+                return review.write(plan, dest, out, lines, lambda f, m: job.report(0.3 + 0.7 * f, m), folders)
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+
+        return {"job": self.jobs.start(f"Exporting {entry.label or entry.stem}'s files", run, stoppable=True).id}
+
+    def _review_package(self, entry: CatalogEntry, imp, work: Path, animations: bool, job: Job) -> dict:
+        """Write ``entry`` as the model package Dark STL imports it as, into a packages folder below ``work``."""
+        if entry.config is not None:
+            return {"error": "A configurable model is kept as its parts' packages: export one of its parts instead."}
+        root = work / collect.packages_folder(Path("."), entry.game).name
+        try:
+            store = package.AssetStore(root)
+            variants = imp.variants(entry.path)[:self.MAX_PACKAGE_VARIANTS] or [None]
+            models = []
+            for v in variants:
+                job.check()
+                models.append(imp.load(entry.path, v, tuple(self.config.texture_dirs)))
+            rel = collect.relative_path(entry.path, self._review_roots(entry)).as_posix()
+            options = package.WriteOptions(animations=animations,
+                                           progress=lambda m: job.report(0.2, f"Writing the model package: {m}"))
+            package.write_package(root, entry, rel, models, store, options)
+            store.save()
+            collect.write_manifest(root, entry.game, [entry.stem], packages=True)
+            return {"folder": str(root), "models": len(models)}
+        except Stopped:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the game's files and the report are still worth sending
+            log.warning("Review: %s couldn't be written as a package", entry.path, exc_info=True)
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
     # ------------------------------------------------------------ importing as model packages
 
     MAX_PACKAGE_VARIANTS = 64

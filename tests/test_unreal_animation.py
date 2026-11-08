@@ -302,3 +302,25 @@ def test_animations_kept_as_unreadable_before_are_read_again(tmp_path):
     kept.write_text(json.dumps(data))
     vfs.forget(tmp_path / "Returnal")
     _check_wave(imp.load(path))
+
+
+def test_says_which_bones_a_track_names_that_the_skeleton_doesnt_have(tmp_path):
+    from darkstl.errors import FormatError
+    from darkstl.importers.borderlands.ue4 import anim
+    from darkstl.importers.borderlands.ue4 import vfs as V
+    from darkstl.importers.borderlands.ue4.animset import UEAnimations
+
+    imp, path = _suit(tmp_path)
+    m = imp.load(path)
+    gf = V.game_files(tmp_path / "Returnal")
+    wave = next(v for v in gf.assets() if v.endswith("A_Selene_Wave.uasset"))
+    pkg = gf.open_package(wave)
+    e = pkg.main_export(("AnimSequence",))
+    with pytest.raises(FormatError, match=r"1 of its 2 tracks names bone 2, and the skeleton has 2"):
+        anim.read_anim(pkg, e, 2)
+    assert isinstance(m.animations, UEAnimations)
+    m.animations.entries()["A_Selene_Idle"].error = "a track for a bone the skeleton doesn't have: x"
+    m.animations.entries()["A_Selene_Lean"].error = "a track for a bone the skeleton doesn't have: x"
+    m.animations.entries()["A_Selene_Wave"].error = "it is broken"
+    assert "3 couldn't be read (a track for a bone the skeleton doesn't have: x; 2 of them, and 1 for 1 other " \
+           "reason)." in m.animations.note

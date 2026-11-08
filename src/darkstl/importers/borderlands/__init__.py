@@ -356,6 +356,9 @@ class BorderlandsImporter(Importer):
             lines.append(f"  {cls}: {n:,}")
         return lines
 
+    def review_info(self, path: Path, files: list[str]) -> dict:
+        return unreal4.review_info(Path(path), files) if unreal4.is_asset_path(Path(path)) else {}
+
     def related_files(self, path: Path, textures: bool = True, animations: bool = True,
                       lod: bool = False) -> list[RelatedFile]:
         path = Path(path)

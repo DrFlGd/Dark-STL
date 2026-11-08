@@ -180,8 +180,11 @@ def read_after_properties(r: Reader, pkg: Package, bones: int | None = None) -> 
 def _track_map(r: Reader, limit: int) -> list[int]:
     n = r.count(4096)
     bones = [int(x) for x in _ints(r, n)]
-    if any(b < 0 or b >= limit for b in bones):
-        raise FormatError("a track for a bone the skeleton doesn't have")
+    bad = [b for b in bones if b < 0 or b >= limit]
+    if bad:
+        raise FormatError(f"a track for a bone the skeleton doesn't have: {len(bad)} of its {n} tracks "
+                          f"{'names bone' if len(bad) == 1 else 'name bones up to'} {max(bad)}, and the skeleton has "
+                          f"{limit}")
     return bones
 
 

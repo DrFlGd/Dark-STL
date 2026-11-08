@@ -137,6 +137,7 @@ class GameFiles:
     spelled: dict[str, str] = field(default_factory=dict)  # lower-case -> as the packer wrote it
     packages: dict[str, str] = field(default_factory=dict)  # lower-case package name -> virtual path of its asset
     paks: list = field(default_factory=list)
+    replaced: dict[str, list[FileRef]] = field(default_factory=dict)  # lower-case -> the copies later paks replaced
     locked: list[Path] = field(default_factory=list)  # paks no key opened
     errors: list[str] = field(default_factory=list)
     zen: object | None = None  # the IoStore reader (Unreal 5), if the game has one
@@ -146,12 +147,47 @@ class GameFiles:
 
     def add(self, virtual: str, ref: FileRef) -> None:
         low = virtual.lower()
+        before = self.files.get(low)
+        if before is not None:
+            self.replaced.setdefault(low, []).append(before)
         self.files[low] = ref
         self.spelled[low] = virtual
         if low.endswith(ASSET_SUFFIXES):
             name = package_name(virtual)
             if name:
                 self.packages[name.lower()] = virtual
+
+    @staticmethod
+    def _where(ref: FileRef) -> dict:
+        c = ref.container
+        if c is None:
+            return {"loose": str(ref.entry)}
+        name = getattr(getattr(c, "path", None), "name", None) or type(c).__name__
+        return {"container": name, "size": int(getattr(ref.entry, "usize", 0) or 0)}
+
+    def where(self, virtual: str) -> dict | None:
+        """Which pak a file is read from, and the copies of it in earlier paks that one replaces (for a review)."""
+        low = virtual.lower()
+        ref = self.files.get(low)
+        if ref is None:
+            return None
+        out = self._where(ref)
+        if low in self.replaced:
+            out["replaces"] = [self._where(r) for r in self.replaced[low]]
+        return out
+
+    def summary(self) -> dict:
+        """The game's paks in the order they're read (later ones replace earlier ones' files), for a review."""
+        per: dict[str, int] = {}
+        for refs in self.replaced.values():
+            for r in refs:
+                name = self._where(r).get("container", "loose")
+                per[name] = per.get(name, 0) + 1
+        return {"root": str(self.root), "game": self.game, "engine": self._engine,
+                "paks": [{"name": p.path.name, "version": p.version, "mount": p.mount, "files": len(p.entries),
+                          "methods": list(p.methods), "replaced_by_later": per.get(p.path.name, 0)} for p in self.paks],
+                "replaced_files": len(self.replaced), "locked": [p.name for p in self.locked],
+                "errors": list(self.errors[:20]), "zen": self.zen is not None}
 
     def assets(self) -> list[str]:
         return [self.spelled[k] for k in self.files if k.endswith(ASSET_SUFFIXES)]

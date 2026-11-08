@@ -108,6 +108,11 @@ class Importer:
             except (FormatError, OSError, ValueError) as exc:
                 yield ref, exc
 
+    def review_info(self, path: Path, files: list[str]) -> dict:
+        """For a review of a model's files (Export model files): where the game keeps them, when that is worth
+        knowing (which of the game's archives each of ``files``, paths below the game folder, is read from)."""
+        return {}
+
     def shared_files(self, root: Path, game: str, player_animations: bool = False) -> list[RelatedFile]:
         """Files a game folder holds that every model from it may need (a compression library, the
         player's animations for armour)."""

@@ -277,6 +277,18 @@ def related_files(path: Path, textures: bool = True, animations: bool = False,
     return out
 
 
+def review_info(path: Path, files: list[str]) -> dict:
+    """The game's paks, and which one each of ``files`` (virtual paths) is read from, with the copies of it in
+    earlier paks that one replaces."""
+    found = vfs.locate(path)
+    if found is None:
+        return {}
+    gf = vfs.game_files(found[0])
+    out = gf.summary()
+    out["files"] = {f: gf.where(f) for f in files if gf.exists(f)}
+    return out
+
+
 def _animation_files(gf, pkg: Package, m: Mesh4, cache: Path | None, seen: set[str]) -> list[RelatedFile]:
     """The skeleton and the animations that pose a skeletal mesh, each package with its .uexp/.ubulk."""
     anims, _why = _animations(pkg, m, cache)
@@ -295,4 +307,4 @@ def _animation_files(gf, pkg: Package, m: Mesh4, cache: Path | None, seen: set[s
     return out
 
 
-__all__ = ["UE4_GAMES", "can_open", "describe", "is_asset_path", "load", "open_asset", "related_files"]
+__all__ = ["UE4_GAMES", "can_open", "describe", "is_asset_path", "load", "open_asset", "related_files", "review_info"]

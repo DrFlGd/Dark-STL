@@ -173,7 +173,12 @@ darkstl            # or darkstl-gui; darkstl gui --browser opens it in your brow
 3. **Open a model** (double-click or Enter). It's shown with the game's textures, wherever in
    the game folder they are (a map's texture packs, shared packs, another model's archive);
    *Model* lists its parts and options, *Textures* every texture found. A file that holds several
-   models (a weapon and its sheath) has a switch at the top.
+   models (a weapon and its sheath) has a switch at the top. When a model doesn't open, pose or
+   texture as it should, *Export model files…* (under ⋯ on its page, or right-click its card) puts
+   its files into one zip to send for review: the game's own files it is read from, and/or the
+   model package Dark STL imports it as, with a report of what Dark STL made of it (materials,
+   textures, UV ranges, animations and those it couldn't read, which of the game's archives each
+   file came from) and what it logged. The zip's folders open again with *Add collected files…*.
 4. **Mesh** evens out the vertices (step 1): set the count (it shows the spacing that gives on this
    model) and the method, then *Even out the vertices*. The model is shown, not displaced yet, and
    the mesh is kept while you work on the next two tabs.
