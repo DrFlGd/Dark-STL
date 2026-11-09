@@ -6,6 +6,8 @@
     darkstl export <file> -o model.obj        export the original model (stl/obj/ply/glb)
     darkstl enhance <file> -o model.stl -n 2000000
                                               even remesh + texture displacement + export
+    darkstl export <file> -o model.stl --clean hidden-faces:2 --clean sheets:0.5 --clean height:150
+                                              clean the model first (as the Clean tab), then export it
     darkstl gui                               open the explorer (also the default with no arguments)
 """
 
@@ -205,7 +207,15 @@ def _mesh_options(args):
     if getattr(args, "pose", None):
         name, _, frame = args.pose.rpartition("@")
         pose = (name or args.pose, int(frame) if name and frame else 0)
-    return MeshOptions(parts=_parse_meshes(args.parts), flags=flags, pose=pose)
+    clean = None
+    if getattr(args, "clean", None):
+        from .clean import parse_steps
+
+        try:
+            clean = parse_steps(args.clean)
+        except ValueError as e:
+            raise SystemExit(f"error: {e}") from None
+    return MeshOptions(parts=_parse_meshes(args.parts), flags=flags, pose=pose, clean=clean)
 
 
 def _open(args):
@@ -346,7 +356,16 @@ def cmd_export(args) -> int:
     from .export import export_mesh
 
     model = _open(args)
-    mesh = model.build_mesh(_mesh_options(args))
+    options = _mesh_options(args)
+    if options.clean:
+        from .clean import apply
+
+        cleaned = apply(model.build_raw(options), options.clean)
+        for row in cleaned.rows:
+            print(f"clean: {row['label']}: {row['text']}", file=sys.stderr)
+        mesh = cleaned.mesh
+    else:
+        mesh = model.build_mesh(options)
     if mesh.n_faces == 0:
         print(f"error: {model.name} has no triangles to export", file=sys.stderr)
         return 1
@@ -394,6 +413,8 @@ def cmd_enhance(args) -> int:
         edge_hints=args.edge_hints,
         albedo_detail_mm=args.albedo_detail,
         detail_normals=args.detail_normals,
+        thin_parts=not args.no_thin_parts,
+        thin_room=min(max(args.thin_room, 5.0), 100.0) / 100.0,
     )
     t0 = time.time()
     result = enhance(model, settings, _progress)
@@ -416,6 +437,11 @@ def cmd_enhance(args) -> int:
     print(f"Wrote {path}: {st['vertices']:,} vertices, {st['faces']:,} triangles "
           f"(from {st['source_vertices']:,}); max displacement {st['max_displacement_mm']:.3f} mm "
           f"[{time.time() - t0:.1f}s]")
+    if result.thin is not None:
+        th = result.thin
+        print(f"  thin parts: {th['capped']:,} vertices lowered (by up to {th['max_reduction'] * 1000:.3f} mm), "
+              f"{th['kept'] * 100:.1f}% of the relief kept, {th['crossings_found']:,} crossings found, "
+              f"{th['crossings_left']:,} left [{th['seconds']:.1f}s]")
     for mat, f in result.fields.items():
         name = model.textures[f.texture].name
         print(f"  material {mat}: {name}, green={f.field.convention or 'n/a'}, texel={f.texel_size * 1000:.3f} mm"
@@ -487,6 +513,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help=("pose the model with one of its animations (see 'info'): from its anibnd, e.g. "
                               "a000_003000@12, or for RE Engine models from the game's motlists, "
                               "e.g. \"pl0000_move / wave@12\""))
+        sp.add_argument("--clean", action="append", metavar="STEP[:VALUE]", default=[],
+                        help=("clean the model before anything else, as the app's Clean tab (repeat for more, done in "
+                              "order): hidden-parts, hidden-faces[:DEPTH_MM] (default 1), sheets[:THICKNESS_MM] "
+                              "(thin sheets and cloth, default 0.5), holes[:SIZE_MM] (default 5), duplicates[:MM], "
+                              "weld[:MM] (default 0.01), normals, height:MM (print height), scale:FACTOR, "
+                              "rotate:X,Y,Z (degrees), mirror:x|y|z, floor"))
         sp.add_argument("--scale", type=float, default=1000.0, help="unit scale (default 1000: metres -> mm)")
         sp.add_argument("--ascii", action="store_true", help="ASCII STL")
         sp.add_argument("--textures", action="append", help="extra folder to search for textures")
@@ -550,6 +582,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--green", choices=["auto", "directx", "opengl"], default="auto")
     s.add_argument("--detail", type=float, default=1 / 16, help="high-pass radius as a fraction of texture size")
     s.add_argument("--max-mm", type=float, help="clamp displacement to this many mm")
+    s.add_argument("--no-thin-parts", action="store_true",
+                   help="don't lower relief where parts are thin or close together (it can then pass through them)")
+    s.add_argument("--thin-room", type=float, default=80.0,
+                   help="percent of the room inside thin parts and between close parts relief may use (default 80)")
     s.add_argument("--integration", choices=["mesh", "texture"], default="mesh",
                    help="integrate normal-map slopes on the model's surface (default) or per texture (v0.1)")
     s.add_argument("--edge-keeping", type=float, default=0.0, help="0..1, keep inconsistent slopes from smearing")

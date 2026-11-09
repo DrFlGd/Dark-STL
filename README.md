@@ -193,30 +193,37 @@ darkstl            # or darkstl-gui; darkstl gui --browser opens it in your brow
    model package Dark STL imports it as, with a report of what Dark STL made of it (materials,
    textures, UV ranges, animations and those it couldn't read, which of the game's archives each
    file came from) and what it logged. The zip's folders open again with *Add collected files…*.
-4. **Mesh** evens out the vertices (step 1): set the count (it shows the spacing that gives on this
+4. **Clean** takes off what shouldn't be printed, as a list of steps you can take away again: parts
+   left out (the part checkboxes), parts and faces hidden inside others, thin sheets (capes, linings,
+   cloth drawn from both sides, even inside a bigger part: listed biggest first, shown in the 3D view
+   as you point at them, removed when ticked), and faces you pick by clicking the model (the pick
+   spreads to the creases; Shift adds, Alt takes away). It also fills small holes, drops duplicate
+   faces, welds vertices, turns flipped faces, and sets the print height, turns, mirror and place
+   (from then on sizes read in print millimetres). Every later tab works on the cleaned model.
+5. **Mesh** evens out the vertices (step 1): set the count (it shows the spacing that gives on this
    model) and the method, then *Even out the vertices*. The model is shown, not displaced yet, and
    the mesh is kept while you work on the next two tabs.
-5. **Textures** also cleans up and upsamples the normal maps for displacement: pick the clean-up,
+6. **Textures** also cleans up and upsamples the normal maps for displacement: pick the clean-up,
    the upsampling and the factor, *Upscale*, and compare **Before / After** (drag the line, zoom
    into single texels), then change the settings and upscale again until the detail looks right.
-6. **Displace** raises the texture detail on the evened-out mesh (step 2): the strength, a detail
+7. **Displace** raises the texture detail on the evened-out mesh (step 2): the strength, a detail
    texture for each material and the finer settings. Whatever the Mesh and Textures tabs haven't
    made yet is made first. Show *Original* or *Enhanced* under the view: both stay loaded, so
    switching is instant, and the last three models generated are kept too. Click **Stop** in the
    status bar (or under a progress bar) to stop a job.
-7. **Finish** holds post-processing for printing. *Make watertight* wraps the whole model into one
+8. **Finish** holds post-processing for printing. *Make watertight* wraps the whole model into one
    solid: every part is made solid (openings closed, open surfaces thickened) and they're joined,
    so where parts cross (an arm in a sleeve, armour over a body) the surfaces inside are removed
    and only the outside stays, exactly as it was. Hollows sealed inside are filled; optionally
    narrow gaps between parts are bridged and loose bits removed. *Show › Finished* shows it, and
    Cut and Export can use it.
-8. **Cut** splits the model into pieces for printing. *Add a cut* across X, Y or Z (or facing you),
+9. **Cut** splits the model into pieces for printing. *Add a cut* across X, Y or Z (or facing you),
    then drag the plane in the 3D view to slide it, drag its round handle to tilt it, or *Pick a
    point* on the model. Each cut has its own joint: flat (to glue), pegs, dowels, magnet pockets
    or a key shaped like the cut face, and its own clearance. The model is made solid first
    (openings closed, open surfaces such as capes thickened), so every piece is watertight.
    *Show › Pieces* shows them in colour, spread apart with a slider.
-9. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default; *Finished* the watertight
+10. **Export** writes STL, OBJ, PLY or GLB, in millimetres by default; *Finished* the watertight
    model; *Pieces* writes each piece
    to its own file, laid on a cut face ready to print. **Painted 3MF** paints the model from its
    colour textures for a multi-colour printer (Bambu Studio, OrcaSlicer, PrusaSlicer), with the
@@ -241,12 +248,15 @@ darkstl export parts/wp_a_0210.partsbnd.dcx -o grip.obj  # original model with t
 darkstl export chr/c2010.chrbnd.dcx -o c2010.3mf --colours 6 --print-height 200 --feature 0.5  # painted 3MF
 darkstl enhance parts/wp_a_0210.partsbnd.dcx -o grip.stl -n 2000000
 darkstl enhance chr/c2010.chrbnd.dcx -o c2010.stl -n 4000000 --strength 1.5 --save-heights heights/
+darkstl export chr/c2010.chrbnd.dcx -o c2010.stl --clean hidden-parts --clean sheets:0.5 --clean height:150
 ```
 
 Useful `enhance` options: `--method isotropic` for an exact count of uniform triangles,
 `--source height` to use a grayscale height map, `--flat` to skip rounding, `--green
 opengl|directx` if the relief comes out inverted, `--max-mm` to clamp displacement, and
-`--parts 0,2` to keep only some parts, `--cut z=40:pegs` (repeatable; `z=50%`, joints `flat`,
+`--parts 0,2` to keep only some parts, `--clean` steps done first (repeatable: `hidden-parts`,
+`hidden-faces:2`, `sheets:0.5`, `holes:5`, `duplicates`, `weld:0.01`, `normals`, `height:150` or `scale:0.1`,
+`rotate:0,0,90`, `mirror:x`, `floor`), `--cut z=40:pegs` (repeatable; `z=50%`, joints `flat`,
 `pegs`, `dowels`, `magnets`, `key`, and `--clearance 0.2`) to write the model as pieces,
 `--watertight` to wrap it into one watertight solid first (with `--close-gaps 1` to bridge gaps up
 to 1 mm, `--drop-loose 1` to remove loose bits under 1% of it, `--keep-hollows`), and `--variant WP_A_0402_1.flver` to pick a model in a
