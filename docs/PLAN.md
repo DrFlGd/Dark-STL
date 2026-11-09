@@ -36,6 +36,8 @@ importer and registering it in `importers/__init__.py`:
 | Wavefront OBJ | OBJ + MTL with PNG/JPG/TGA/DDS textures, from any other tool | Done |
 | glTF | `.gltf` (with its `.bin` and pictures) and `.glb`, as Blender, FModel and most tools export: each mesh a part placed by its node, base colour and normal textures (green up), Y up turned to Z up; a model too big to be in metres read as centimetres. Skinned meshes in their bind pose | Synthetic files (0.35.0) |
 | ActorX PSK/PSKX | UModel's and FModel's exports of Unreal models: points, wedges, faces and materials, mirrored from Unreal's frame like the Unreal games' own models; each material's textures found by name beside the model, from UModel's `.mat`, FModel's `.json` and UModel's `.props.txt` material files, then from texture names like the material's. The skeleton isn't read | Synthetic files (0.35.0) |
+| RenderWare (GTA III, Vice City, San Andreas) | `.img` archives, `.dff` models (parts, skins, vehicle frames), `.txd` textures, `.ifp` animations, `.ide`/`.ipl`/`.gxt` for kinds, areas and names. See Reading Grand Theft Auto files | Planned (0.50.0) |
+| RAGE (GTA V, then GTA IV) | `.rpf` v7 and IMG3 archives with keys found in the user's executable, RSC7/RSC5 resources: `.ydr`/`.wdr`, `.ydd` ped components, `.yft` vehicles, `.ytd` textures, `.ycd` animations | Planned (0.51.0 GTA V, 0.52.0 GTA IV) |
 
 An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
 folder), `detect_game`, `variants` (files holding several models) and `describe`.
@@ -286,6 +288,183 @@ they need; properties of types it does not know are kept as bytes and skipped by
   to; the result is cached per archive. Members are listed under the pseudo path
   `<pack>.archive\<hash>.mesh`. Collecting extracts them under their depot paths, so the copies
   read like a WolvenKit export.
+
+### Reading Grand Theft Auto files
+
+The series runs on three engines, and each gets one importer family. The plan below was worked
+out from the published format descriptions (gtamods.com wiki), librw (MIT, the RenderWare
+reimplementation behind re3), CodeWalker (MIT, GTA V), and OpenIV, SparkIV, DragonFF and
+Sollumz as cross-checks (GPL or closed: read for layouts only, nothing copied). No game key
+is shipped: where an archive is encrypted, the key is found in the user's own executable at
+scan time and kept in the settings folder, as the Oodle library is.
+
+| Games | Engine | Archives | Models | Textures | Animations | Names |
+| --- | --- | --- | --- | --- | --- | --- |
+| GTA III, Vice City, San Andreas (PC) | RenderWare 3.1-3.6 | `.img` with a `.dir` beside it (III, VC) or `VER2` single file (SA), loose files in `models/` | `.dff` | `.txd` | `.ifp` (`ANPK` III/VC, `ANP3` SA) | `.ide` definitions, `.gxt` text |
+| GTA IV, Episodes from Liberty City | RAGE, first generation | `IMG3` archives (`pc/models/cdimages`, `pc/data/maps`), table encrypted with AES-256 | `.wdr`, `.wdd`, `.wft` (RSC5) | `.wtd` | `.wad` | `.gxt`, `.ide` |
+| GTA V (Legacy, then Enhanced) | RAGE, second generation | `.rpf` version 7: open, AES or NG encrypted; DLC packs in `update/x64/dlcpacks` | `.ydr`, `.ydd`, `.yft` (RSC7) | `.ytd` | `.ycd` | `.gxt2`, `vehicles.meta`, `.ymt` |
+| Trilogy Definitive Edition | Unreal Engine 4.26 | `.pak` | through the Unreal readers | | | string tables |
+
+#### RenderWare: GTA III, Vice City, San Andreas (`importers/renderware/`)
+
+- **Chunks.** Every RenderWare file is a tree of chunks: `type`, `size`, `library id` (u32
+  each), then `size` bytes. The library id encodes the RenderWare version
+  (`((id >> 14) & 0x3ff00) + 0x30000 | ((id >> 16) & 0x3f)`, or `id << 8` for the oldest
+  files): 3.1/3.2 in III, 3.3/3.4 in VC, 3.6 in SA. Layouts that changed with the version are
+  picked from it, not from the game. Unknown chunks are skipped by their size, so plugins we
+  don't read (collision, 2D effects, reflections, night colours) cost nothing.
+- **Archives.** III and VC: `gta3.dir` holds 32-byte entries (offset and size in 2048-byte
+  sectors, a 24-byte name) for the raw `gta3.img`. SA: `VER2`, a count, then the same entries
+  with the size split into two u16s. Members are addressed as pseudo paths
+  `<archive>.img/<name>.dff` (as RE Engine pak entries are), so the library, previews,
+  packages and Collect work unchanged. `player.img` (SA clothes) and `cutscene.img` are read
+  the same way.
+- **Models (`.dff`).** A Clump holds a Frame List (per frame a 3x3 rotation, a position, a
+  parent index, with a name and an HAnim bone id in its extensions), a Geometry List and
+  Atomics (a frame and a geometry each). A Geometry has flags (positions, normals, prelit
+  colours, one or two UV sets), triangles stored as `v1, v0, material, v2` (u16), one morph
+  target with the positions and normals, a Material List (colour, texture name and mask name,
+  material effects) and, for peds, the Skin plugin: bone indices and weights for four bones
+  per vertex and an inverse bind matrix per bone (each preceded by `0xDEADDEAD` before 3.4).
+  Game space is right-handed, Z up, metres, as Dark STL's: nothing is rotated. Each atomic is a
+  part, placed by its frame; geometry without normals gets them averaged.
+- **Textures (`.txd`).** A Texture Dictionary of Texture Natives: platform 8 (Direct3D 8, III
+  and VC) or 9 (Direct3D 9, SA), name, mask name, raster format, size, mip count, then the
+  palette (PAL8 or PAL4) and each level's pixels. Rasters are DXT1/3/5 (decoded through
+  `texture2ddecoder` like the other importers), 8-bit paletted, or raw 8888, 888, 1555, 565,
+  4444 and LUM8, in BGRA order. All are colour textures in sRGB. The games have no normal maps,
+  so Displace uses the grayscale-height path from the colour texture.
+- **Which textures a model uses.** The model's line in an `.ide` file names its `.txd`; SA's
+  `txdp` sections chain dictionaries to parents; vehicles also read `vehicle.txd`, and anything
+  still missing is looked up in `generic.txd`, then in any dictionary of the archive by name
+  (with a note on the model saying the match was guessed).
+- **Kinds and groups.** `gta.dat` (`default.dat` first) lists the `.ide` files. Their sections
+  decide the kind: `peds` → Characters (group from the ped type: civilians, gangs, cops,
+  special and cutscene characters), `cars` → Vehicles (group from the type: car, bike, boat,
+  heli, plane, trailer), `weap` → Weapons, `objs`/`tobj`/`anim` → Map pieces and props, grouped
+  by the `.ide` file's area (`data/maps/LA/...`, `SF`, `vegas`, `generic`), `hier` →
+  Cutscene objects. The `.ipl` files say where each map object is placed; the scan uses them to
+  list the objects each map area places. A `.dff` no `.ide` names (SA's `player.img` clothes,
+  upgrades, `_l` LODs) goes under Other, low-detail copies hidden as for other games.
+- **Vehicles.** A car's frames name its pieces (`chassis`, `door_lf_hi_ok`, `bonnet_dummy`,
+  `wheel_rf_dummy`...). Each atomic is a part placed by its frame; `_dam` (damaged) and `_vlo`
+  (low detail) parts are switched off by default. The game copies the one wheel to every
+  `wheel_*_dummy` (mirrored on the left), and so does the importer. Paint: materials coloured
+  with the placeholder colours (primary 60,255,0 and secondary 255,0,175; SA adds 0,255,255
+  and 255,0,255) take the car's colours from `carcols.dat`; each colour pair is a variant, and
+  the material colour is baked into the colour texture so the package and exports carry it.
+- **Animations (`.ifp`).** III and VC: `ANPK` blocks (`INFO`, `NAME`, `DGAN`, per bone `CPAN`
+  `ANIM` then `KR00`/`KRT0`/`KRTS` key frames: quaternion, position, scale, time). SA: `ANP3`
+  with 24-byte names, per bone a frame type, a frame count and an HAnim bone id, frames as
+  floats or compressed int16 (quaternion / 4096, position / 1024, time / 60). Peds share the
+  skeleton, so `ped.ifp` poses every ped (bones matched by HAnim id in SA, by name in III/VC);
+  other `.ifp` files (`anim/*.ifp`, SA's `anim.img`) add their animations to the peds that use
+  them (the `.ide`'s animation file).
+- **Names.** Vehicles' `.ide` lines carry a text key resolved through the game's `.gxt`
+  (III: `TKEY`/`TDAT` UTF-16; VC: tables; SA: version 8 tables keyed by the CRC32 of the key),
+  so `landstal` shows as "Landstalker". Weapons get their names from the `.gxt` weapon keys
+  where there is one; peds and map pieces keep their model names.
+- **Differences between the three games** (archive version, IFP and GXT format, colour
+  placeholders, executable and folder layout, where `ped.ifp` lives) are a game profile each.
+  They are written as JSON in the format of the game profiles from 0.49.0 (`importers/profiles/`,
+  engine backend `renderware`), so a profile override in the settings folder works for them
+  too. Bully: Scholarship Edition and Manhunt are RenderWare games that could follow with a
+  profile and their own archive readers.
+- **Collect.** A package keeps the mesh with its parts and skeleton, the baked paint variants,
+  every texture the model reads (its dictionary, parents, `vehicle.txd` and `generic.txd`
+  entries), the sampled `.ifp` animations for peds, and the in-game name. "Game files" Collect
+  extracts the members from the archives under `models/<archive>/<name>` and copies the data
+  files the importer reads (`gta.dat`, the `.ide` files, `carcols.dat`, the `.gxt`, the
+  `.ifp` files), so the collected folder reads like a game folder.
+
+#### RAGE: GTA V and GTA IV (`importers/rage/`)
+
+GTA IV and V share most of the resource design, so one package holds both, with the
+generation-specific layouts side by side.
+
+- **RPF7 archives (GTA V).** Header: magic `RPF7`, entry count, names length, encryption
+  (`0` or `OPEN` none, `0x0FFFFFF9` AES, `0x0FEFFFFF` NG). The entry table (16 bytes each:
+  directories with their first child and count; files with a name offset, size and offset in
+  512-byte blocks, and for resources the system and graphics flags) and the names follow,
+  encrypted as the header says. Files inside are encrypted the same way, and archives nest
+  (`x64v.rpf/models/cdimages/componentpeds_p.rpf/...`), which the pseudo paths follow.
+  The NG cipher picks one of 101 keys by the JOAAT hash of the file name plus its length and
+  runs 17 table rounds. The AES key, the 101 NG keys and the decryption tables are found in
+  the user's `GTA5.exe` by searching for blocks whose SHA-1 matches the hashes CodeWalker
+  publishes (MIT), once, and kept in the settings folder; Settings > Rockstar games can point
+  to the executable when the install isn't the added folder. If the search fails (a patched or
+  protected executable), the folder note says so, and a folder of files exported with OpenIV
+  or CodeWalker still works, since exported resources are not encrypted.
+- **IMG3 archives (GTA IV).** Magic `0xA94E2A52`, entry table (size, resource type, offset,
+  sizes) and names, encrypted with AES-256 (ECB, applied 16 times). The key is found in
+  `GTAIV.exe` / `EFLC.exe` the same way.
+- **Resources.** RSC7 (V) and RSC5 (IV): a header with the resource version and the sizes of
+  the system and graphics parts (encoded in flags), then the data deflated (zlib). Pointers in
+  the data point into those parts (`0x5xxxxxxx` system, `0x6xxxxxxx` graphics), and one reader
+  follows them for every resource type.
+- **Drawables (`.ydr`, `.wdr`).** A shader group (each shader's parameters name its textures:
+  `DiffuseSampler`, `BumpSampler`, `SpecSampler`; V can embed a texture dictionary), a
+  skeleton (bones with rotation, translation, scale, parent and bone tag), and up to four
+  levels of detail; the high one is read. Each geometry has a vertex declaration (which of
+  position, blend weights, blend indices, normal, colours, UVs and tangent are present, and in
+  what format) and a u16 index buffer. Game space is right-handed, Z up, metres.
+- **Dictionaries and fragments.** `.ydd`/`.wdd` hold several drawables by name hash: GTA V
+  ped components (`head_000_r`, `uppr_001_u`, `lowr_000_u`, `feet_*`, `hair_*`, `accs_*`...).
+  `.yft`/`.wft` fragments are vehicles and breakable props: a main drawable with the skeleton
+  plus child pieces, each a part (doors, bonnet, wheels at their bones; damaged and low-detail
+  pieces off by default).
+- **Textures (`.ytd`, `.wtd`).** Dictionaries of textures with name, size, mip count and
+  Direct3D format (DXT1/3/5, BC5 for normal maps, BC7 in V, A8R8G8B8, L8), decoded like DDS.
+  A model finds its textures in its own or embedded dictionary, then the parents named in
+  `gtxd.meta` (V) or the `.ide` (IV), then the shared `vehshare` dictionaries for vehicles.
+  Normal maps' green direction is found on real files and set per game (auto-detect until then).
+- **Peds as combinable components.** A ped is its skeleton plus one drawable per component
+  slot, each with texture variants (`uppr_diff_000_a_uni`, `_b_`...). The ped's variation file
+  (`.ymt`, PSO binary in V) lists what goes together; Dark STL lists each ped as a configurable
+  model (see Configurable models): a slot per component, options for each drawable and texture
+  variant, assembled on its shared skeleton and posed together. GTA IV peds work the same way
+  from their `.wdd`, with fewer slots.
+- **Animations.** V: `.ycd` clip dictionaries (animations as sequences of compressed channels:
+  quantised floats, cached quaternions, linear and constant tracks), bones matched by bone tag.
+  IV: `.wad` dictionaries. Ped animations are found by the clip sets the ped uses and offered
+  on the Pose tab.
+- **Kinds, groups and names.** From the archive path: `componentpeds`, `streamedpeds`,
+  `cutspeds` → Characters; `vehicles.rpf` and DLC vehicle archives → Vehicles (group by class
+  from `vehicles.meta`); `weapons.rpf` → Weapons; `props` → Props; `levels/gta5/...` → Map
+  pieces grouped by area. Display names from `.gxt2` (hash of the key, then UTF-8 text) for the
+  `gameName` in `vehicles.meta` and the weapon names in `weapons.meta`; GTA IV from its `.gxt`.
+  Weapon attachments (`weaponcomponents.meta`) become configurable weapons, as Cyberpunk's do.
+- **Scale.** GTA V's archives hold over 100,000 drawables. The scan reads only archive tables
+  (cached per archive, like Cyberpunk's), and the library lists without opening resources.
+- **Enhanced edition.** GTA V Enhanced (2025) keeps RPF7 but changes some resource layouts
+  (textures, shaders). Legacy comes first; Enhanced's layouts are added once checked on files.
+- **Collect.** A package keeps each model as for other games (a ped's chosen components and
+  every texture variant, a vehicle's parts and paint, sampled animations). "Game files" Collect
+  extracts the members decrypted and still compressed as RSC files under their archive paths,
+  as OpenIV exports them, plus the `.meta`, `.ymt` and `.gxt2` files the importer reads.
+
+#### Trilogy Definitive Edition
+
+The Definitive Edition is Unreal Engine 4.26 with encrypted `.pak` files. It comes in through
+the generic Unreal importer and a game profile (0.49.0); its AES key goes in Settings > Unreal
+games like Returnal's. Nothing GTA-specific is planned for it unless its folder layout needs
+more than a profile.
+
+#### Phases
+
+1. **Plan** (this section).
+2. **RenderWare trilogy (0.50.0).** Archives, `.dff`, `.txd`, `.ide`, `.ipl` areas, `.ifp`
+   posing for peds, vehicles with parts and paint, `.gxt` names, profiles for III, VC and SA,
+   Collect and packages. Needs nothing else; uses 0.49.0's profile format.
+3. **GTA V (0.51.0).** RPF7 and keys from the executable, RSC7, `.ytd`, `.ydr`, `.ydd` peds as
+   configurable models, `.yft` vehicles, `.gxt2` and `.meta` names, then `.ycd` posing. Legacy
+   first, Enhanced after a check on real files.
+4. **GTA IV and Episodes (0.52.0).** IMG3, RSC5 and the `w*` resources, on the shared RAGE
+   reader. Comes after GTA V lands, since most of its code is shared.
+5. **Definitive Edition**: a profile on the generic Unreal importer, when someone has the files.
+
+Everything is first built and tested on byte-built files (`tests/synth_rw.py`,
+`tests/synth_rage.py`); each PR says what has only been checked that way.
 
 ### Step 1: even vertex spacing
 
@@ -604,6 +783,17 @@ The plan in the backlog entry below, built in stages:
       (UModel, FModel) importers beside OBJ, PSK materials' textures found through the tools' material
       files, and every loose picture in such a folder offered by the texture picker and kept by "Every
       texture of the game"
+
+### Phase 6: Grand Theft Auto
+
+The plan is in Reading Grand Theft Auto files above.
+
+- [x] Plan: formats, importer layout, kinds and names, Collect, phases
+- [ ] RenderWare trilogy: GTA III, Vice City, San Andreas (0.50.0)
+- [ ] GTA V: RPF7 with keys from the executable, peds as configurable models, vehicles, posing (0.51.0)
+- [ ] GTA IV and Episodes from Liberty City on the shared RAGE reader (0.52.0)
+- [ ] Trilogy Definitive Edition as a profile on the generic Unreal importer
+- [ ] Check each on Jerred's installs
 
 ### Backlog (on hold)
 
