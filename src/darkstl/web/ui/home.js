@@ -172,6 +172,7 @@ export const GAME_NOTES = {
   "Tiny Tina's Wonderlands": `${BL_UE4} If its files are encrypted, add the game's AES key in Settings › Game tools › Unreal games.`,
   "Borderlands 4": `${BL_UE4} It also needs its type mappings (a .usmap file), and the AES key if its containers are encrypted: add them in Settings › Game tools › Unreal games.`,
   "Grand Theft Auto III": GTA_RW, "Grand Theft Auto: Vice City": GTA_RW, "Grand Theft Auto: San Andreas": GTA_RW,
+  "Grand Theft Auto V": "Choose the install folder as it is (the one with GTA5.exe): the models are read from its .rpf archives. The first time, Dark STL looks for the archive keys in GTA5.exe (this takes a while, once) and keeps them in its settings. Files exported with OpenIV or CodeWalker (.ydr, .ydd, .yft with their .ytd) work too.",
 };
 
 /** First start: no game folders yet. Each game Dark STL reads is a tile; clicking one says what to choose for it. */

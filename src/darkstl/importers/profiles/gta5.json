@@ -1,0 +1,35 @@
+{
+  "engine": "rage",
+  "name": "Grand Theft Auto V",
+  "short": "GTA5",
+  "recognise": {
+    "files": ["GTA5.exe", "GTA5_Enhanced.exe", "x64a.rpf", "common.rpf", "update/update.rpf"],
+    "folder_names": ["grand theft auto v", "gta v", "gtav", "gta5"]
+  },
+  "language": "american",
+  "ped_animations": ["move_m@generic", "move_f@generic", "move_m@multiplayer", "move_f@multiplayer",
+                     "move_crouch_proto", "amb@world_human_hang_out_street@male_a@base",
+                     "amb@world_human_hang_out_street@female_arms_crossed@base"],
+  "shared_textures": {"vehicles": ["vehshare", "vehshare_worn", "vehshare_truck"], "all": []},
+  "groups": {
+    "vehicle_classes": {
+      "VC_COMPACT": "Compacts", "VC_SEDAN": "Sedans", "VC_SUV": "SUVs", "VC_COUPE": "Coupes",
+      "VC_MUSCLE": "Muscle", "VC_SPORT_CLASSIC": "Sports classics", "VC_SPORT": "Sports", "VC_SUPER": "Super",
+      "VC_MOTORCYCLE": "Motorcycles", "VC_OFF_ROAD": "Off-road", "VC_INDUSTRIAL": "Industrial",
+      "VC_UTILITY": "Utility", "VC_VAN": "Vans", "VC_CYCLE": "Cycles", "VC_BOAT": "Boats",
+      "VC_HELICOPTER": "Helicopters", "VC_PLANE": "Planes", "VC_SERVICE": "Service", "VC_EMERGENCY": "Emergency",
+      "VC_MILITARY": "Military", "VC_COMMERCIAL": "Commercial", "VC_RAIL": "Trains", "VC_OPEN_WHEEL": "Open wheel"
+    },
+    "ped_prefixes": {
+      "a_c_": "Animals", "a_m_": "Ambient men", "a_f_": "Ambient women", "s_m_": "Service men",
+      "s_f_": "Service women", "g_m_": "Gang members", "g_f_": "Gang members", "u_m_": "Unique men",
+      "u_f_": "Unique women", "ig_": "Story characters", "cs_": "Cutscene characters",
+      "csb_": "Cutscene characters", "hc_": "Heist crew", "mp_": "Online", "player_": "Players"
+    },
+    "weapon_groups": {
+      "GROUP_PISTOL": "Pistols", "GROUP_SMG": "SMGs", "GROUP_RIFLE": "Rifles", "GROUP_MG": "Machine guns",
+      "GROUP_SHOTGUN": "Shotguns", "GROUP_SNIPER": "Snipers", "GROUP_HEAVY": "Heavy", "GROUP_MELEE": "Melee",
+      "GROUP_THROWN": "Thrown", "GROUP_STUNGUN": "Stun guns", "GROUP_PETROLCAN": "Other"
+    }
+  }
+}

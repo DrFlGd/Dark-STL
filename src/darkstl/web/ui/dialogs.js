@@ -135,7 +135,7 @@ function AddFolder({ game: forGame, collected = false }) {
         : check?.unreal ? html`<span id="folder-unreal">An Unreal Engine game Dark STL has no profile for${check.unreal.project ? ` (its project is ${check.unreal.project})` : ""}. Give it its name:
             its models are sorted by the folders the game keeps them in (Characters, Weapons, Props…), and a game profile is saved for it
             (Settings › Game tools › Game profiles) so the folder is recognised from now on. Encrypted games need their AES key in Settings › Game tools › Unreal games.</span>`
-        : check?.exists ? "Not recognised: choose the game, or another name for a folder of other models." : "Dark STL recognises Dark Souls, Bloodborne, Dark Souls III, Sekiro, Elden Ring, Cyberpunk 2077, the Resident Evil games (2, 3, 4, 7, Village), Borderlands (1, 2, The Pre-Sequel, 3, Wonderlands, 4), Returnal, Grand Theft Auto (III, Vice City, San Andreas) and other Unreal Engine games by their files."}</small>
+        : check?.exists ? "Not recognised: choose the game, or another name for a folder of other models." : "Dark STL recognises Dark Souls, Bloodborne, Dark Souls III, Sekiro, Elden Ring, Cyberpunk 2077, the Resident Evil games (2, 3, 4, 7, Village), Borderlands (1, 2, The Pre-Sequel, 3, Wonderlands, 4), Returnal, Grand Theft Auto (III, Vice City, San Andreas, V) and other Unreal Engine games by their files."}</small>
     </div>`}
     ${ours && where !== check.library_dir ? html`<label class="check-row" title=${`Now: ${check.library_dir}`}>
       <input type="checkbox" id="folder-use-library" checked=${!!useHere} disabled=${busy} onChange=${(e) => setUseHere(e.target.checked)} />
