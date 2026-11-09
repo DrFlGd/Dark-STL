@@ -83,14 +83,21 @@ GROUPS: tuple[Group, ...] = (
           ("/obj/", "/asset/", "/model/obj/", "/model_hq/obj/")),
     Group("maps", "Map pieces", "The pieces maps are built from, with their texture packs (large)",
           ("/map/", "/model/map/", "/model_hq/map/")),
+    Group("names", "In-game names", "The game's item and character names and its item tables, so the library "
+          "shows each model by the name it has in the game (small)", ("/msg/", "/param/gameparam/")),
 )
-DEFAULT_GROUPS = ("characters", "parts", "objects")
+DEFAULT_GROUPS = ("characters", "parts", "objects", "names")
 
 # What of those folders Dark STL reads: models, texture packs, animations. Not collision, behaviour,
 # scripts, effects or sound.
 _WANTED = re.compile(r"\.(partsbnd|chrbnd|objbnd|geombnd|mapbnd|anibnd|texbnd|tpf|tpfbhd|tpfbdt|chrtpfbhd|chrtpfbdt"
                      r"|flver|flv|bnd)(\.dcx)?$", re.I)
 _OODLE = re.compile(r"^(lib)?oo2core.*\.(dll|so|dylib)$", re.I)
+# The names: the item text (msg/<language>/item*.msgbnd.dcx, and menu*) and the item tables
+_NAMES = re.compile(r"^/msg/[^/]+/(item|menu)[^/]*\.msgbnd(\.dcx)?$|^/param/gameparam/gameparam[^/]*\.parambnd(\.dcx)?$",
+                    re.I)
+# the item tables some games keep beside their archives, encrypted (Elden Ring's, Dark Souls III's): copied as they are
+_REGULATION = {"Elden Ring": ("regulation.bin",), "Dark Souls III": ("Data0.bdt",)}
 
 MANIFEST = "darkstl-unpacked.json"
 
@@ -102,6 +109,8 @@ def archives_for(game: str | None) -> GameArchives | None:
 def group_of(path: str) -> str | None:
     """The group a file belongs to (``/chr/c2010.chrbnd.dcx`` -> "characters"), or None if not wanted."""
     low = path.lower()
+    if _NAMES.search(low):
+        return "names"
     if not _WANTED.search(low):
         return None
     if low.endswith((".bnd", ".bnd.dcx")) and not low.startswith(("/model/", "/model_hq/")):
@@ -498,6 +507,12 @@ def run(p: Plan, groups: tuple[str, ...] | list[str], progress: Progress | None 
                     tmp.unlink(missing_ok=True)
                     failed.append(f"{f.path}: {exc}")
                 done += f.entry.file_size
+    if "names" in groups:  # the item tables the game keeps beside its archives, for the models' names
+        for name in _REGULATION.get(p.game, ()):
+            src = p.source / name
+            if src.is_file() and not (p.dest / name).is_file():
+                p.dest.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, p.dest / name)
     oodle = []
     for lib in sorted(p.source.iterdir()):
         if _OODLE.match(lib.name) and lib.is_file() and not (p.dest / lib.name).is_file():

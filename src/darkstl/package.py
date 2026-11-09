@@ -630,8 +630,8 @@ def write_package(root: Path, entry: CatalogEntry, source_rel: str, models: list
         while name.lower() in used:
             name, n = f"{stem} ({n})", n + 1
         used.add(name.lower())
-        _write_model(folder, name, model, store, options)
-        written.append({"variant": model.variant, "name": model.name, "file": f"{name}.json",
+        stats = _write_model(folder, name, model, store, options)
+        written.append({"variant": model.variant, "name": model.name, "file": f"{name}.json", "stats": stats,
                         **({"hidden": True} if model.variant is not None and model.variant in hidden else {})})
     index = {
         "format": FORMAT, "version": VERSION, "game": entry.game, "category": entry.category, "group": entry.group,
@@ -639,6 +639,9 @@ def write_package(root: Path, entry: CatalogEntry, source_rel: str, models: list
         "source": source_rel.replace("\\", "/"), "models": written, "written": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "importer_version": importer_version(entry.importer),
     }
+    game_name = entry.__dict__.get("_game_name")
+    if game_name:  # the name the game gives it (see Importer.names), so it travels with the package
+        index["game_name"] = str(game_name)
     from . import __version__
 
     index["app"] = __version__
@@ -667,7 +670,10 @@ def _stored(store: AssetStore, rel_root: str, tex: Texture) -> dict:
     return {"name": tex.name, "source": tex.source, "describe": describe, "file": f"{rel_root}/{file}"}
 
 
-def _write_model(folder: Path, name: str, model: SourceModel, store: AssetStore, options: WriteOptions) -> None:
+def _write_model(folder: Path, name: str, model: SourceModel, store: AssetStore, options: WriteOptions) -> dict:
+    """Write one model of a package; its stats (size and counts, see library_index) for the package's index."""
+    from .library_index import model_stats
+
     mesh = model.build_mesh(MeshOptions())
     rig = model.rig if model.rig is not None and mesh.metadata.get("skin") is not None else None
     write_glb(folder / f"{name}.glb", mesh, model.materials, rig, name)
@@ -705,6 +711,7 @@ def _write_model(folder: Path, name: str, model: SourceModel, store: AssetStore,
     tmp = folder / f"{name}.json.part"
     tmp.write_text(json.dumps(data, indent=1), "utf-8")
     os.replace(tmp, folder / f"{name}.json")
+    return model_stats(model, mesh)
 
 
 def _material_json(m: Material) -> dict:
@@ -762,6 +769,60 @@ def read_index(path: str | os.PathLike) -> dict:
     if int(data.get("version", 0)) > VERSION:
         raise FormatError(f"{path.parent.name} was written by a newer Dark STL; update the app to open it")
     return data
+
+
+def package_stats(index_file: str | os.PathLike, index: dict | None = None) -> dict | None:
+    """The stats (size and counts, see library_index) of a package's first listed model: kept in its index since
+    0.44, else read from its sidecar (parts, textures, animations) and the head of its glTF file (bounds)."""
+    index_file = Path(index_file)
+    index = read_index(index_file) if index is None else index
+    models = [m for m in index.get("models") or [] if not m.get("hidden")] or index.get("models") or []
+    if not models:
+        return None
+    if isinstance(models[0].get("stats"), dict):
+        return models[0]["stats"]
+    folder = index_file.parent
+    try:
+        data = json.loads((folder / models[0]["file"]).read_text("utf-8"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    parts = data.get("parts") or []
+    out = {"vertices": sum(int(p.get("vertices") or 0) for p in parts),
+           "triangles": sum(int(p.get("triangles") or 0) for p in parts), "parts": len(parts) or 1,
+           "textures": len(data.get("textures") or {}), "animated": bool(data.get("animations"))}
+    size = _glb_size_mm(folder / str(data.get("mesh") or ""))
+    if size is not None:
+        out["size_mm"] = size
+    return out
+
+
+def _glb_size_mm(path: Path) -> list[float] | None:
+    """The size of a package's mesh (mm, Z up) from its glTF file's positions' bounds, reading only its JSON."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(20)
+            if len(head) < 20 or head[:4] != b"glTF":
+                return None
+            length, kind = struct.unpack_from("<II", head, 12)
+            if kind != 0x4E4F534A:  # JSON
+                return None
+            gltf = json.loads(fh.read(length).decode("utf-8"))
+    except (OSError, ValueError, struct.error):
+        return None
+    lo, hi = [], []
+    for mesh in gltf.get("meshes") or []:
+        for prim in mesh.get("primitives") or []:
+            acc = (gltf.get("accessors") or [])[prim.get("attributes", {}).get("POSITION", -1)] \
+                if prim.get("attributes", {}).get("POSITION") is not None else None
+            if acc and acc.get("min") and acc.get("max"):
+                lo.append(acc["min"])
+                hi.append(acc["max"])
+    if not lo:
+        return None
+    low = np.min(np.asarray(lo, np.float64), axis=0)
+    high = np.max(np.asarray(hi, np.float64), axis=0)
+    span = (high - low) * 1000  # glTF is Y up
+    return [round(float(span[0]), 1), round(float(span[2]), 1), round(float(span[1]), 1)]
 
 
 def is_package_index(path: Path) -> bool:

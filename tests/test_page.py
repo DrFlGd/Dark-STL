@@ -1174,3 +1174,125 @@ def test_an_enhanced_model_is_saved_as_a_variation(page, app, weapon_dir):  # no
     page.click("#confirm-dialog-ok")
     page.wait_for_function("!document.querySelector('#variation-list')")
     page.wait_for_selector("#variation-save")
+
+
+def test_a_card_shows_the_name_the_model_has_in_the_game(page, app, weapon_dir):  # noqa: F811
+    """The game's own item text names its models: the card shows that name, its file's name muted under it, and
+    the summary both, with the model's size and counts once they're read."""
+    import synth_names
+    from test_app import wait
+
+    synth_names.add_names(weapon_dir, "Dark Souls III")
+    wait(app.service, app.service.call("folder_add", {"path": str(weapon_dir)})["job"])
+    page.goto(app.url + "#/browse/Dark%20Souls%20III/Weapons")
+    page.reload()  # the game was added behind the page's back
+    dagger = page.locator('.results .card:has(.card-file:text-is("wp_a_0300"))')
+    dagger.wait_for()
+    assert dagger.locator(".card-name").inner_text() == "Dagger"
+    page.wait_for_selector('.results .card:has(.card-file:text-is("wp_a_0300")) .card-stats', timeout=30000)
+    assert "triangles" in dagger.locator(".card-stats").inner_text()
+    dagger.click()
+    page.wait_for_selector("#summary-file-label")
+    assert page.inner_text("#summary-name") == "Dagger"
+    assert page.inner_text("#summary-file-label") == "Weapon 0300"
+    assert page.locator("#summary-game-name").count() == 0  # shown only once it's renamed: it's the title
+    # the menu shows the name too, and the characters are named as the game names them
+    page.goto(app.url + "#/browse/Dark%20Souls%20III/Characters")
+    page.wait_for_selector('.results .card-name:text-is("Hollow Soldier")')
+
+
+def test_search_from_home_finds_a_model_in_another_game(page, app, weapon_dir, tmp_path):  # noqa: F811
+    """The search box on Home looks through every game: a model in another game is found by its name, the
+    results are grouped by game and narrowed by game, and "/" comes back to the box. Opened, the model is
+    then in Home's Recent row."""
+    import synth_names
+    from test_app import wait
+
+    synth_names.add_names(weapon_dir, "Dark Souls III")
+    statues = tmp_path / "statues"
+    statues.mkdir()
+    (statues / "dagger_statue.obj").write_text("v 0 0 0\nv 0.1 0 0\nv 0 0.2 0\nv 0 0 0.3\nf 1 2 3\nf 1 2 4\nf 1 3 4\nf 2 3 4\n")
+    for folder in (weapon_dir, statues):
+        wait(app.service, app.service.call("folder_add", {"path": str(folder)})["job"])
+    page.reload()
+    page.wait_for_selector("#game-tiles")
+    page.fill("#home-search", "dagger")
+    page.press("#home-search", "Enter")
+    page.wait_for_function("location.hash.startsWith('#/search')")
+    page.wait_for_selector('.search-group[data-game="statues"] [data-model]')
+    page.wait_for_selector('.search-group[data-game="Dark Souls III"] .card-name:text-is("Dagger")')
+    assert page.input_value("#search") == "dagger"
+    assert page.inner_text("#search-count") == "2 models"
+    page.click('#filter-games button:has-text("statues")')
+    page.wait_for_function("document.querySelectorAll('#search-results [data-model]').length === 1")
+    page.click("#filter-clear")
+    page.wait_for_function("document.querySelectorAll('#search-results [data-model]').length === 2")
+    # "/" from a page without its own box goes to the menu's, which searches every game too
+    statue = page.locator('.search-group[data-game="statues"] [data-model]')
+    statue.dblclick()
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    page.keyboard.press("/")
+    assert page.evaluate("document.activeElement.id") == "nav-search-box"
+    page.keyboard.type("knight")
+    page.keyboard.press("Enter")
+    page.wait_for_selector('#search-results .card-name:text-is("Knight Helm")')
+    page.goto(app.url + "#/")
+    page.wait_for_selector("#recent-models [data-model]")
+    assert "dagger_statue" in page.inner_text("#recent-models")
+
+
+def _tetrahedra(n):
+    """An OBJ file of ``n`` tetrahedra side by side (4 triangles each)."""
+    lines = []
+    for k in range(n):
+        lines += [f"v {k} 0 0", f"v {k + 0.5} 0 0", f"v {k} 0.5 0", f"v {k} 0 0.5"]
+    for k in range(n):
+        a = 4 * k + 1
+        lines += [f"f {a} {a + 1} {a + 2}", f"f {a} {a + 1} {a + 3}", f"f {a} {a + 2} {a + 3}", f"f {a + 1} {a + 2} {a + 3}"]
+    return "\n".join(lines) + "\n"
+
+
+def test_the_list_view_sorts_by_its_columns(page, app, tmp_path):
+    """The list view has a column for each thing known of a model; a header sorts by it (again: the other
+    way), and the sort is kept for that page."""
+    from test_app import wait
+
+    statues = tmp_path / "statues"
+    statues.mkdir()
+    for name, n in (("knight", 3), ("dragon", 9), ("rat", 1)):
+        (statues / f"{name}.obj").write_text(_tetrahedra(n))
+    wait(app.service, app.service.call("folder_add", {"path": str(statues)})["job"])
+    for item in app.service.call("models_query", {"limit": 100})["items"]:
+        app.service.call("model_open", {"id": item["id"]})  # their sizes and counts are learnt when opened
+    page.goto(app.url + "#/browse/statues/Models")
+    page.reload()
+    page.wait_for_selector(".results [data-model]")
+    page.click('#layout-switch [data-view="list"]')
+    page.wait_for_selector("#list-head")
+    heads = page.locator("#list-head .sort-head").all_inner_texts()
+    assert heads[1] == "Kind ↑"  # sorted by kind until a header is clicked
+    assert [h.rstrip(" ↑↓") for h in heads] == ["Name", "Kind", "Size", "Triangles", "Parts", "Textures", "Animations", "Collected"]
+    tris = "Array.from(document.querySelectorAll('.lib-row [data-col=\"triangles\"]')).map((e) => e.textContent).join(' ')"
+    page.click('#list-head [data-sort="triangles"]')
+    page.wait_for_selector('#list-head [data-sort="triangles"][aria-pressed="true"]')
+    page.wait_for_function(f"{tris} === '4 12 36'")
+    page.click('#list-head [data-sort="triangles"]')  # again: the other way
+    page.wait_for_function(f"{tris} === '36 12 4'")
+    assert "↓" in page.inner_text('#list-head [data-sort="triangles"]')
+    page.click('#list-head [data-sort="name"]')
+    page.wait_for_function("Array.from(document.querySelectorAll('.lib-row .lc-name-text')).map((e) => e.textContent).join(' ') === 'dragon knight rat'")
+    page.click('#list-head [data-sort="size"]')
+    page.wait_for_function(f"{tris} === '4 12 36'")  # the longest side grows with the count here
+    # kept for this page, not the others
+    page.goto(app.url + "#/search?q=a")
+    page.wait_for_selector("#search-results .lib-row")
+    assert page.locator('#list-head [data-sort="size"][aria-pressed="true"]').count() == 0
+    page.goto(app.url + "#/browse/statues/Models")
+    page.wait_for_selector('#list-head [data-sort="size"][aria-pressed="true"]')
+    # and in the preferences, so it's there when the app is opened again (saved a moment after the click)
+    end = time.time() + 10
+    while time.time() < end and not app.service.call("prefs_get", {}).get("ds-ui", {}).get("sorts"):
+        time.sleep(0.05)
+    assert app.service.call("prefs_get", {})["ds-ui"]["sorts"] == {"browse:statues/Models": {"by": "size", "desc": False}}
+    page.reload()
+    page.wait_for_selector('#list-head [data-sort="size"][aria-pressed="true"]')

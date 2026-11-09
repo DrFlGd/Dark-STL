@@ -9,6 +9,7 @@ import { Sidebar } from "./sidebar.js";
 import { StatusBar } from "./chrome.js";
 import { Home } from "./home.js";
 import { Browser } from "./browser.js";
+import { SearchPage } from "./search.js";
 import { ModelPage } from "./modelpage.js";
 import { Settings } from "./settings.js";
 import { About } from "./about.js";
@@ -19,6 +20,7 @@ function Main() {
   const route = useStore(ui, (s) => s.route);
   if (route === "settings") return html`<${Settings} />`;
   if (route === "about") return html`<${About} />`;
+  if (route === "search") return html`<${SearchPage} />`;
   if (route.startsWith("model:")) return html`<${ModelPage} key=${route} route=${route} />`;
   if (route.startsWith("browse:")) return html`<${Browser} key=${route} route=${route} />`;
   return html`<${Home} />`;
