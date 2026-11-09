@@ -1,6 +1,8 @@
-// Home: each game in the library as a tile with four of its models, what needs
-// doing about a folder (still packed, gone missing), and Add game folder…. The
-// first time, with no folders yet, it says what Dark STL reads and how to start.
+// Home: each game in the library as a tile with four of its models, the games
+// with something to look at (a folder still packed or gone, models that couldn't
+// be read or have no textures: their pages list them), the collections, and Add
+// game folder…. The first time, with no folders yet, each game Dark STL reads is
+// a tile: click one for what to choose for it.
 import { html, useState, useEffect } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui } from "./state.js";
@@ -10,7 +12,9 @@ import { CommandBar } from "./layout.js";
 import { Icon } from "./icons.js";
 import { Thumb } from "./thumbs.js";
 import { GameBadge, CategoryIcon } from "./gameicons.js";
-import { gameMenu, unpackFolder } from "./games.js";
+import { gameMenu } from "./games.js";
+import { HomeProblems } from "./problems.js";
+import { collectionMenu, newCollection } from "./organise.js";
 import { openMenu } from "./actions.js";
 import { statsLine, statsTitle } from "./models.js";
 
@@ -69,16 +73,24 @@ function Recent({ ids }) {
   </section>`;
 }
 
-/** Folders with something to say: still packed, gone, nothing found. */
-function FolderNotes({ games }) {
-  const notes = games.flatMap((g) => g.folders.filter((f) => f.notes.length).map((f) => ({ game: g, folder: f })));
-  if (!notes.length) return null;
-  return html`<section class="home-notes" id="home-notes" aria-label="Folders to look at">
-    ${notes.map(({ game, folder }) => html`<div class="warn-note folder-note" key=${folder.path} data-folder=${folder.path}>
-      <p><b>${game.name}</b> · <span class="note-path">${folder.path}</span></p>
-      ${folder.notes.map((n, i) => html`<p key=${i}>${n}</p>`)}
-      ${folder.packed ? html`<p><button type="button" class="primary compact folder-unpack" onClick=${() => unpackFolder(folder.path, folder.packed.game)}>${Icon.inbox(14)} Unpack ${folder.packed.game}…</button></p>` : null}
-    </div>`)}
+/** The collections (and Starred) as tiles: four of their models, their name and how many. */
+function HomeCollections() {
+  const c = useStore(ui, (st) => st.collections);
+  if (!c) return null;
+  const tiles = [...(c.starred ? [{ id: "starred", name: "Starred", count: c.starred, preview: c.starred_preview, href: "#/starred", star: true }] : []),
+    ...c.collections.map((x) => ({ ...x, href: routeHash(`collection:${x.id}`) }))];
+  return html`<section class="home-card home-collections" id="home-collections">
+    <div class="home-card-head"><h2>Collections</h2><span class="muted">Lists of your own, across every game</span>
+      <button type="button" class="ghost compact" id="home-new-collection" title="A list of your own: drag models onto it in the menu" onClick=${() => newCollection()}>${Icon.plus(13)} New collection…</button></div>
+    ${tiles.length ? html`<div class="subcat-tiles collection-tiles" id="collection-tiles">${tiles.map((t) => html`<a key=${t.id} class="subcat-tile collection-tile" href=${t.href} data-collection=${t.id} title=${t.name}
+        onContextMenu=${t.star ? null : (e) => openMenu(e, collectionMenu(t))}>
+      <span class=${`subcat-pics subcat-pics-${Math.max(1, t.preview.length)}`}>${t.preview.length
+        ? t.preview.map((m) => html`<${Thumb} key=${m.id} id=${m.id} category=${m.category} cls="subcat-pic" />`)
+        : html`<span class="subcat-empty">${t.star ? Icon.star(30) : Icon.stack(30)}</span>`}</span>
+      <span class="subcat-name">${t.star ? Icon.star(15, true) : Icon.stack(15)}<span>${t.name}</span></span>
+      <span class="subcat-meta">${plural(t.count, "model")}${t.games?.length ? ` · ${t.games.length === 1 ? t.games[0] : plural(t.games.length, "game")}` : ""}</span>
+    </a>`)}</div>`
+      : html`<p class="muted" id="no-collections">None yet. Right-click a model for Add to collection… or Star; several chosen at once (Ctrl+click, Shift+click) can be added together, or dragged onto a collection in the menu.</p>`}
   </section>`;
 }
 
@@ -128,7 +140,8 @@ export function Home() {
       <div class="subcat-tiles game-tiles" id="game-tiles">${ov.games.map((g) => html`<${GameTile} key=${g.name} game=${g} total=${ov.total} />`)}
         ${ov.scanning ? html`<div class="subcat-tile game-tile scanning" aria-busy="true"><span class="subcat-pics"><span class="subcat-empty thumb-wait">${Icon.refresh(30)}</span></span>
           <span class="subcat-name">Reading folders…</span></div>` : null}</div>
-      <${FolderNotes} games=${ov.games} />
+      <${HomeProblems} games=${ov.games} />
+      <${HomeCollections} />
       <div class="home-grid">
         <${Kinds} games=${ov.games} />
         <${HowItWorks} />
@@ -136,37 +149,57 @@ export function Home() {
     </div>`;
 }
 
-/** First start: no game folders yet. */
+/** What to choose for each game, the first time (FirstRun's tiles). */
+const FROMSOFT_PACKED = "Choose the install folder as it is: Dark STL offers to unpack the models (characters, weapons and armour, objects, map pieces) into its own library; the game's folder isn't changed. A folder UXM Selective Unpacker unpacked works too.";
+const RE_ENGINE = "Choose the install folder as it is: the models are read straight from its .pak archives, named through the file lists that come with Dark STL. A folder a pak tool (REtool, ree-pak) extracted works too.";
+const BL_UE3 = "Choose the install folder as it is: the models are read from the packages in WillowGame\\CookedPCConsole (the first scan reads through them once).";
+const BL_UE4 = "Choose the install folder as it is: the models are read from the files in OakGame\\Content\\Paks.";
+export const GAME_NOTES = {
+  "Elden Ring": `${FROMSOFT_PACKED} Its files are compressed with Oodle: Dark STL uses the game's own copy (oo2core_6_win64.dll in its folder).`,
+  "Sekiro": `${FROMSOFT_PACKED} Its files are compressed with Oodle: Dark STL uses the game's own copy (oo2core_6_win64.dll in its folder).`,
+  "Dark Souls III": FROMSOFT_PACKED,
+  "Dark Souls II": FROMSOFT_PACKED,
+  "Dark Souls Remastered": "Choose its install folder: Dark Souls Remastered keeps its models loose, so it works as it is.",
+  "Dark Souls": FROMSOFT_PACKED,
+  "Bloodborne": "Choose the folder of files extracted from the game (its dvdroot): Dark STL reads its .chrbnd, .partsbnd and .objbnd files and their textures.",
+  "Cyberpunk 2077": "Choose its install folder as it is: the models are read from its archives (the first scan reads through them once). A folder of files exported with WolvenKit works too.",
+  "Resident Evil 2": RE_ENGINE, "Resident Evil 3": RE_ENGINE, "Resident Evil 4": RE_ENGINE, "Resident Evil 7": RE_ENGINE,
+  "Resident Evil Village": RE_ENGINE, "Devil May Cry 5": RE_ENGINE,
+  "Returnal": "Choose its install folder as it is: the models are read from Returnal\\Content\\Paks. It needs its type mappings (a .usmap file, from UE4SS) and, if its paks are encrypted, its AES key: add them in Settings › Game tools › Unreal games.",
+  "Borderlands": BL_UE3, "Borderlands 2": BL_UE3, "Borderlands: The Pre-Sequel": BL_UE3,
+  "Borderlands 3": `${BL_UE4} Its AES key comes with Dark STL.`,
+  "Tiny Tina's Wonderlands": `${BL_UE4} If its files are encrypted, add the game's AES key in Settings › Game tools › Unreal games.`,
+  "Borderlands 4": `${BL_UE4} It also needs its type mappings (a .usmap file), and the AES key if its containers are encrypted: add them in Settings › Game tools › Unreal games.`,
+};
+
+/** First start: no game folders yet. Each game Dark STL reads is a tile; clicking one says what to choose for it. */
 function FirstRun({ error }) {
   const games = (info().games || []).filter((g) => g !== "Other models");
+  const [chosen, setChosen] = useState(null);
   return html`<div class="pages"><div class="first-run" id="first-run">
     <h1>Add your games</h1>
-    <p>Dark STL lists the models in your games (FromSoftware's, Cyberpunk 2077, the Resident Evil games and Borderlands) by game and kind (weapons, armour, characters and more),
-      shows them with their textures, and turns them into detailed meshes you can 3D print.</p>
-    <p>Add a game's folder to start. Dark STL only reads it; nothing in it is changed. Once a game is listed, the models you want
-      can be collected into the app, so the game's folder isn't needed afterwards.</p>
+    <p>Dark STL lists the models in your games by game and kind (weapons, armour, characters and more), shows them with their textures,
+      and turns them into detailed meshes you can 3D print. It only reads a game's folder; nothing in it is changed.</p>
     ${error ? html`<p class="warn-note" role="alert">${error}</p>` : null}
+    <h2 class="first-run-sub">Which game? <span class="muted">Click one for what to choose</span></h2>
+    <div class="first-games" id="first-games" role="list">${games.map((g) => html`<button type="button" role="listitem" key=${g} class=${`first-game${chosen === g ? " on" : ""}`}
+        data-game=${g} aria-pressed=${chosen === g ? "true" : "false"} title=${`What to choose for ${g}`} onClick=${() => setChosen(chosen === g ? null : g)}>
+      <${GameBadge} name=${g} size=${22} /><span>${g}</span></button>`)}</div>
+    ${chosen ? html`<div class="home-card first-game-note" id="first-game-note" data-game=${chosen}>
+      <h2><${GameBadge} name=${chosen} size=${18} /> ${chosen}</h2>
+      <p>${GAME_NOTES[chosen] || "Choose the game's install folder, or a folder of its extracted files."}</p>
+      <div class="home-actions"><button type="button" class="primary" id="first-add-game" onClick=${() => ui.set({ dialog: { type: "add-folder", game: chosen } })}>${Icon.plus(15)} Add this game's folder…</button></div>
+    </div>` : null}
     <div class="home-actions">
       <button type="button" class="primary" id="first-add-folder" onClick=${addFolder}>${Icon.plus(15)} Add a game folder…</button>
       <button type="button" class="ghost" id="first-add-collected" title="A folder of models Dark STL collected before, on this computer or another" onClick=${() => ui.set({ dialog: { type: "add-folder", collected: true } })}>${Icon.inbox(15)} Add collected files…</button>
-      <button type="button" class="ghost" id="first-open-file" onClick=${openFile}>Open one model file…</button>
+      <button type="button" class="ghost" id="first-open-file" title="One model file, without adding its folder" onClick=${openFile}>Open one model file…</button>
     </div>
     <div class="home-card first-tips">
-      <h2>What to choose</h2>
-      <p><b>The game's install folder.</b> Dark Souls Remastered keeps its models loose, so its install folder works as it is.
-        Dark Souls, Dark Souls II, Dark Souls III, Sekiro and Elden Ring pack them in archives: add the install folder as it is, and Dark STL
-        offers to unpack the models (characters, weapons and armour, objects, map pieces) into its own library; the game's folder isn't changed.
-        A folder unpacked with UXM Selective Unpacker works too. For Bloodborne, choose the folder of files extracted from the game.
-        For Cyberpunk 2077, choose its install folder as it is: the models are read from its archives (the first scan reads through them once), or choose a folder of files exported with WolvenKit.
-        For Resident Evil 2, 3, 4, 7, Village and Devil May Cry 5 (RE Engine), choose the install folder as it is: the models are read straight from
-        its <code>.pak</code> archives, named through the file lists that come with Dark STL (Ekey's). A folder a pak tool (REtool, ree-pak) extracted works too.
-        For Borderlands, Borderlands 2 and The Pre-Sequel, choose the install folder as it is: the models are read from the packages in <code>WillowGame\CookedPCConsole</code> (the first scan reads through them once).
-        For Borderlands 3, Tiny Tina's Wonderlands and Borderlands 4, choose the install folder as it is: the models are read from the files in <code>OakGame\Content\Paks</code>.
-        For Returnal, choose its install folder as it is: the models are read from the files in <code>Returnal\Content\Paks</code>. If its paks are encrypted, add the game's AES key in Settings under <i>Unreal games</i>; a .usmap type mappings file, if you have one, goes there too.
-        Borderlands 4 also needs its type mappings (a .usmap file), and the AES key if its containers are encrypted; add them in Settings under <i>Unreal games</i>.</p>
-      <p><b>Or any folder of extracted files</b>, such as .partsbnd, .chrbnd, .objbnd, .flver or .mesh files you've pulled out with other tools, or models FModel, UModel or Blender exported (.gltf, .glb, .psk, .pskx, .obj) with their textures beside them.</p>
-      <p><b>Or models Dark STL collected before</b> (on this computer or another): choose its library folder, or one game's folder in it, with <i>Add collected files</i>. Each game can come from either its own folder or its collected files.</p>
-      ${games.length ? html`<p class="muted">Recognised: ${games.join(", ")}. Other folders can be added under a name you choose.</p>` : null}
+      <h2>Other folders</h2>
+      <p><b>Any folder of extracted files</b>, such as .partsbnd, .chrbnd, .objbnd, .flver or .mesh files you've pulled out with other tools, or models FModel, UModel or Blender exported (.gltf, .glb, .psk, .pskx, .obj) with their textures beside them.</p>
+      <p><b>Models Dark STL collected before</b> (on this computer or another): choose its library folder, or one game's folder in it, with <i>Add collected files</i>. Each game can come from either its own folder or its collected files.</p>
+      <p class="muted">Once a game is listed, the models you want can be collected into the app, so the game's folder isn't needed afterwards.</p>
     </div>
   </div></div>`;
 }

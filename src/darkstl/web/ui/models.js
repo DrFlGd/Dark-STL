@@ -3,15 +3,17 @@
 // first, then its file name, muted), and once known its size and triangles.
 // The list view has columns that sort when their header is clicked; the sort
 // chosen is kept for each page.
-import { html } from "../lib/html.js";
+import { html, useState, useRef, useEffect } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui, setPref } from "./state.js";
 import { routeHash } from "./context.js";
 import { plural, showInFolder } from "./api.js";
 import { openMenu } from "./actions.js";
+import { Icon } from "./icons.js";
 import { Thumb } from "./thumbs.js";
 import { GameBadge } from "./gameicons.js";
 import { collectModelItem, modelFilesItem, redrawModelItem, arrangeModel, combineModels } from "./games.js";
+import { markItems, bulkItems, dragModels, relatedMenu } from "./organise.js";
 
 export const openModel = (m) => { location.hash = routeHash(`model:${m.id}`); };
 
@@ -20,6 +22,8 @@ export function modelMenu(m) {
     { id: "open", label: "Open", icon: "eye", key: "Enter", run: () => openModel(m) },
     ...(m.configurable ? [] : [{ id: "arrange", label: "Rename or move…", sub: "a name or a folder of your own", icon: "edit", run: () => arrangeModel(m) },
       { id: "combine", label: "Combine with other models…", sub: "face, body and hair as one model", icon: "box", run: () => combineModels(m) }]),
+    ...markItems(m),
+    { sep: true },
     { id: "show", label: "Show in folder", icon: "folder", run: () => showInFolder(m.file) },
     { id: "copy-path", label: "Copy file path", icon: "copy", run: () => navigator.clipboard?.writeText(m.file) },
     { sep: true },
@@ -76,18 +80,123 @@ export function statsTitle(st) {
 /** Under a model's name: its file name when the name isn't the file's own. */
 const fileShown = (m) => (m.configurable ? configText(m) : m.stem);
 
-export function Card({ m, selected, where, onPick, game }) {
+/** A model's star and its tags, as a card or a row shows them. */
+function Marks({ m }) {
+  if (!m.starred && !m.tags?.length) return null;
+  return html`<span class="card-marks">${m.starred ? html`<span class="card-star" title="Starred" aria-label="Starred">${Icon.star(12, true)}</span>` : null}
+    ${(m.tags || []).slice(0, 3).map((t) => html`<span class="card-tag" key=${t} title=${`Tagged ${t}`}>${t}</span>`)}${(m.tags || []).length > 3 ? html`<span class="card-tag muted">+${m.tags.length - 3}</span>` : null}</span>`;
+}
+
+/** "N related": the models that go with it, in a menu. */
+function RelatedLink({ m }) {
+  if (!m.related) return null;
+  return html`<button type="button" class="linkish card-related" data-related=${m.related} title="The models that go with it: the rest of its set, its other copies, its variants"
+    onClick=${(e) => { e.stopPropagation(); relatedMenu(e.currentTarget, m); }} onDblClick=${(e) => e.stopPropagation()}>${Icon.link(11)} ${m.related} related</button>`;
+}
+
+/** What a card or row does for the page: `onPick(m, e)` on a click (with its keys: see useModelSelection), `onMenu(m, e)`
+ *  on a right-click, `dragIds(m)` the models dragged with it; `drop` (optional): models dropped on it ({ ids, before: m }). */
+function cardEvents(m, { onPick, onMenu, dragIds, onDrop }) {
+  return {
+    onClick: (e) => onPick(m, e),
+    onDblClick: () => openModel(m),
+    onContextMenu: (e) => (onMenu ? onMenu(m, e) : (onPick(m), openMenu(e, modelMenu(m)))),
+    draggable: "true",
+    onDragStart: (e) => dragModels(e, dragIds ? dragIds(m) : [m.id]),
+    ...(onDrop ? {
+      onDragOver: (e) => { if ([...(e.dataTransfer?.types || [])].includes("application/x-darkstl-models")) { e.preventDefault(); e.currentTarget.classList.add("drop-before"); } },
+      onDragLeave: (e) => e.currentTarget.classList.remove("drop-before"),
+      onDrop: (e) => { e.currentTarget.classList.remove("drop-before"); e.preventDefault(); onDrop(e, m); },
+    } : {}),
+  };
+}
+
+export function Card({ m, selected, where, onPick, onMenu, dragIds, onDrop, game }) {
   const stats = statsLine(m.stats);
-  return html`<div class="card" role="option" tabindex="0" data-model=${m.id} aria-selected=${selected ? "true" : "false"}
-      onClick=${() => onPick(m)} onDblClick=${() => openModel(m)} onContextMenu=${(e) => { onPick(m); openMenu(e, modelMenu(m)); }}>
-    <${Thumb} id=${m.id} category=${m.category} />
+  return html`<div class="card" role="option" tabindex="0" data-model=${m.id} aria-selected=${selected ? "true" : "false"} ...${cardEvents(m, { onPick, onMenu, dragIds, onDrop })}>
+    <${Thumb} id=${m.id} category=${m.category} turn=${true} />
     <span class="card-name" title=${m.game_name && m.game_name !== m.label ? `${m.label} (in the game: ${m.game_name})` : m.label}>${m.label}</span>
     <span class="card-meta"><span class="card-file" title=${m.name}>${fileShown(m)}</span>
       ${stats ? html`<span class="card-stats" title=${statsTitle(m.stats)}>${stats}</span>` : null}
       ${game ? html`<span class="card-location card-game"><${GameBadge} name=${m.game} size=${13} /> ${m.game}</span>` : null}
-      ${where ? html`<span class="card-location" title=${where}>${where}</span>` : null}</span>
+      ${where ? html`<span class="card-location" title=${where}>${where}</span>` : null}
+      <${Marks} m=${m} /><${RelatedLink} m=${m} /></span>
   </div>`;
 }
+
+/** Choosing models on a page: a click chooses one (its details in the panel), Ctrl+click adds or takes one off,
+ *  Shift+click a run from the one clicked before, Ctrl+A all of them, Esc none. Several chosen: the command bar
+ *  and a right-click on one of them offer what can be done to them all (bulkItems, with the page's `extra`). */
+export function useModelSelection(items, extra = []) {
+  const [sel, setSel] = useState(() => new Set());
+  const [picked, setPickedId] = useState(null);
+  const anchor = useRef(null);
+  const ids = items.map((m) => m.id);
+  const idsKey = ids.join("|");
+  useEffect(() => { // models no longer shown (a new search) aren't chosen any more
+    const shown = new Set(ids);
+    if ([...sel].some((id) => !shown.has(id))) setSel(new Set([...sel].filter((id) => shown.has(id))));
+  }, [idsKey]);
+  const one = (id) => { setSel(id ? new Set([id]) : new Set()); setPickedId(id); anchor.current = id; };
+  const onPick = (m, e) => {
+    if (e && (e.ctrlKey || e.metaKey)) {
+      const next = new Set(sel);
+      if (next.has(m.id)) next.delete(m.id); else next.add(m.id);
+      setSel(next);
+      setPickedId(next.has(m.id) ? m.id : [...next].pop() ?? null);
+      anchor.current = m.id;
+      return;
+    }
+    if (e && e.shiftKey && anchor.current && ids.includes(anchor.current)) {
+      const a = ids.indexOf(anchor.current), b = ids.indexOf(m.id);
+      setSel(new Set(ids.slice(Math.min(a, b), Math.max(a, b) + 1)));
+      setPickedId(m.id);
+      e.preventDefault?.();
+      return;
+    }
+    one(m.id);
+  };
+  const chosen = items.filter((m) => sel.has(m.id));
+  const multi = chosen.length > 1;
+  return {
+    sel, multi, chosen,
+    picked: multi ? null : items.find((m) => m.id === picked) || null,
+    pickedId: picked,
+    setPicked: one,
+    onPick,
+    clear: () => one(null),
+    selectAll: () => { setSel(new Set(ids)); anchor.current = ids[0] || null; },
+    dragIds: (m) => (multi && sel.has(m.id) ? chosen.map((x) => x.id) : [m.id]),
+    onMenu: (m, e) => {
+      if (multi && sel.has(m.id)) { openMenu(e, bulkItems(chosen, extra)); return; }
+      one(m.id);
+      openMenu(e, modelMenu(m));
+    },
+    /** The command bar's selection, while several are chosen. */
+    bar: multi ? { count: `${plural(chosen.length, "model")} chosen`, onClear: () => one(null), items: bulkItems(chosen, extra), buttons: 2 } : null,
+    /** The keys the page passes on: Ctrl+A and Esc (true when it was one of them). */
+    key: (e) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "a") { e.preventDefault(); setSel(new Set(ids)); return true; }
+      if (e.key === "Escape") { one(null); return true; }
+      return false;
+    },
+  };
+}
+
+const SIZES = [[132, "Small"], [172, "Medium"], [236, "Large"]];
+
+/** The cards' size: small, medium or large (kept for every page). */
+export function CardSize() {
+  const size = useStore(ui, (s) => s.cardSize || 172);
+  const i = SIZES.reduce((best, [v], k) => (Math.abs(v - size) < Math.abs(SIZES[best][0] - size) ? k : best), 1);
+  return html`<label class="card-size" title=${`Card size: ${SIZES[i][1].toLowerCase()} (small, medium or large)`}>
+    <span class="visually-hidden">Card size</span>${Icon.grid(12)}
+    <input type="range" id="card-size" min="0" max="2" step="1" value=${i} aria-valuetext=${SIZES[i][1]}
+      onInput=${(e) => setPref({ cardSize: SIZES[Number(e.target.value)][0] })} />${Icon.grid(16)}</label>`;
+}
+
+/** The style that sizes a grid's cards. */
+export const cardStyle = (size) => `--card: ${size || 172}px`;
 
 /** The list view's columns. `all`: the search across every game, which has a Game column. */
 export function listColumns(all) {
@@ -109,7 +218,7 @@ const UNKNOWN = html`<span class="muted" title="Not read yet: it is when its pre
 function cell(c, m) {
   const st = m.stats || {};
   switch (c.id) {
-    case "name": return html`<span class="lc-name-text">${m.label}${m.configurable ? html` <small class="muted config-tag">${configText(m)}</small>` : null}</span>
+    case "name": return html`<span class="lc-name-text">${m.starred ? html`<span class="card-star" title="Starred">${Icon.star(12, true)}</span> ` : null}${m.label}${m.configurable ? html` <small class="muted config-tag">${configText(m)}</small>` : null}${(m.tags || []).map((t) => html` <span class="card-tag" key=${t}>${t}</span>`)}</span>
       <span class="lc-file" title=${m.name}>${m.name}</span>`;
     case "game": return html`<span class="lc-game"><${GameBadge} name=${m.game} size=${13} /> ${m.game}</span>`;
     case "kind": return `${m.category}${m.group ? ` › ${m.group}` : ""}`;
@@ -138,17 +247,16 @@ export function ListHead({ cols, sort, onSort }) {
   </div>`;
 }
 
-export function ListRow({ m, cols, selected, onPick }) {
-  return html`<div class="row lib-row" role="option" tabindex="0" data-model=${m.id} aria-selected=${selected ? "true" : "false"}
-      onClick=${() => onPick(m)} onDblClick=${() => openModel(m)} onContextMenu=${(e) => { onPick(m); openMenu(e, modelMenu(m)); }}>
+export function ListRow({ m, cols, selected, onPick, onMenu, dragIds, onDrop }) {
+  return html`<div class="row lib-row" role="option" tabindex="0" data-model=${m.id} aria-selected=${selected ? "true" : "false"} ...${cardEvents(m, { onPick, onMenu, dragIds, onDrop })}>
     <${Thumb} id=${m.id} category=${m.category} cls="thumb-sm lc-thumb" />
     ${cols.map((c) => html`<span key=${c.id} class=${`lc lc-${c.id}${c.num ? " lc-num" : ""}`} data-col=${c.id}>${cell(c, m)}</span>`)}
   </div>`;
 }
 
 /** The sorts the Sort menu offers (the list's headers sort by the same). */
-export function sortOptions(all) {
-  return [["kind", "Kind"], ["name", "Name"], ["file", "File name"], ...(all ? [["game", "Game"]] : []), ["size", "Size"],
+export function sortOptions(all, collection = false) {
+  return [...(collection ? [["collection", "Collection order"]] : []), ["kind", "Kind"], ["name", "Name"], ["file", "File name"], ...(all ? [["game", "Game"]] : []), ["size", "Size"],
     ["triangles", "Triangles"], ["parts", "Parts"], ["textures", "Textures"], ["animated", "Animations"], ["collected", "Collected"]];
 }
 

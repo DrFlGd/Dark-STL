@@ -4,7 +4,9 @@
 // ones drawn already, several at a time, so those show at once; the rest are drawn
 // a couple at a time behind them. A picture the page has shown is kept in memory,
 // so going back to a place (or changing the search, sort or view) shows it again
-// straight away instead of asking for it again.
+// straight away instead of asking for it again. Held under the pointer a moment,
+// a card's picture turns: eight views round the model, drawn in the background
+// after its picture (or when it's first hovered), shown one after another.
 import { html, useState, useEffect, useRef } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui } from "./state.js";
@@ -28,10 +30,10 @@ function remember(id, entry) {
 /** Let go of every picture shown (or only those of the models `ids`), so they're asked for again: after a rescan,
  *  Settings' Draw them again, or a model's Redraw preview. */
 export function forgetThumbs(ids = null) {
-  for (const [id, e] of [...known.entries()]) {
+  for (const map of [known, turns]) for (const [id, e] of [...map.entries()]) {
     if (ids && !ids.includes(id)) continue;
     if (e.src) URL.revokeObjectURL(e.src);
-    known.delete(id);
+    map.delete(id);
   }
   ui.set((s) => ({ thumbGen: (s.thumbGen || 0) + 1 }));
 }
@@ -83,10 +85,62 @@ function load(id, gen, task) {
   });
 }
 
-export function Thumb({ id, category, cls = "" }) {
+const TURNS = 300; // turntables kept in memory
+const turns = new Map(); // id -> { state, src, gen }
+const HOVER_MS = 350; // held this long before it turns
+
+/** The turntable strip of `id`, asked for drawn already, else drawn now: { state: "ok", src } or { state: "none" }. */
+async function loadTurn(id, gen) {
+  const ask = async (cached) => {
+    const r = await fetch(binUrl("thumb", { id, turn: 1, cached: cached ? 1 : null, v: gen }));
+    if (r.status === 404) return { state: "none" };
+    if (!r.ok) throw new Error(`thumb ${r.status}`);
+    const blob = await r.blob();
+    return blob.size ? { state: "ok", src: URL.createObjectURL(blob) } : null;
+  };
+  let entry;
+  try { entry = (await ask(true)) || (await ask(false)) || { state: "none" }; } catch { entry = { state: "none" }; }
+  if (gen !== (ui.get().thumbGen || 0)) return entry;
+  turns.delete(id);
+  turns.set(id, { ...entry, gen });
+  while (turns.size > TURNS) {
+    const [oldest, e] = turns.entries().next().value;
+    turns.delete(oldest);
+    if (e.src) URL.revokeObjectURL(e.src);
+  }
+  return entry;
+}
+
+/** While the card holding `ref` is hovered (after a moment): its turntable's picture, or null. */
+function useTurn(ref, id, gen, on) {
+  const [src, setSrc] = useState(null);
+  useEffect(() => {
+    if (!on || !ref.current) return undefined;
+    const host = ref.current.closest(".card, .insp-thumb") || ref.current;
+    let timer = null, live = true, hovered = false;
+    const enter = () => {
+      hovered = true;
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        const kept = turns.get(id);
+        const entry = kept && kept.gen === gen ? kept : await loadTurn(id, gen);
+        if (live && hovered && entry.state === "ok") setSrc(entry.src);
+      }, HOVER_MS);
+    };
+    const leave = () => { hovered = false; clearTimeout(timer); setSrc(null); };
+    host.addEventListener("mouseenter", enter);
+    host.addEventListener("mouseleave", leave);
+    return () => { live = false; clearTimeout(timer); host.removeEventListener("mouseenter", enter); host.removeEventListener("mouseleave", leave); };
+  }, [id, gen, on]);
+  return src;
+}
+
+/** `turn`: turn round while hovered (cards). */
+export function Thumb({ id, category, cls = "", turn = false }) {
   const ref = useRef(null);
   const gen = useStore(ui, (s) => s.thumbGen || 0);
   const [shown, setShown] = useState(() => known.get(id) || null);
+  const strip = useTurn(ref, id, gen, turn && shown?.state === "ok");
   useEffect(() => {
     const have = known.get(id);
     setShown(have || null);
@@ -102,7 +156,8 @@ export function Thumb({ id, category, cls = "" }) {
     return () => { io.disconnect(); if (task) task.cancelled = true; };
   }, [id, gen]);
   const state = shown?.state || "wait";
-  return html`<span class=${`thumb ${cls}`} ref=${ref} data-thumb=${state} role="img" aria-label="Preview">
+  return html`<span class=${`thumb ${cls}${strip ? " turning" : ""}`} ref=${ref} data-thumb=${state} role="img" aria-label="Preview">
+    ${strip ? html`<span class="thumb-turn" data-turn="1"><img src=${strip} alt="" draggable="false" /></span>` : null}
     ${shown?.src ? html`<img src=${shown.src} alt="" draggable="false" />`
       : html`<span class=${`thumb-none${state === "wait" ? " thumb-wait" : ""}`}>${CategoryIcon({ name: category, size: 30 })}</span>`}
   </span>`;

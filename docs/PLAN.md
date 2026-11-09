@@ -171,6 +171,47 @@ the tests call directly.
   triangles, parts, textures, animations and collected; a header sorts by it (again: the other way),
   and each page keeps its own sort in the preferences. Cards show "size · triangles" once known.
   Home has the search box and the last eight models opened above the game tiles.
+- **Collections, tags and stars (0.48.0).** `library_collections.py` keeps one file for the whole
+  library, `<settings>/library/collections.json`: named, ordered collections of models from any game,
+  tags per model and a star per model. A model is referred to by its game and its overlay key (its path
+  in the game, the same for the game's file, a collected copy and the package made from it; `config:<id>`
+  for a configurable model), so nothing is lost when a folder is rescanned, moved, collected or added
+  again: a model not in the library just isn't shown until it's back. The library gives every entry its
+  marks through a `mark` hook (`app/organise.py`), so cards, rows, the search (a tag is searched like a
+  name, and offered as a filter chip with Starred) and the library index show them. Page: right-click a
+  model (or the model page's ⋯) for *Add to collection…*, *Tag…* and *Star*; cards drag onto a
+  collection (or Starred) in the menu; a collection's page (`#/collection/<id>`, and `#/starred`)
+  lists its models in its own order, dragged into place under the sort *Collection order*; Home shows
+  them as tiles. Commands `collections`, `collection_create/rename/delete/add/remove/move`,
+  `models_tag`, `models_star`, `tag_rename`; `models_query` takes `collection`, `tags` and `starred`.
+- **Related models (0.48.0).** `Importer.related(entry, entries) -> [(relation, entry)]`:
+  FromSoftware armour sets (`hd/bd/am/lg` of one number and sex), a weapon and its `_1` sheath or
+  variant, a model and its low-detail copy, character and object variants (`catalog.family`); RE
+  Engine faces, bodies and hair of one character folder (`reengine/characters.character_part`);
+  packages ask the importer their model came from. The app adds a configurable model's base and
+  parts, and the configurable models a model is part of. `importers/base.index_entries` keeps a
+  per-importer index of the library so each lookup is a dictionary read. A card says "N related"
+  (a menu of them), the details panel and the model page's Model tab list them, and Combine
+  offers them first.
+- **Choosing several, and the queue (0.48.0).** Click chooses a model, Ctrl+click adds or takes one
+  off, Shift+click a run, Ctrl+A every model shown, Esc none (`useModelSelection` in `ui/models.js`).
+  With several chosen the command bar and their right-click menu offer *Collect into the app*,
+  *Export as GLB*, *Export packages*, *Enhance with the current settings*, *Add to collection…*,
+  *Tag…* and *Star*. The bulk actions go to the queue (`app/bulk.py`): one item per action (Collect
+  and packages one per game), run one after another as jobs of the job system, each model through
+  the same commands the page uses for one (a bulk export writes what Export would; a bulk enhance
+  generates with the settings that game's models were last generated with, `config.last_enhance`,
+  else the defaults, and saves a variation). A model that fails doesn't stop the rest; it's listed
+  with why. The Queue page (`#/queue`) shows each with its progress and Stop (a waiting one is taken
+  off); the running one is in the status bar. Commands `queue`, `queue_add`, `queue_stop`, `queue_clear`.
+- **Problems (0.48.0).** A game's page lists what needs a look, each with its fix (`problems`
+  command): its folders' notes (still packed: *Unpack…*; gone: *Remove*), models that couldn't be
+  read (*Export model files…*), model files gone since the scan (*Rescan*), models without textures
+  and textures not found (*Choose texture…* on the Textures tab, *Find textures…* adds a texture
+  folder and draws their previews again), and animations that couldn't be read. They're learnt as
+  previews are drawn and models opened, and kept in the library index (`error`, `missing_textures`,
+  `anim_error`; FromSoftware reports the texture slots that name a file it didn't find). Home has a
+  line for each game with any.
 - **Collect into the app.** A game install is tens of gigabytes; the files Dark STL reads for
   the models someone wants are a few megabytes. *Collect into the app…* (a game's ⋯ menu, a
   kind's or group's details, a model's right-click menu or the model page's ⋯ menu) copies the
@@ -188,6 +229,18 @@ the tests call directly.
 - **Previews.** Each card's picture is drawn by the engine the first time it scrolls into view
   (`thumbnails.py`: the model from the 3D view's angle, coloured from its albedo texture, long
   weapons laid corner to corner) and cached by file date, a few at a time so browsing stays quick.
+  Since 0.48.0 characters are drawn in the first frame of an idle-like animation (idle, wait, stand,
+  or FromSoftware's `a000_000000`) when they have one (Settings › General › Previews, on by
+  default; their previews are kept under a key of their own), and each preview gets a turntable:
+  eight views round the model in one strip (`thumbnails.turntable`, a z-buffered point scatter of
+  the shaded surface, 0.3 s for 19,000 triangles), drawn in the background from the model just
+  drawn, or when a card is first hovered (`thumb?turn=1`), and played on the card while it's
+  hovered. The browser's toolbar has a small, medium or large card size.
+- **Settings in three pages (0.48.0).** General (Exports, Model Painter, Previews, Appearance),
+  Library (Game folders, App library, Texture folders) and Game tools (Oodle, Unreal games, Game
+  archives): `#/settings`, `#/settings/library`, `#/settings/tools`. The first start shows a tile for
+  each game Dark STL reads; clicking one says what folder to choose for it, with *Add this game's
+  folder…*.
 - **The model page.** The 3D view with the game's textures (or clay, or wireframe), and the
   inspector's tabs in the order the work happens, in three groups on the rail (each tab's icon
   with its short name upright under it; icons only when the page is crowded): **Model**
@@ -857,6 +910,7 @@ src/darkstl/
   overlay.py    the library overlay: the user's own changes per game (names, folders, textures) and
                 the names the game gives its models
   library_index.py  the library index: every model of a game with its size and counts, for the search
+  library_collections.py  the user's collections, tags and stars, across every game
                 and the list's columns
   variations.py saved variations: enhanced models kept beside the model's package
   thumbnails.py preview pictures for the library's cards, cached on disk
@@ -866,10 +920,14 @@ src/darkstl/
   cli.py        command line
   app/          the desktop app: service.py (the page's commands), server.py (local web
                 server), meshpack.py (meshes for the 3D view), config.py, desktop.py (window),
-                painter.py (where Model Painter is, and opening an export in it)
+                painter.py (where Model Painter is, and opening an export in it),
+                organise.py (collections, tags, stars, related models, problems), bulk.py
+                (the queue of bulk actions)
   web/          the page: Model Library's interface (styles.css, ui/ layout, inspector,
                 menus) with Dark STL's pages: home.js, browser.js, search.js (every game),
-                models.js (cards, list rows and columns), modelpage.js, configure.js, settings.js
+                models.js (cards, list rows and columns, choosing several), modelpage.js,
+                configure.js, settings.js, organise.js (collections, tags, bulk menus, related),
+                collection.js (a collection's page, Starred), queue.js, problems.js
 tests/          synthetic game files built byte by byte (no game data in the repo)
 ```
 
@@ -939,7 +997,10 @@ differs:
 - [ ] In-game names for the other importers (Cyberpunk, Borderlands, Returnal, RE Engine)
 - [x] One search across every game, with filters, a list view with sortable columns, sizes and
       counts on the cards, and Recent on Home (0.44.0)
-- [ ] Batch queue: enhance and export a whole group with one set of settings
+- [x] Library II (0.48.0): collections, tags and stars across games; related models (armour sets,
+      sheaths, low-detail copies, a character's parts); turntable and posed previews, card sizes;
+      choosing several models and the queue (Collect, Export as GLB, Export packages, Enhance with
+      the current settings); each game's Problems; first-run game tiles; Settings in three pages
 - [ ] Read Elden Ring MATBIN files for exact material maps
 - [ ] Dark Souls II (FLVER2 with its own texture layout)
 - [ ] Importers for other game families, added as they are needed

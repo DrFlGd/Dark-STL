@@ -101,5 +101,9 @@ export const Icon = {
   move: (s) => svg(html`<path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><path d="M9 13h7M13 10l3 3-3 3" />`, s),
   layers: (s) => svg(skinned(html`<path d="M3 8.5l9-4.5 9 4.5-9 4.5z" /><path d="M3 12.5l9 4.5 9-4.5" /><path d="M3 16.5l9 4.5 9-4.5" />`, OWN.layers), s),
   code: (s) => svg(html`<path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16" />`, s),
+  tag: (s) => svg(html`<path d="M3 12V4h8l10 10-8 8z" /><circle cx="7.5" cy="8.5" r="1.3" />`, s),
+  link: (s) => svg(html`<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1" /><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" />`, s),
+  queue: (s) => svg(html`<path d="M4 6h11M4 12h11M4 18h7" /><path d="M16 15l5 3-5 3z" />`, s),
+  sparkle: (s) => svg(html`<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" /><path d="M19 16l.7 1.8 1.8.7-1.8.7L19 21l-.7-1.8-1.8-.7 1.8-.7z" />`, s),
   play: (s) => svg(html`<path d="M7 4.5v15l12-7.5z" />`, s),
 };

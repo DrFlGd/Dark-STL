@@ -104,7 +104,8 @@ class OrganiseCommands:
         if e.__dict__.get("_starred"):
             out["starred"] = True
         if e.__dict__.get("_collections"):
-            out["collections"] = list(e.__dict__["_collections"])
+            names = {c["id"]: c["name"] for c in self.marks.collections()}
+            out["collections"] = [{"id": cid, "name": names[cid]} for cid in e.__dict__["_collections"] if cid in names]
         return out
 
     # ------------------------------------------------------------ collections
@@ -301,8 +302,10 @@ class OrganiseCommands:
         """What needs a look in a game's library, with what fixes it: its folders' notes (still packed, gone,
         nothing found), models that couldn't be read, models without textures, textures not found, animations
         that couldn't be read and model files gone since the scan. Models are known to have a problem once
-        their preview was drawn or they were opened (``unknown``: how many weren't yet)."""
+        their preview was drawn or they were opened (``unknown``: how many weren't yet). ``summary``: only how
+        many (Home's line for the game), without looking for missing files."""
         game = str(args.get("game") or "")
+        summary = bool(args.get("summary"))
         with self.lock:
             entries = [e for e in self.library.entries if e.game == game and not self.library.hides(e)]
             folders = [f for g in self.library.overview() if g["name"] == game for f in g["folders"]]
@@ -324,7 +327,7 @@ class OrganiseCommands:
                 groups["textures"].append((e, f"{n} texture{'s' if n != 1 else ''} it names weren't found"))
             if st.get("anim_error"):
                 groups["animations"].append((e, st["anim_error"]))
-            if time.monotonic() - started < MISSING_CHECK_SECONDS:
+            if not summary and time.monotonic() - started < MISSING_CHECK_SECONDS:
                 checked += 1
                 if not _present(e.path):
                     groups["missing"].append((e, "Its file isn't there any more"))
@@ -345,8 +348,8 @@ class OrganiseCommands:
             if not rows:
                 continue
             out.append({"id": key, "title": titles[key][0], "hint": titles[key][1], "count": len(rows),
-                        "models": [{**self._entry_json(e, collected), **({"why": why} if why else {})}
-                                   for e, why in rows[:PROBLEM_ROWS]]})
+                        "models": [] if summary else [{**self._entry_json(e, collected), **({"why": why} if why else {})}
+                                                      for e, why in rows[:PROBLEM_ROWS]]})
         notes = [{"path": f["path"], "notes": f["notes"], "missing": f["missing"], "count": f["count"]}
                  for f in folders if f["notes"] or f["missing"]]
         return {"game": game, "folders": notes, "groups": out, "unknown": unknown, "models": len(entries),

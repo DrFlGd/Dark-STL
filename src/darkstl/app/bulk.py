@@ -13,6 +13,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -203,10 +204,10 @@ class QueueCommands:
 
         def run(job):
             def one(e, span):
-                opened = self.cmd_model_open({"id": e.id})
-                started = self.cmd_export({"sid": opened["sid"], "which": "original", "format": ".glb", "units": "mm",
-                                           "textures": True, "folder": folder})
-                return self._await(job, started, span, f"Exporting {e.label}")["path"]
+                with self._opened(e) as sid:
+                    started = self.cmd_export({"sid": sid, "which": "original", "format": ".glb", "units": "mm",
+                                               "textures": True, "folder": folder})
+                    return self._await(job, started, span, f"Exporting {e.label}")["path"]
 
             out = self._each(job, entries, "Exporting", one)
             return {**out, "folder": folder}
@@ -221,18 +222,32 @@ class QueueCommands:
 
                     raise AppError("Configurable models are enhanced one at a time, from their page (their "
                                    "variations can't be saved yet).")
-                opened = self.cmd_model_open({"id": e.id})
                 settings = self._last_settings(e.game)
                 mid = span[0] + 0.85 * (span[1] - span[0])
-                self._await(job, self.cmd_enhance({"sid": opened["sid"], "settings": settings, "bulk": True}), (span[0], mid),
-                            f"Enhancing {e.label}")
-                saved = self._await(job, self.cmd_variation_save({"sid": opened["sid"], "name": ""}), (mid, span[1]),
-                                    f"Saving {e.label}")
+                with self._opened(e) as sid:
+                    self._await(job, self.cmd_enhance({"sid": sid, "settings": settings, "bulk": True}), (span[0], mid),
+                                f"Enhancing {e.label}")
+                    saved = self._await(job, self.cmd_variation_save({"sid": sid, "name": ""}), (mid, span[1]),
+                                        f"Saving {e.label}")
                 return saved["variation"]["name"]
 
             return self._each(job, entries, "Enhancing", one)
 
         return run
+
+    @contextmanager
+    def _opened(self, entry):
+        """A model opened for a bulk action, closed again after (unless it was open already, on its page), so a
+        long queue doesn't close the models the user has open."""
+        with self.lock:
+            before = set(self.sessions)
+        sid = self.cmd_model_open({"id": entry.id})["sid"]
+        try:
+            yield sid
+        finally:
+            if sid not in before:
+                with self.lock:
+                    self.sessions.pop(sid, None)
 
     def _last_settings(self, game: str) -> dict:
         """The settings the Mesh and Displace tabs last generated a model of ``game`` with (else the defaults)."""

@@ -72,7 +72,7 @@ def test_collections_tags_and_stars_survive_a_rescan(service, weapon_dir):  # no
     service.call("models_star", {"ids": [ids["wp_a_0300"]]})
     # the page sees them on every model
     row = service.call("models_get", {"ids": [ids["wp_a_0300"]]})["items"][0]
-    assert row["tags"] == ["Print next"] and row["starred"] and row["collections"] == [c["id"]]
+    assert row["tags"] == ["Print next"] and row["starred"] and row["collections"] == [{"id": c["id"], "name": "Knights"}]
     # a tag is searched like a name, and filters
     assert {i["stem"] for i in service.call("models_query", {"q": "print next"})["items"]} == {"wp_a_0300", "c1100"}
     assert service.call("models_query", {"tags": ["print next"], "starred": True})["total"] == 1
