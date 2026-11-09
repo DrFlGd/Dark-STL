@@ -1,9 +1,16 @@
 # Dark STL: plan
 
-Dark STL is a desktop tool that reads models and textures extracted from games, starting with
-the FromSoftware games (Dark Souls, Bloodborne, Sekiro, Elden Ring) and Cyberpunk 2077, lets you browse them
-grouped by type, and turns them into high-fidelity meshes for 3D printing and rendering. It
-does that in three steps:
+Dark STL is a desktop app for game models: a flexible import system (the FromSoftware games,
+Cyberpunk 2077, the RE Engine games, Borderlands, Returnal and any Unreal 4/5 game, Grand Theft
+Auto, DOOM Eternal and DOOM: The Dark Ages, and OBJ, glTF, FBX and PSK files from other tools), an intuitive library to
+explore and organise them across games, and the tools to extract, manipulate and clean a model
+before printing (configure, pose, clean, enhance). Print post-processing (making a model
+watertight, cutting it into pieces, painting it for a multi-colour printer) belongs to the
+companion app [Model Painter](https://github.com/DrFlGd/Model-Painter), which Export hands models
+to; Dark STL's own Finish and Cut tabs are being retired (Phase 8 of the roadmap). Stands and bases
+are out of scope.
+
+Enhancing a model takes three steps:
 
 1. **Even out the vertices.** Resample the model to a user-chosen vertex count, with the
    vertices spread evenly over the surface.
@@ -33,6 +40,7 @@ importer and registering it in `importers/__init__.py`:
 | FromSoftware | FLVER2 models in BND/DCX archives, TPF/DDS textures. Per-game differences (markers, compression, PS4 textures, where material data lives) are profiles in `importers/fromsoft/games.py` | Dark Souls Remastered and Bloodborne checked on real files; the rest on synthetic files |
 | REDengine 4 (Cyberpunk 2077) | `.mesh` and `.xbm` in the CR2W container, loose (WolvenKit exports under their depot paths) or inside the game's `.archive` packs, read directly; `.mi`/`.mt` material chains; multilayered materials (`.mlsetup`, `.mltemplate`, `.mlmask`) blended into one colour and one normal map; `.app`/`.ent` appearance packages for weapon configurations; Kraken buffers through the game's `oo2ext_7_win64.dll`. Formats worked out with WolvenKit as the reference | Built on synthetic files; awaiting a check against the game |
 | RE Engine (Capcom) | `.mesh` models (every generation from RE2 to RE Requiem, streamed buffers included), `.mdf2` materials, `.tex` textures, read from extracted files or from `.pak` archives through a community file list. Games in `importers/reengine/games.py` | Synthetic RE2 and RE4 files; real files next |
+| Unreal Engine 3 (Borderlands, Borderlands 2, The Pre-Sequel) | `.upk` packages (LZO, and whole-file compressed ones such as `Startup.upk`) with their `.tfc` texture caches: `SkeletalMesh` and `StaticMesh` objects, `Texture2D`, material instances followed to their parents, guns as configurable models from the `GD_Weap_*` part definitions with their skins mixed per part, `AnimSet` sequences for the Pose tab, names from the `.INT` text (`importers/borderlands/`) | Borderlands 2 guns and skins checked on a real install; the rest on synthetic files |
 | Wavefront OBJ | OBJ + MTL with PNG/JPG/TGA/DDS textures, from any other tool | Done |
 | glTF | `.gltf` (with its `.bin` and pictures) and `.glb`, as Blender, FModel and most tools export: each mesh a part placed by its node, base colour and normal textures (green up), Y up turned to Z up; a model too big to be in metres read as centimetres. Skinned meshes in their bind pose | Synthetic files (0.35.0) |
 | Unreal Engine 4/5 games, by game profile | Any Unreal 4/5 game's `.pak` files and IoStore containers (`.utoc`/`.ucas`), or files extracted from them, with the readers the Borderlands importer brought (skeletal and static meshes, textures, material instances, animations). What differs per game is its JSON profile (`importers/profiles/*.json`, see [profiles.md](profiles.md)): Returnal, Borderlands 3, Wonderlands and Borderlands 4 ship one; a folder of a game no profile names is added under the name the user types, sorted by `unreal-defaults.json`'s folder rules, and a profile for it is written into the settings folder. Names from the game's string tables | Synthetic files (0.49.0); Returnal and Borderlands 3 as before |
@@ -117,8 +125,11 @@ imported and removed.
 
 ### The app: a game library on Model Library's interface
 
-The app is a small local web server (`app/server.py`) and a page (`web/`) shown in the
-system's own web view through pywebview, or in the browser with `--browser`. The page is the
+The app is a page (`web/`) in front of the Python engine. The Windows app is a Tauri window
+(`desktop/`) that runs the engine as `darkstl engine` (`app/engine.py`) and passes the page's
+commands to it over its stdin and stdout, so it opens no port; a source install serves the page
+from a small local web server (`app/server.py`) in pywebview's window, or in the browser with
+`--browser`. The page is the
 interface of Model Library and SCAD Workshop (Preact + htm, no build step, the same skins,
 themes, command bar, inspector rails, menus and three.js viewer), so the three apps look and
 work alike. Everything the page does goes through one command table (`app/service.py`), which
@@ -998,6 +1009,9 @@ model's print size. Since 0.45.0.
 
 ### Making it watertight (Finish tab, before cutting or export)
 
+Print post-processing, moving to Model Painter (its 0.2.0 ported this); the tab stays until it is
+retired (Phase 8).
+
 Post-processing for printing lives on the **Finish** tab (`finish.py`). *Make watertight* wraps the
 whole model (enhanced or original) into one solid with nothing left inside:
 
@@ -1040,6 +1054,9 @@ the base or of another chosen part (`SourceModel.sockets`, which importers fill)
 matrix, offset, turn and scale.
 
 ### Cutting into pieces (before export)
+
+Print post-processing, moving to Model Painter (its 0.3.0 ported this); the tab stays until it is
+retired (Phase 8).
 
 A model too big for the printer, or with parts that print better apart, is cut on the **Cut** tab
 (`cut.py`, on [manifold3d](https://github.com/elalish/manifold), whose booleans are exact and always
@@ -1089,7 +1106,8 @@ give closed meshes).
 | STL (binary or ASCII) | Geometry only, Z up, millimetres by default |
 | OBJ + MTL + PNG | Geometry, UVs, one material per game material with its albedo map, Y up |
 | PLY (binary) | Geometry and normals |
-| GLB | Geometry, UVs and embedded albedo textures, Y up, in metres (glTF's unit); *For Model Painter* is this, named `<model>_for_painter.glb` |
+| GLB | Geometry, UVs and embedded albedo textures, Y up, in metres (glTF's unit), with the skeleton in the pose shown (0.47.0); *For Model Painter* is this, named `<model>_for_painter.glb` |
+| 3MF, painted | Geometry with paint stored per triangle the way Bambu Studio, OrcaSlicer and PrusaSlicer store their brush paint, from the colour textures reduced to a palette (`paint.py`, 0.22.0; settings on the Finish tab since 0.37.0). Moving to Model Painter, which ported it |
 
 Units can be mm, cm, m or inches; the game's own scale is metres.
 
@@ -1115,6 +1133,17 @@ src/darkstl/
                 on disk or inside a pak, and its animations), materials.py (texture roles from slot
                 types), catalog.py (classifies models by the engine's folder layout), animation.py
                 (.motlist / .mot motions -> poses, skinning)
+    borderlands/  Unreal Engine 3 (Borderlands 1/2/TPS): formats/ (UPK packages, LZO, properties,
+                skeletal and static meshes, textures), catalog.py, files.py, materials.py, mesh.py,
+                weapons.py and configurations.py (guns from their part definitions), gunpaint.py (skins
+                mixed per part), animsets.py (posing), names.py (`.INT` text); ue4/ (the Unreal 4/5
+                readers: pak, IoStore, unversioned properties and `.usmap`, meshes, textures,
+                materials, animations) that unreal/ builds on
+    renderware/ GTA III, Vice City, San Andreas: formats/ (chunks, dff, txd, img, ifp, gxt, text
+                lists), games.py, files.py, catalog.py, model.py, animation.py
+    rage/       GTA V and GTA IV: formats/ (RPF7 and IMG3 archives, keys found in the executable,
+                RSC7 and RSC5 resources, drawables, textures, clips, text), games.py, files.py,
+                catalog.py, model.py, animation.py
     profiles/   game profiles: the loader (__init__.py: shipped files, the settings folder's over them,
                 extends, overrides for the engines kept in code) and the shipped *.json (docs/profiles.md)
     unreal/     Unreal 4/5 games by profile: profile.py (a profile's rules: sorting into kinds and groups,
@@ -1152,11 +1181,19 @@ src/darkstl/
   variations.py saved variations: enhanced models kept beside the model's package
   thumbnails.py preview pictures for the library's cards, cached on disk
   pipeline.py   the three steps with their settings
+  attach.py     models attached to a bone or socket of another (a sword in a hand)
+  access.py     what a model reads while it's opened (whole files, pieces of archives), for Collect
+  listing.py    a game folder's files listed once per scan, and whether a folder has changed
+  review.py     Export model files: a model's files and a report of what was made of them, in a zip
+  bench.py      the displacement test bench (known relief in, error numbers out)
   clean.py      the Clean tab's steps: hidden parts and faces, thin sheets, picked faces, repairs, transform
-  cut.py        the model made solid and cut into pieces with joints (manifold3d)
+  finish.py     Make watertight (the Finish tab), moving to Model Painter
+  cut.py        the model made solid and cut into pieces with joints (manifold3d), moving to Model Painter
+  paint.py      painted 3MF from the colour textures, moving to Model Painter
   export.py     STL, OBJ, PLY, GLB writers
   cli.py        command line
-  app/          the desktop app: service.py (the page's commands), server.py (local web
+  app/          the desktop app: service.py (the page's commands), engine.py (the engine the
+                Tauri window runs, over stdin and stdout), server.py (local web
                 server), meshpack.py (meshes for the 3D view), config.py, desktop.py (window),
                 painter.py (where Model Painter is, and opening an export in it),
                 organise.py (collections, tags, stars, related models, problems), bulk.py
@@ -1171,7 +1208,30 @@ tests/          synthetic game files built byte by byte (no game data in the rep
 
 ## Roadmap
 
-### Phase 0: foundations (this first pull request)
+### Milestones so far
+
+Each release's notes are in [releases/](releases/).
+
+| Releases | What they brought |
+| --- | --- |
+| 0.1 to 0.6 | The FromSoftware readers and the three steps (even out, displace from normal maps, export); the Windows app (Tauri, no Python needed, isotropic remesher included); posing with the games' Havok animations; Collect into the app; the bundled AI normal-map upscaler; the Mesh, Textures and Displace tabs |
+| 0.9 to 0.21 | Cut into pieces; Cyberpunk 2077; the RE Engine games, straight from their paks; FromSoftware archives unpacked by the app; the Configure tab; every Borderlands game; Make watertight; a faster start-up; jagged-edge smoothing |
+| 0.22 to 0.26 | Painted 3MF; Borderlands 2 gun skins; Returnal; collected games working with the game uninstalled |
+| 0.27 to 0.35 | Model packages, the asset store and the library overlay (Phase 5): texture picker, own names and folders, Combine, saved variations, faster import, every texture of a game, glTF and PSK files |
+| 0.36 to 0.42 | Unreal 3, 4 and 5 models posed with the games' animations; Export model files for review; Redraw previews; Returnal fixes from Jerred's own files |
+| 0.43 to 0.49 | The build-out after the November 2026 review: the model page in work order and the Model Painter handoff, in-game names and one search across games, the Clean tab, thin parts kept safe and the Thickness view, posing freedom, Library II, game profiles, any Unreal 4/5 game, FBX |
+| 0.50 to 0.54 | Grand Theft Auto III, Vice City, San Andreas, IV and V; DOOM Eternal and DOOM: The Dark Ages |
+
+### Where things stand (2026-11-09)
+
+- **Next:** retiring the Finish and Cut tabs and the painted 3MF in favour of Model Painter's
+  (Phase 8); in-game names for the RE Engine games.
+- **Waiting on Jerred:** DOOM (2016) and DOOM VFR need sample files from the game; the mobile and
+  console versions of GTA wait for his go-ahead; the checks on his own installs in Phase 1 (Cyberpunk
+  2077, Returnal's first-person models, Grand Theft Auto, the DOOM games, the RE Engine games) and
+  Library II on his libraries.
+
+### Phase 0: foundations (the first pull request)
 
 - [x] Readers for every container, model and texture format above
 - [x] Library scan and grouping, with search
@@ -1207,14 +1267,26 @@ differs:
       straight from the paks (the readers follow the community's format descriptions and pass on
       synthetic files; the normal maps' green direction and the texture roles of each game's slot
       names need a look on real files)
+- [x] Borderlands 2: guns with their skins on Jerred's install (0.24.1)
+- [ ] Returnal: turrets pose right on Jerred's install (0.38.1); the Hulk, the Spore Wizard and the
+      player suits were fixed from his exported files (0.41.0 to 0.42.0); the other first-person
+      models are still to check
+- [ ] Cyberpunk 2077: weapon cards, layered materials and Collect on a real install
+- [ ] Grand Theft Auto III to V, DOOM Eternal and The Dark Ages: everything so far is on synthetic
+      files, including the key search in `GTA5.exe` and `GTAIV.exe` and the DOOM games' size and green
+      direction
+- [x] Dark Souls: a whole install collected as packages (6.26 GB, see Phase 5)
 
 ### Phase 2: print-ready output
 
-- [ ] Watertight option: game meshes are open shells with overlapping parts, so add a
-      solidify step (voxel or winding-number remesh) that outputs one closed manifold. Cut
-      pieces are watertight since 0.9.0 (openings closed, open surfaces thickened, parts
-      united); the same could be offered for the whole model
+Since the November 2026 review, Dark STL's side of this is cleaning and enhancing the model; making
+it watertight, cutting and painting move to Model Painter (Phase 8).
+
+- [x] Make watertight (0.17.0, Finish tab): the parts made solid and united, hollows filled, gaps
+      optionally bridged and loose bits removed. Cut pieces are watertight since 0.9.0
 - [x] Cut into pieces with joints (flat, pegs, dowels, magnets, key) and a clearance per cut
+- [x] Painted 3MF for multi-colour printers (0.22.0), the Finished model and cut pieces too (0.24.0),
+      with its settings on the Finish tab (0.37.0)
 - [x] Clean tab (0.45.0): parts in or out, parts and faces hidden inside others, thin sheets (open,
       two-sided, thin) listed and removed, faces picked in the 3D view, holes, duplicates, weld,
       flipped faces, print height and placement; a list of steps per model, done again on every build
@@ -1253,6 +1325,16 @@ differs:
 - [x] Posing freedom (0.47.0): bones turned on top of a frame or the bind pose (sliders and a
       rotate gizmo), mirrored left ↔ right by name, saved poses offered to models with the same
       skeleton, library models attached to a bone or socket, the GLB keeping the skeleton posed
+- [x] **Game files instead of per-game code** (raised by Jerred on 2026-11-07, from the backlog, built in 0.49.0). A JSON
+      profile per game names the engine backend (`unreal4`, `unreal5`, `unreal3`, `fromsoft`, `reengine`,
+      `redengine`) and its settings: the files and folder names that say a folder is the game, the engine
+      release, AES keys and type mappings, how folders and names sort models into kinds and groups, texture
+      role names, the normal maps' green direction, which text names models, and what Collect copies.
+      Shipped in `importers/profiles/`, replaced or added to from `<settings>/profiles/`. The Unreal 4/5
+      games (Returnal, Borderlands 3, Wonderlands, Borderlands 4) are read entirely from theirs, and a
+      generic Unreal importer reads any other with `unreal-defaults.json`; the FromSoftware, RE Engine and
+      Cyberpunk tables stay in code and take a profile's overrides. Engine readers stay code. The format is
+      in [profiles.md](profiles.md).
 - [ ] Read Elden Ring MATBIN files for exact material maps
 - [ ] Dark Souls II (FLVER2 with its own texture layout)
 - [ ] Importers for other game families, added as they are needed
@@ -1320,24 +1402,28 @@ The plan is in Reading id Tech 6/7/8 files above.
       only, in-game names still to come)
 - [x] DOOM: The Dark Ages: its model, skeleton and animation layouts, stream ids, streamed animations
       (0.54.0; synthetic files only)
-- [ ] DOOM (2016) and VFR: its `.index`/`.resources`/`.patch` and the older layouts, from Jerred's samples
+- [ ] DOOM (2016) and DOOM VFR: their `.index`/`.resources`/`.patch` and the older layouts, from
+      Jerred's samples (the next free version once they arrive)
 - [ ] Check each on Jerred's installs
 
-- [x] **Game files instead of per-game code** (raised by Jerred on 2026-11-07, built in 0.49.0). A JSON
-      profile per game names the engine backend (`unreal4`, `unreal5`, `unreal3`, `fromsoft`, `reengine`,
-      `redengine`) and its settings: the files and folder names that say a folder is the game, the engine
-      release, AES keys and type mappings, how folders and names sort models into kinds and groups, texture
-      role names, the normal maps' green direction, which text names models, and what Collect copies.
-      Shipped in `importers/profiles/`, replaced or added to from `<settings>/profiles/`. The Unreal 4/5
-      games (Returnal, Borderlands 3, Wonderlands, Borderlands 4) are read entirely from theirs, and a
-      generic Unreal importer reads any other with `unreal-defaults.json`; the FromSoftware, RE Engine and
-      Cyberpunk tables stay in code and take a profile's overrides. Engine readers stay code. The format is
-      in [profiles.md](profiles.md).
+### Phase 8: print finishing handed to Model Painter
 
-### Backlog (on hold)
+Jerred, 2026-11-09: Dark STL is for importing, exploring and organising models and for extracting,
+manipulating and cleaning them; print post-processing lives in Model Painter.
 
-- [ ] **Model packages between the importers and the editor** (approved by Jerred on 2026-11-07
-      and being built in stages, see Phase 5). Importers convert a game model
+- [x] Export for Model Painter (a GLB with textures and materials) and Open in Model Painter (0.43.0)
+- [x] Model Painter paints (its 0.1.0), makes watertight (0.2.0) and cuts into pieces with the same
+      joints (0.3.0), ported from Dark STL's `paint.py`, `finish.py` and `cut.py`
+- [ ] Retire Dark STL's Finish and Cut tabs and the painted 3MF export (and their command-line
+      options), leaving Export for Model Painter as the way across
+
+### Backlog
+
+Nothing is on hold at the moment. The entry below is the model-package plan as Jerred approved it;
+it was built as Phase 5.
+
+- [x] **Model packages between the importers and the editor** (approved by Jerred on 2026-11-07
+      and built in stages in 0.27.0 to 0.35.0, see Phase 5). Importers convert a game model
       into a self-contained package (glTF for mesh, skeleton and animations; a JSON sidecar for
       texture roles, normal-map convention, sockets and configurations), and the editing side
       only reads packages. Collect becomes "write the package", which keeps the game uninstallable;
@@ -1362,7 +1448,7 @@ The plan is in Reading id Tech 6/7/8 files above.
       the model so earlier variations can be viewed, compared, exported again or used as the
       starting point for new settings. Today results are only in the cache (keyed by model and
       settings), which can be cleared and isn't browsable.
-      Raised by Jerred on 2026-11-07, held for now.
+      Raised by Jerred on 2026-11-07; saved variations came in 0.30.0.
 
 ## Known limits today
 
@@ -1389,8 +1475,8 @@ The plan is in Reading id Tech 6/7/8 files above.
   MPLY stage meshes and blend shapes are not read. Posing RE models has only been tried on
   synthetic motions; motion trees, additive layers and animations kept in `.motbank` /
   `.motfsm2` setups (rather than in the motlists themselves) are not used.
-- Output is not guaranteed watertight (pieces cut on the Cut tab are); most slicers repair it,
-  but Phase 2 adds a proper fix.
+- Exports are watertight only when made so (the Finish tab's *Make watertight*, cut pieces, or
+  Model Painter); most slicers repair the rest.
 - Keeping thin parts measures room on the evenly spaced mesh, so parts thinner than about two
   vertex spacings are handled by the repair step rather than the cap, and lose more of their
   relief there. The Thickness shading counts an open part (most game parts have openings at

@@ -319,6 +319,7 @@ def test_settings_and_themes(page, app, weapon_dir):  # noqa: F811
     assert page.locator("#settings-nav [data-page]").all_inner_texts()[0].startswith("General")
     for section in ("#settings-exports", "#settings-previews", "#settings-look", "#settings-painter"):
         page.wait_for_selector(section)
+    assert "Export for Model Painter writes a GLB" in page.text_content("#settings-painter")  # the space after </i> is kept
     assert page.locator("#settings-games").count() == 0 and page.locator("#settings-oodle").count() == 0
     page.click('#settings-nav [data-page="tools"]')
     for section in ("#settings-oodle", "#settings-unreal", "#settings-archives"):
