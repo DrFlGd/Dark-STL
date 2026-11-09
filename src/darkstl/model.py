@@ -234,6 +234,8 @@ class CatalogEntry:
     is_lod: bool = False
     packed: bool = True
     config: Any = None  # a configs.Configuration (its files resolved) when this entry is a configurable model
+    # what the importer knew of the model's size and counts when it listed it (see library_index), or None
+    stats: Any = field(default=None, compare=False, repr=False)
 
     @property
     def id(self) -> str:

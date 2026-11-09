@@ -347,6 +347,37 @@ def load_model(path: str | os.PathLike, inner_name: str | None = None,
     return ModelAsset(stem, path, inner, model, textures, notes, variants, binder, located)
 
 
+def model_stats(path: Path) -> dict | None:
+    """The size and counts of the model in ``path`` (its first FLVER), read from the file alone: no textures
+    or animations are opened (see Importer.stats)."""
+    path = Path(path)
+    data = read_bytes(path)
+    binder = None
+    if flver.is_flver(data):
+        model = flver.read_flver(data)
+    elif bnd.is_binder(data):
+        binder = bnd.read_binder(data)
+        candidates = binder.by_extension(".flver", ".flver.dcx", ".flv")
+        if not candidates:
+            return None
+        model = flver.read_flver(candidates[0].data)
+    else:
+        return None
+    lo, hi = np.asarray(model.bbox_min, np.float64), np.asarray(model.bbox_max, np.float64)
+    if model.meshes and not (np.all(np.isfinite(lo)) and np.all(np.isfinite(hi)) and np.all(hi >= lo) and np.any(hi > lo)):
+        pos = [m.vertices.positions for m in model.meshes if m.vertices.count]
+        if pos:
+            allpos = np.concatenate(pos)
+            lo, hi = allpos.min(axis=0), allpos.max(axis=0)
+    span = (hi - lo) * 1000 if model.meshes else np.zeros(3)
+    textures = {t.stem.lower() for m in model.materials for t in m.textures if t.path and t.stem}
+    animated = bool(model.bones) and find_animations(path, file_stem(path.name), binder) is not None
+    return {"size_mm": [round(float(span[0]), 1), round(float(span[2]), 1), round(float(span[1]), 1)],  # Z up
+            "vertices": int(sum(m.vertices.count for m in model.meshes)),
+            "triangles": int(sum(len(m.triangles()) for m in model.meshes)), "parts": len(model.meshes),
+            "textures": len(textures), "animated": animated}
+
+
 def wanted_textures(model: flver.Flver) -> set[str]:
     """The names of the textures the model's materials name (lower case)."""
     return {t.stem.lower() for m in model.materials for t in m.textures if t.path and t.stem}
