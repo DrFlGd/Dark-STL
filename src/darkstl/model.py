@@ -167,6 +167,9 @@ class SourceModel:
     adjusts_bones: bool = field(default=False, repr=False)
     # the models attached to it (see :mod:`darkstl.attach`), for the page
     attachments: list = field(default_factory=list, repr=False)
+    # the textures the model's materials name that weren't found (in its files or the game's folder): listed on
+    # the game's Problems, with Find textures… and Choose texture…
+    missing_textures: list[str] = field(default_factory=list, repr=False)
 
     def build_mesh(self, options: MeshOptions | None = None) -> TriMesh:
         """The model's mesh with ``options``: its parts, switches and pose, then its clean-up (Clean tab), last."""

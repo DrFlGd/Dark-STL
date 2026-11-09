@@ -13,12 +13,16 @@ import { SearchPage } from "./search.js";
 import { ModelPage } from "./modelpage.js";
 import { Settings } from "./settings.js";
 import { About } from "./about.js";
+import { CollectionPage } from "./collection.js";
+import { QueuePage } from "./queue.js";
 import { Dialogs } from "./dialogs.js";
 import { ContextMenu, onWindowKey } from "./actions.js";
 
 function Main() {
   const route = useStore(ui, (s) => s.route);
-  if (route === "settings") return html`<${Settings} />`;
+  if (route === "settings" || route.startsWith("settings:")) return html`<${Settings} route=${route} />`;
+  if (route === "queue") return html`<${QueuePage} />`;
+  if (route === "starred" || route.startsWith("collection:")) return html`<${CollectionPage} key=${route} route=${route} />`;
   if (route === "about") return html`<${About} />`;
   if (route === "search") return html`<${SearchPage} />`;
   if (route.startsWith("model:")) return html`<${ModelPage} key=${route} route=${route} />`;

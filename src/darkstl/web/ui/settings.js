@@ -1,12 +1,15 @@
-// Settings: the game folders (rescan, change game, remove, add), the folders
-// searched for textures a model doesn't hold, the Oodle library Sekiro and
-// Elden Ring files need, where exports go, where Model Painter is, the previews,
-// and the look.
+// Settings, in three pages (#/settings, #/settings/library, #/settings/tools):
+// General (where exports go, the previews, the look, where Model Painter is),
+// Library (the game folders: rescan, change game, remove, add; the app's own
+// library of collected files; the folders searched for textures a model doesn't
+// hold) and Game tools (the Oodle library Sekiro, Elden Ring and Cyberpunk files
+// need, the Unreal games' keys and type mappings, unpacking the games' archives).
 import { html, useState, useEffect } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui, THEMES, SKINS, setTheme, setSkin } from "./state.js";
 import { api, info, plural, bytesText, toast, showInFolder, pickFolder, followJob, loadOverview } from "./api.js";
 import { CommandBar } from "./layout.js";
+import { routeHash } from "./context.js";
 import { Icon } from "./icons.js";
 import { GameBadge } from "./gameicons.js";
 import { rescanFolder, removeFolder, changeGame, unpackFolder, UNPACK_HINT } from "./games.js";
@@ -47,7 +50,7 @@ function PathRow({ id, value, placeholder, onSave, browse, saveLabel = "Save", b
   </form>`;
 }
 
-function Engine() {
+function Engine({ part }) {
   const [s, setS] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -79,9 +82,10 @@ function Engine() {
     try { return (await api("pick_file", { title: "Find the Oodle library (oo2core in the Sekiro or Elden Ring folder, bin\\x64\\oo2ext_7_win64.dll in Cyberpunk 2077's)", patterns: ["Oodle (oo2core*.dll;oo2ext*.dll;liboo2core*;kraken.dll)", "All files (*.*)"], start })).path; }
     catch (e) { toast(msg(e)); return null; }
   };
+  const shown = (p) => part === p;
   return html`
     ${error ? html`<p class="warn-note" role="alert" id="settings-error">${error}</p>` : null}
-    <section class="ls-section" id="settings-library">
+    ${shown("library") ? html`<section class="ls-section" id="settings-library">
       <h2>App library</h2>
       <p class="muted">Where "Collect into the app" keeps its copies: the files chosen models need (the model, its textures, its animations),
         laid out like the game's folder, one folder per game. Collected models stay listed when the game's folder is removed or the game uninstalled.</p>
@@ -94,8 +98,6 @@ function Engine() {
       ${moving ? html`<p class="muted" id="library-moving">${moving}</p>` : null}
       <div><button type="button" class="ghost" id="library-show" onClick=${() => showInFolder(s.library_dir)}>${Icon.folder(14)} Show in folder</button></div>
     </section>
-    <${GameArchives} />
-    <${UnrealGames} s=${s} busy=${busy} save=${save} />
     <section class="ls-section" id="settings-textures">
       <h2>Texture folders</h2>
       <p class="muted">Where to look for textures a model uses but doesn't hold itself: map pieces and some objects share textures kept elsewhere in the game.</p>
@@ -103,15 +105,17 @@ function Engine() {
         <button type="button" class="ghost" disabled=${busy} onClick=${() => save({ texture_dirs: dirs.filter((x) => x !== d) }, "Removed the texture folder.")}>Remove</button></li>`)}</ul>` : null}
       <${PathRow} id="texture-dir-add" placeholder="Add a folder: paste its path" saveLabel="Add" busy=${busy}
         browse=${(v) => pickFolder("Folder with textures", v || undefined)} onSave=${(p) => p && !dirs.includes(p) && save({ texture_dirs: [...dirs, p] }, "Added the texture folder. Models open with it from now on.")} />
-    </section>
-    <section class="ls-section" id="settings-oodle">
+    </section>` : null}
+    ${shown("tools") ? html`<section class="ls-section" id="settings-oodle">
       <h2>Oodle</h2>
       <p class="muted">Sekiro, Elden Ring and Cyberpunk 2077 compress their files with Oodle. Dark STL uses the game's own copy of it (oo2core_6_win64.dll in the game's folder; bin\\x64\\oo2ext_7_win64.dll for Cyberpunk) and finds it by itself when a model comes from there.</p>
       <p id="oodle-status">${s.oodle_found ? html`${Icon.check(14)} Found: <span class="note-path">${s.oodle_found}</span>` : html`<span class="warn-text">Not found yet.</span> Dark Souls, Dark Souls II, Dark Souls III and Bloodborne don't need it.`}</p>
       <${PathRow} id="oodle-path" value=${s.oodle} placeholder="The DLL, or the game folder it's in" busy=${busy} browse=${pickFile}
         onSave=${(p) => save({ oodle: p }, p ? "Saved where Oodle is." : "Cleared.")} />
     </section>
-    <section class="ls-section" id="settings-exports">
+    <${UnrealGames} s=${s} busy=${busy} save=${save} />
+    <${GameArchives} />` : null}
+    ${shown("general") ? html`<section class="ls-section" id="settings-exports">
       <h2>Exports</h2>
       <p class="muted">Where exported models and saved textures go unless you choose another folder on the Export tab.</p>
       <${PathRow} id="export-dir" value=${s.export_dir} busy=${busy} browse=${(v) => pickFolder("Export to", v || undefined)} onSave=${(p) => save({ export_dir: p }, "Saved.")} />
@@ -132,10 +136,15 @@ function Engine() {
     <section class="ls-section" id="settings-previews">
       <h2>Previews</h2>
       <p class="muted">The pictures on the cards are drawn the first time each model comes into view, and kept in <span class="note-path">${s.previews}</span> until the model's folder is rescanned. To draw one model's again, use Redraw preview in its ⋯ menu; a game's, Redraw this game's previews in its menu.</p>
-      <div><button type="button" class="ghost" id="previews-clear" onClick=${async () => {
+      <label class="check-row" title="Characters are drawn standing in the first frame of an idle animation (named idle, wait or stand, or FromSoftware's standby), when they have one, instead of in their bind pose (arms out). Redraw previews draws those already drawn again.">
+        <input type="checkbox" id="posed-previews" checked=${!!s.posed_previews} disabled=${busy}
+          onChange=${async (e) => { await save({ posed_previews: e.target.checked }, e.target.checked ? "Characters' previews are drawn posed from now on." : "Characters' previews are drawn in their bind pose from now on."); forgetThumbs(); }} />
+        <span>Pose characters in their previews<small class="muted">In a resting frame of an idle animation, when they have one; otherwise as before. Drawn posed as each comes into view.</small></span></label>
+      <p class="muted">Hold the pointer over a card for a moment and its picture turns round the model.</p>
+      <div><button type="button" class="ghost" id="previews-clear" title="Forget every preview: each is drawn again as it comes into view" onClick=${async () => {
         try { const r = await api("thumbs_clear"); forgetThumbs(); toast(`Cleared ${plural(r.removed, "preview")}. They're drawn again as they come into view.`); } catch (e) { toast(msg(e)); }
       }}>Draw them again</button></div>
-    </section>`;
+    </section>` : null}`;
 }
 
 /** Borderlands 3, Wonderlands and Borderlands 4: the AES keys their packed files need, and the type mappings (.usmap)
@@ -201,12 +210,23 @@ function GameArchives() {
   </section>`;
 }
 
-export function Settings() {
+/** Settings' pages: [route, id, label, what's on it]. */
+const PAGES = [
+  ["settings", "general", "General", "Exports, previews, appearance, Model Painter"],
+  ["settings:library", "library", "Library", "Game folders, the app library, texture folders"],
+  ["settings:tools", "tools", "Game tools", "Oodle, Unreal games, game archives"],
+];
+
+export function Settings({ route = "settings" }) {
   const s = useStore(ui, (st) => ({ skin: st.skin, theme: st.theme }));
-  return html`<${CommandBar} id="settings-head" title="Settings" /><div class="pages"><div class="library-settings">
-    <${GameFolders} />
-    <${Engine} />
-    <section class="ls-section" id="settings-look">
+  const page = PAGES.find(([r]) => r === route) || PAGES[0];
+  const part = page[1];
+  return html`<${CommandBar} id="settings-head" title=${html`<h1 class="crumbs"><span class="crumbs-name">Settings</span></h1>`} count=${page[2]} /><div class="pages"><div class="library-settings">
+    <nav class="settings-nav seg" id="settings-nav" aria-label="Settings">${PAGES.map(([r, id, label, what]) => html`<a key=${id} href=${routeHash(r)} data-page=${id}
+      class=${`settings-tab${id === part ? " on" : ""}`} aria-current=${id === part ? "page" : null} title=${what}>${label}<small class="muted">${what}</small></a>`)}</nav>
+    ${part === "library" ? html`<${GameFolders} />` : null}
+    <${Engine} key=${part} part=${part} />
+    ${part === "general" ? html`<section class="ls-section" id="settings-look">
       <h2>Appearance</h2>
       <label class="field-block"><span>Skin</span>
         <select id="skin-select" class="compact" value=${s.skin} onChange=${(e) => setSkin(e.target.value)}>
@@ -222,6 +242,6 @@ export function Settings() {
       <h2>About</h2>
       <p>Dark STL ${info().version || ""}</p>
       <p><a href="#/about">What it does, and the projects it builds on</a></p>
-    </section>
+    </section>` : null}
   </div></div>`;
 }

@@ -42,10 +42,13 @@ from ..errors import FormatError
 from ..export import FORMATS, ExportOptions, export_mesh, write_palette_png
 from ..geometry.mesh import TriMesh
 from ..library import Library, Snapshot, detect_game, folder_relation, known_games
+from ..library_collections import Collections
 from ..library_index import LibraryIndex, clean_stats, longest, model_stats
 from ..model import CatalogEntry, MeshOptions, SourceModel, path_id
 from ..thumbnails import ThumbnailCache
 from . import painter
+from .bulk import QueueCommands
+from .organise import OrganiseCommands
 from .config import Config, config_dir, filelists_dir, models_dir
 from .meshpack import pack_mesh
 
@@ -112,6 +115,7 @@ class Job:
     started: float = field(default_factory=time.time)
     stoppable: bool = False
     stopping: bool = False
+    finished: threading.Event = field(default_factory=threading.Event, repr=False)  # set once it has ended
 
     def report(self, frac: float, message: str = "") -> None:
         self.check()
@@ -160,6 +164,8 @@ class Jobs:
             except Exception as exc:  # noqa: BLE001 - reported to the page
                 traceback.print_exc()
                 job.error, job.state = f"{type(exc).__name__}: {exc}", "failed"
+            finally:
+                job.finished.set()
 
         threading.Thread(target=run, name=f"job-{label}", daemon=True).start()
         return job
@@ -439,7 +445,7 @@ def mesh_stats(mesh: TriMesh) -> dict:
 
 # ------------------------------------------------------------------ service
 
-class Service:
+class Service(OrganiseCommands, QueueCommands):
     BYTES = {"model_mesh", "texture", "thumb", "texture_crop", "paint_texture", "texture_preview", "variation_thumb"}
     # opening a model and what its page shows first: library previews pause while these run
     FOREGROUND = {"model_open", "model_mesh", "model_stats", "model_animations", "texture", "texture_info",
@@ -488,6 +494,10 @@ class Service:
         self._stats_again = False
         self._stats_tried: set[str] = set()  # models the quick look couldn't read: not tried again this run
         self._index_dirty: dict[str, float] = {}  # games whose index has stats not written yet: since when
+        # the user's collections, tags and stars, for the whole library (see darkstl.library_collections)
+        self.marks = Collections((config.path.parent if config.path else config_dir()) / "library" / "collections.json")
+        self.library.mark = self._mark
+        self._queue_init()  # bulk actions, run one after another (see bulk.py)
         if config.oodle:
             self._use_oodle(config.oodle)
 
@@ -542,6 +552,7 @@ class Service:
                 "oodle_found": str(found) if found else None, "export_dir": str(self.config.export_folder),
                 "library_dir": str(lib), "library_files": files, "library_bytes": size,
                 "previews": str(self.thumbs.folder), "settings_file": str(self.config.path or ""),
+                "posed_previews": bool(self.config.posed_previews),
                 **self._painter_settings(), **self._unreal_settings()}
 
     def _painter_settings(self) -> dict:
@@ -634,6 +645,8 @@ class Service:
                 raise AppError(f"There is no program at {path}: choose Model Painter.exe where Model Painter is "
                                "installed.")
             self.config.model_painter = path
+        if "posed_previews" in args:  # characters' previews drawn again posed (or not) when next shown
+            self.config.posed_previews = bool(args["posed_previews"])
         self._set_unreal(args)
         self.config.save()
         return self.cmd_settings_get({})
@@ -1767,7 +1780,7 @@ class Service:
         return {"job": self._scan_job(label, run).id}
 
     SORTS = ("kind", "file", "name", "game", "size", "vertices", "triangles", "parts", "textures", "animated",
-             "collected")
+             "collected", "collection")
 
     def cmd_models_query(self, args: dict) -> dict:
         """The library's models, as a page lists them: of a game (``game``; every game without one), a kind
@@ -1779,12 +1792,22 @@ class Service:
         ``facets``, also how many models each game and kind has among those found."""
         games = [str(g) for g in args.get("games") or [] if g]
         kinds = [str(k) for k in args.get("kinds") or [] if k]
+        tags = [t.lower() for t in (str(x).strip() for x in args.get("tags") or []) if t]
         tri_min, tri_max = _number(args.get("tri_min")), _number(args.get("tri_max"))
-        flags = {k: _flag(args.get(k)) for k in ("animated", "textured", "collected")}
+        flags = {k: _flag(args.get(k)) for k in ("animated", "textured", "collected", "starred")}
+        missing = None
+        if args.get("collection"):  # a collection's models, in its order
+            members, missing = self._collection_items(str(args["collection"]))
+            words = str(args.get("q") or "").lower().split()
+            from ..library import _haystack
+
+            with self.lock:
+                items = [e for e in members if all(w in _haystack(e) for w in words)]
         with self.lock:
-            items = self.library.query(args.get("game") or None, args.get("category") or None,
-                                       args.get("group") if args.get("group") is not None else None,
-                                       str(args.get("q") or ""), bool(args.get("lod")))
+            if missing is None:
+                items = self.library.query(args.get("game") or None, args.get("category") or None,
+                                           args.get("group") if args.get("group") is not None else None,
+                                           str(args.get("q") or ""), bool(args.get("lod")))
             collected = self._collected_roots()
             stats = {e.id: self._entry_stats(e) for e in items}
             order = {g: i for i, g in enumerate(self.library.games())}
@@ -1792,6 +1815,8 @@ class Service:
             def keep(e: CatalogEntry) -> bool:
                 st = stats.get(e.id)
                 if flags["collected"] is not None and self._is_collected(e, collected) != flags["collected"]:
+                    return False
+                if flags["starred"] is not None and bool(e.__dict__.get("_starred")) != flags["starred"]:
                     return False
                 if flags["animated"] is not None and (st is None or "animated" not in st or st["animated"] != flags["animated"]):
                     return False
@@ -1804,25 +1829,46 @@ class Service:
                 return True
 
             items = [e for e in items if keep(e)]
+
+            def tagged(e: CatalogEntry) -> bool:
+                have = {t.lower() for t in e.__dict__.get("_tags") or ()}
+                return all(t in have for t in tags)
+
             facets = None
             if args.get("facets"):
                 by_game: dict[str, int] = {}
                 by_kind: dict[str, int] = {}
+                by_tag: dict[str, list] = {}
                 for e in items:
+                    if not tagged(e):
+                        continue
                     if not kinds or e.category in kinds:
                         by_game[e.game] = by_game.get(e.game, 0) + 1
                     if not games or e.game in games:
                         by_kind[e.category] = by_kind.get(e.category, 0) + 1
+                    if (not games or e.game in games) and (not kinds or e.category in kinds):
+                        for t in e.__dict__.get("_tags") or ():
+                            by_tag.setdefault(t.lower(), [t, 0])[1] += 1
                 facets = {"games": [{"name": g, "count": by_game[g]} for g in sorted(by_game, key=lambda g: order.get(g, 1e9))],
-                          "kinds": [{"name": k, "count": n} for k, n in sorted(by_kind.items(), key=lambda kv: (-kv[1], kv[0]))]}
-            items = [e for e in items if (not games or e.game in games) and (not kinds or e.category in kinds)]
+                          "kinds": [{"name": k, "count": n} for k, n in sorted(by_kind.items(), key=lambda kv: (-kv[1], kv[0]))],
+                          "tags": [{"name": t, "count": n} for t, n in sorted(by_tag.values(), key=lambda tn: (-tn[1], tn[0].lower()))]}
+            items = [e for e in items if (not games or e.game in games) and (not kinds or e.category in kinds) and tagged(e)]
             sort = str(args.get("sort") or "kind")
+            if missing is not None and sort == "kind":
+                sort = "collection"  # a collection keeps its own order
             items = self._sorted(items, sort if sort in self.SORTS else "kind", bool(args.get("desc")), stats, collected,
                                  order if args.get("by_game") else None)
             offset = max(int(args.get("offset") or 0), 0)
             limit = int(args.get("limit") or 500)
             page = [self._entry_json(e, collected) for e in items[offset:offset + limit]]
+        if args.get("related", True):
+            for row, e in zip(page, items[offset:offset + limit]):
+                n = len(self._related(e))
+                if n:
+                    row["related"] = n
         out = {"total": len(items), "items": page}
+        if missing is not None:
+            out["missing"] = missing
         if facets is not None:
             out["facets"] = facets
             out["unknown"] = sum(1 for e in items if stats.get(e.id) is None and e.config is None)
@@ -1831,8 +1877,10 @@ class Service:
     def _sorted(self, items: list[CatalogEntry], sort: str, desc: bool, stats: dict, collected: dict,
                 game_order: dict | None) -> list[CatalogEntry]:
         """``items`` in the order ``sort`` names (see cmd_models_query); models whose value isn't known last."""
-        if sort == "kind" and not desc and game_order is None:
-            return items  # the library's own order
+        if sort in ("kind", "collection") and not desc and game_order is None:
+            return items  # the library's own order (or the collection's)
+        if sort == "collection":
+            return list(reversed(items)) if desc else items
         def value(e: CatalogEntry):
             st = stats.get(e.id) or {}
             if sort == "file":
@@ -1921,7 +1969,12 @@ class Service:
                 except FormatError as exc:
                     raise AppError(f"{config.label} couldn't be put together: {exc}") from exc
             else:
-                model = open_model(path, variant, tuple(self.config.texture_dirs))
+                try:
+                    model = open_model(path, variant, tuple(self.config.texture_dirs))
+                except Exception as exc:  # noqa: BLE001 - kept for the game's Problems, then shown as it was
+                    if variant is None:
+                        self._note_problem(entry, error=_problem_text(exc))
+                    raise
                 if rel is not None:
                     key = overlay.model_key(rel, model.variant if model.variants else None)
                     model = overlay.apply(model, self._overlay(entry.game).textures(key), self._store_root(entry.game))
@@ -2010,6 +2063,8 @@ class Service:
         """The model's path in the game, which the overlay files it under: the same for the game's file, a
         collected copy and the package made from it."""
         if entry.importer == "package":
+            if entry.__dict__.get("_source_rel"):  # read from its index when it was scanned
+                return str(entry.__dict__["_source_rel"])
             try:
                 return str(package.read_index(entry.path).get("source") or "") or None
             except FormatError:
@@ -2102,6 +2157,7 @@ class Service:
         if st:
             out["stats"] = st
         out["collected"] = self._is_collected(e, collected)
+        out.update(self._entry_marks(e))
         return out
 
     def _index_rows(self, game: str) -> list[dict]:
@@ -2116,7 +2172,8 @@ class Service:
                 rows.append({"id": e.id, "label": e.label, "game_name": e.__dict__.get("_game_name") or None,
                              "file_label": original[2] if original else e.label, "kind": e.category, "group": e.group,
                              "file": e.path.name, "stem": e.stem, "lod": e.is_lod,
-                             "collected": self._is_collected(e, collected)})
+                             "collected": self._is_collected(e, collected),
+                             **{k: v for k, v in self._entry_marks(e).items()}})
         return rows
 
     def _write_index(self, game: str) -> None:
@@ -2135,8 +2192,13 @@ class Service:
         """Keep what was learnt of these models' size and counts (opened, or drawn for a preview)."""
         stats = dict(stats, **{"from": "model"})
         for e in entries:
-            if e.config is None and self.index.put(e.game, e.id, stats):
-                self._index_dirty.setdefault(e.game, time.monotonic())
+            if e.config is None:
+                known = self.index.stats(e.game, e.id) or {}
+                mine = dict(stats)
+                if known.get("anim_error") and "anim_error" not in mine:  # cleared once they're read
+                    mine["anim_error"] = known["anim_error"]
+                if self.index.put(e.game, e.id, mine):
+                    self._index_dirty.setdefault(e.game, time.monotonic())
 
     def _learnt_from_preview(self, path: Path, variant, model, mesh) -> None:
         if variant:
@@ -2630,7 +2692,15 @@ class Service:
             infos = anims.list()
             bones = len(anims.skeleton)
         except Exception as exc:  # noqa: BLE001 - a broken archive is reported, not fatal
+            if session.model.variant is None or not session.model.variants:
+                self._note_problem(getattr(session, "entry", None), anim_error=_problem_text(exc))
             raise AppError(f"The animations couldn't be read: {exc}") from exc
+        entry = getattr(session, "entry", None)
+        if entry is not None and entry.config is None and (self.index.stats(entry.game, entry.id) or {}).get("anim_error"):
+            known = dict(self.index.stats(entry.game, entry.id))
+            known.pop("anim_error", None)
+            self.index.put(entry.game, entry.id, known)  # read now: off the game's Problems
+            self._index_dirty.setdefault(entry.game, time.monotonic())
         return {"animations": [i.as_dict() for i in infos], "bones": bones, "note": getattr(anims, "note", None)}
 
     # ------------------------------------------------------------ bones, saved poses, attached models
@@ -2895,12 +2965,24 @@ class Service:
         path = entry.path if entry else self.opened.get(model_id)
         if path is None:
             return None
+        draw = str(args.get("cached") or "") not in ("1", "true")
+        posed = self._posed_preview(entry)
         try:
-            # cached=1: only a preview drawn already (b"" when it isn't), so the page can show those at once
-            return self.thumbs.get(path, None, tuple(self.config.texture_dirs),
-                                   draw=str(args.get("cached") or "") not in ("1", "true"))
-        except Exception:  # noqa: BLE001 - a model that can't be drawn just has no preview
+            # cached=1: only a preview drawn already (b"" when it isn't), so the page can show those at once.
+            # turn=1: the turntable strip (8 views round the model, side by side) shown while the card is hovered
+            if str(args.get("turn") or "") in ("1", "true"):
+                return self.thumbs.get_turn(path, None, tuple(self.config.texture_dirs), draw=draw, posed=posed)
+            return self.thumbs.get(path, None, tuple(self.config.texture_dirs), draw=draw, posed=posed)
+        except Exception as exc:  # noqa: BLE001 - a model that can't be drawn just has no preview
+            self._note_problem(entry, error=_problem_text(exc))  # (listed on the game's Problems)
             return None
+
+    def _posed_preview(self, entry) -> bool:
+        """Whether a model's preview is drawn posed: a character (as the game files it), with Settings › Previews'
+        "Pose characters" on. Only those with an idle-like animation are drawn posed (others as before)."""
+        from ..library import original_place
+
+        return bool(self.config.posed_previews and entry is not None and original_place(entry)[0] == "Characters")
 
     def cmd_thumbs_clear(self, args: dict) -> dict:
         return {"removed": self.thumbs.clear()}
@@ -2979,6 +3061,9 @@ class Service:
         s = args.get("settings") or {}
         settings = self._enhance_settings(s, options)
         only_mesh = args.get("step") == "mesh"
+        if session.entry is not None and s and not args.get("bulk"):  # for Enhance with the current settings
+            self.config.last_enhance = {**(self.config.last_enhance or {}), session.entry.game: dict(s)}
+            self.config.save()
         if only_mesh:  # what step 1 depends on alone, so step-2 settings don't make it again
             s = {**{k: s[k] for k in MESH_SETTINGS if k in s}, "step": "mesh"}
             settings = replace(settings, source=SOURCE_NONE)
@@ -3674,6 +3759,12 @@ class Service:
             return {"path": str(folder), "files": paths, "bytes": total, **out}
 
         return {"job": self.jobs.start(f"Exporting {len(pieces)} pieces of {base}", run, stoppable=True).id}
+
+
+def _problem_text(exc: BaseException) -> str:
+    """What went wrong, in one line, for the game's Problems list."""
+    text = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+    return (text if isinstance(exc, (AppError, FormatError, OSError)) else f"{type(exc).__name__}: {text}")[:300]
 
 
 def _collection_json(path: Path, data: dict) -> dict:

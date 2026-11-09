@@ -16,10 +16,10 @@ import numpy as np
 
 from ...collect import RelatedFile
 from ...errors import FormatError
-from ...model import BuildOption, CatalogEntry, Material, MeshOptions, Part, Rig, SourceModel, Texture, frame_matrix
+from ...model import LOD_SUFFIX, BuildOption, CatalogEntry, Material, MeshOptions, Part, Rig, SourceModel, Texture, frame_matrix
 from ...textures import dds
 from .. import loose
-from ..base import Importer, ScanProgress
+from ..base import Importer, ScanProgress, index_entries, made_by
 from . import catalog, files, materials, names, texindex
 from . import games as profiles
 from .formats import binder, flver, tpf
@@ -50,6 +50,22 @@ def _material(info: materials.MaterialInfo) -> Material:
     return Material(info.name, info.albedo, info.normal, info.height, info.normal_scale, info.guessed, details,
                     normal_green="directx", specular=info.specular, detail_normal=info.detail_normal,
                     detail_scale=info.detail_scale)
+
+
+def _missing_textures(infos: list[materials.MaterialInfo]) -> list[str]:
+    """The colour, normal and height maps the materials name that weren't found (the engine's own placeholder
+    textures, ``SYSTEX_*`` and dummies, aren't models' textures and don't count)."""
+    out = []
+    for info in infos:
+        for slot in info.slots:
+            name = Path(_basename(slot.path)).stem if slot.path else ""
+            if (slot.texture_name or not name or slot.role not in (materials.ROLE_ALBEDO, materials.ROLE_NORMAL,
+                                                                    materials.ROLE_HEIGHT)
+                    or name.lower().startswith("systex") or "dummy" in name.lower()):
+                continue
+            if name.lower() not in (n.lower() for n in out):
+                out.append(name)
+    return out
 
 
 def flver_summary(f: flver.Flver) -> list[str]:
@@ -140,6 +156,23 @@ class FromSoftwareImporter(Importer):
         table = names.cached_table(Path(folder), game, self.cache / "names" if self.cache else None, force=fresh)
         return names.entry_names(Path(folder), entries, table) if len(table) else {}
 
+    def related(self, entry: CatalogEntry, entries: list[CatalogEntry]) -> list[tuple[str, CatalogEntry]]:
+        """The rest of an armour set (the same id across head, body, arms and legs), a weapon's sheath or variant
+        files (``_1``) and a character's or object's, and the low-detail copy (``_l``)."""
+        mine = catalog.family(entry.stem)
+        if mine is None:
+            return []
+        index = index_entries(entries, self.key, lambda e: (catalog.family(e.stem) or (None,))[0] if made_by(e, self.key) else None)
+        base = LOD_SUFFIX.sub("", entry.stem.lower())
+        out = []
+        for e in index.get(mine[0], []):
+            if e is entry or e.stem.lower() == entry.stem.lower():
+                continue
+            rel = catalog.relation(mine, catalog.family(e.stem), LOD_SUFFIX.sub("", e.stem.lower()) == base)
+            if rel:
+                out.append((rel, e))
+        return out
+
     def stats(self, path: Path) -> dict | None:
         return files.model_stats(Path(path))
 
@@ -209,6 +242,7 @@ class FromSoftwareImporter(Importer):
                                  "holds them. Turn off if parts end up out of place.")],
             info=flver_summary(f), notes=notes, animations=animations,
             rig=_rig(f, animations, asset.name) if f.bones else None,
+            missing_textures=_missing_textures(infos),
         )
 
     def describe(self, path: Path) -> list[str] | None:

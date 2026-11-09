@@ -12,6 +12,7 @@ import { NavHead, ThemeButton, useMedia, useNavFolded } from "./chrome.js";
 import { GameBadge, CategoryIcon } from "./gameicons.js";
 import { openMenu } from "./actions.js";
 import { gameMenu } from "./games.js";
+import { CollectionsNav, loadCollections, watchQueue } from "./organise.js";
 
 const NARROW = "(max-width: 900px)";
 
@@ -118,7 +119,8 @@ function NavSearch({ current }) {
 }
 
 export function Sidebar() {
-  const s = useStore(ui, (st) => ({ route: st.route, navOpen: st.navOpen, overview: st.overview, open: st.open, modelPlace: st.modelPlace }));
+  const s = useStore(ui, (st) => ({ route: st.route, navOpen: st.navOpen, overview: st.overview, open: st.open, modelPlace: st.modelPlace, queued: st.queue?.active || 0 }));
+  useEffect(() => { loadCollections(); watchQueue(); }, []);
   const narrow = useMedia(NARROW);
   const { folded } = useNavFolded();
   const games = s.overview?.games || [];
@@ -130,6 +132,7 @@ export function Sidebar() {
       <${NavSearch} current=${s.route} />
       <ul class="nav-list">
         <${NavLink} route="home" label="Home" icon="home" current=${s.route} />
+        <${NavLink} route="queue" label="Queue" icon="queue" count=${s.queued || null} current=${s.route} id="nav-queue" />
       </ul>
       <p class="nav-head">Games</p>
       ${games.length ? html`<ul class="nav-list" id="game-list">${games.map((g) => {
@@ -142,8 +145,9 @@ export function Sidebar() {
           ${unfolded ? html`<${CategoryRows} game=${g} current=${s.route} open=${s.open} depth=${1} />` : null}`;
       })}</ul>` : html`<p class="muted nav-note">${s.overview?.scanning ? "Reading…" : "None yet."}</p>`}
       <button type="button" class="ghost nav-add" id="add-folder" onClick=${() => ui.set({ dialog: { type: "add-folder" }, navOpen: false })}>${Icon.plus(14)} Add game folder…</button>
+      <${CollectionsNav} current=${s.route} />
       <ul class="nav-list nav-foot">
-        <${NavLink} route="settings" label="Settings" icon="cog" current=${s.route} />
+        <${NavLink} route="settings" label="Settings" icon="cog" current=${s.route} on=${s.route === "settings" || s.route.startsWith("settings:")} />
         <${NavLink} route="about" label="About" icon="info" current=${s.route} />
         <${ThemeButton} />
       </ul>
