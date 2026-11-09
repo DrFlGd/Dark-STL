@@ -233,6 +233,29 @@ a.chip-btn.on { background: var(--sel); }
 #cut-explode { width: 100%; }
 #finish-stats li > span:last-child { flex: none; text-align: right; }
 
+/* Clean tab: the steps taken, parts, hidden faces, thin sheets, faces picked, repairs and the transform */
+#clean-tab p.small { font-size: 12.5px; line-height: 1.4; margin: 0; }
+.clean-steps li { padding: 4px 0; }
+.clean-steps li > span:first-child { display: grid; }
+.clean-steps small, .sheet-list small { font-size: 11.5px; }
+.clean-step-name { font-weight: 600; }
+.sheet-list { max-height: 260px; overflow: auto; }
+.sheet-list li { padding: 2px 4px; border-radius: var(--radius-s); }
+.sheet-list li.hover { background: color-mix(in srgb, #2bb3c0 18%, transparent); box-shadow: inset 3px 0 0 #2bb3c0; }
+.sheet-list .check-row { flex: 1; min-width: 0; }
+.clean-xyz { gap: 6px; }
+.clean-xyz > .field-block { flex: 1 1 0; min-width: 0; }
+.clean-xyz > .field-block > span { font-size: 12.5px; }
+.clean-xyz .field-row input { min-width: 0; width: 100%; }
+.clean-turn, #clean-mirror { flex-wrap: wrap; gap: 6px; }
+#clean-mirror button[aria-pressed="true"], #clean-pick[aria-pressed="true"] { color: var(--star); border-color: var(--star); }
+.clean-repair-row { display: flex; gap: 8px; align-items: flex-end; }
+.clean-repair-row > .field-block { flex: 1 1 auto; min-width: 0; }
+.clean-repair-row > button { flex: none; margin-bottom: 2px; }
+.part-list-read li { padding: 2px 0; }
+.part-list-read .part-out { flex: none; font-size: 12px; }
+.game-mm { font-size: 11.5px; }
+
 /* Configure tab: a part per slot, presets, and the configuration's editor */
 .config-slot { display: grid; gap: 4px; margin-bottom: 10px; }
 .config-slot select, #preset-select { width: 100%; }

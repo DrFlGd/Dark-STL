@@ -3,11 +3,13 @@ open a model in the 3D view, even it out, upscale its textures, displace and exp
 installed (pip install playwright && python -m playwright install chromium)."""
 
 import os
+import struct
 import time
 from pathlib import Path
 from urllib.parse import quote
 
 
+import numpy as np
 import pytest
 
 from darkstl.app.config import Config
@@ -567,6 +569,143 @@ def test_the_thickness_view_shows_what_is_too_thin_to_print(page, app, tmp_path)
     assert page.evaluate("window.__errors") == []
 
 
+MODEL_POINT = """([x, y, z]) => {
+  const v = window.__viewer;
+  const p = v.offset.clone().set(x + v.offset.x, y + v.offset.y, z + v.offset.z).project(v.camera);
+  const r = v.canvas.getBoundingClientRect();
+  return [(p.x + 1) / 2 * r.width, (1 - p.y) / 2 * r.height];
+}"""
+
+
+def _count(page, selector):
+    return int("".join(ch for ch in page.text_content(selector) if ch.isdigit()) or 0)
+
+
+def test_clean_a_model_up_step_by_step(page, app, tmp_path):
+    """The Clean tab: a step added shows what it did and can be taken away; thin sheets are listed, highlighted in
+    the 3D view as they're pointed at and ticked, and removed; a click picks faces up to the creases (Shift adds,
+    Alt takes away) and removes them; a print height scales the model. The steps are kept for the model, and the
+    enhanced model and the exported file are made from the cleaned one."""
+    from test_clean import figure
+
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    path, counts = figure(tmp_path)
+    opened = app.service.call("model_open", {"path": str(path)})
+    total = opened["stats"]["triangles"]
+    page.goto(f"{app.url}#/model/{quote(opened['id'], safe='')}")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    triangles = lambda: _count(page, "#stage-tris")  # noqa: E731
+    assert triangles() == total
+    # the Model tab lists the parts and sends you to Clean to change them
+    assert page.locator("#parts .part-row").count() == 4 and page.locator("#parts input").count() == 0
+    page.click("#parts-to-clean")
+    page.wait_for_selector('#inspector[data-tab="clean"] #clean-tab')
+    page.wait_for_selector("#clean-none")
+    assert page.locator("#clean-parts .part-row input").count() == 4
+
+    # a step: the lining, hidden inside the body, removed; its row says what it did; taken away, it's back
+    page.click("#clean-hidden-parts")
+    page.wait_for_selector('#clean-steps li[data-kind="hidden_parts"] .clean-step-text:text("removed 1 part")', timeout=60000)
+    assert f"{counts['lining']} faces" in page.text_content("#clean-steps")
+    page.wait_for_function(f"document.querySelector('#stage-tris').textContent.replace(/\\D/g, '') === '{total - counts['lining']}'", timeout=30000)
+    page.click('#clean-steps li[data-step="0"] button')
+    page.wait_for_selector("#clean-none")
+    page.wait_for_function(f"document.querySelector('#stage-tris').textContent.replace(/\\D/g, '') === '{total}'", timeout=30000)
+
+    # thin sheets: the cape and the single-layer cuirass are listed; pointed at and ticked, they're drawn over the model
+    page.click("#clean-find-sheets")
+    page.wait_for_selector("#clean-sheet-list li", timeout=60000)
+    assert page.locator("#clean-sheet-list li").count() == 2
+    cape = page.locator(f"#clean-sheet-list li:has-text('{counts['cape']} faces')")
+    assert cape.get_attribute("data-sheet-kind") == "open"
+    cape.hover()
+    page.wait_for_function(f"window.__viewer.marks.get('hover')?.count === {counts['cape']}")
+    cape.locator("input").check()
+    page.wait_for_function(f"window.__viewer.marks.get('sheets')?.count === {counts['cape']}")
+    if shots:
+        page.screenshot(path=os.path.join(shots, "clean-sheets.png"))
+    page.click("#clean-remove-sheets")
+    page.wait_for_selector('#clean-steps li[data-kind="sheets"] .clean-step-text:text("removed 1 sheet")', timeout=30000)
+    assert f"{counts['cape']} faces" in page.text_content("#clean-steps")
+    page.wait_for_function(f"document.querySelector('#stage-tris').textContent.replace(/\\D/g, '') === '{total - counts['cape']}'", timeout=30000)
+    assert page.locator("#clean-sheet-list").count() == 0
+    page.wait_for_function("!window.__viewer.marks.get('sheets')")
+
+    # pick: a click on the body's side picks that side, up to its edges; Shift+click adds nothing new; Alt+click takes it away
+    page.click("#clean-pick")
+    page.wait_for_selector('#clean-pick[aria-pressed="true"]')
+    page.wait_for_timeout(400)  # the view settles (it eases to a stop)
+    at = page.evaluate(MODEL_POINT, [0, 0, 400])
+    canvas = "#stage-canvas canvas"
+    page.click(canvas, position={"x": at[0], "y": at[1]})
+    page.wait_for_selector("#clean-selection-count:text-matches('[0-9,]+ faces? picked')", timeout=30000)
+    picked = _count(page, "#clean-selection-count")
+    assert 0 < picked < total
+    page.wait_for_function(f"window.__viewer.marks.get('selection')?.count === {picked}")
+    page.click(canvas, position={"x": at[0], "y": at[1]}, modifiers=["Shift"])
+    page.wait_for_timeout(300)
+    assert _count(page, "#clean-selection-count") == picked
+    page.click(canvas, position={"x": at[0], "y": at[1]}, modifiers=["Alt"])
+    page.wait_for_selector("#clean-selection-count:text('Nothing picked')")
+    page.click(canvas, position={"x": at[0], "y": at[1]})
+    page.wait_for_selector(f"#clean-selection-count:text('{picked:,} faces picked')")
+    if shots:
+        page.screenshot(path=os.path.join(shots, "clean-pick.png"))
+    page.click("#clean-remove-selection")
+    page.wait_for_selector('#clean-steps li[data-kind="selection"] .clean-step-text:text("removed")', timeout=30000)
+    assert f"removed {picked:,} faces" in page.text_content('#clean-steps li[data-kind="selection"]')
+    left = total - counts["cape"] - picked
+    page.wait_for_function(f"document.querySelector('#stage-tris').textContent.replace(/\\D/g, '') === '{left}'", timeout=30000)
+    page.click("#clean-pick")  # clicks turn the view again
+
+    # a print height: 150 mm tall, the game's size beside it
+    page.fill("#clean-height", "150")
+    page.press("#clean-height", "Tab")
+    page.wait_for_selector('#clean-steps li[data-op="transform"] .clean-step-text:text("150 mm tall")', timeout=30000)
+    page.wait_for_selector("#stage-game:text('game 1800 mm')", timeout=30000)
+    page.wait_for_function("document.querySelector('#stage-size .stage-dims').textContent.endsWith('× 150 mm')", timeout=30000)
+    assert page.locator("#clean-steps li").count() == 3
+    if shots:
+        page.screenshot(path=os.path.join(shots, "clean-tab.png"))
+
+    # kept for the model: the page opened again has the same steps
+    for _ in range(100):
+        plans = (app.service.call("prefs_get", {}).get("ds-ui") or {}).get("cleanPlans") or {}
+        if len(plans.get(opened["id"], [])) == 3:
+            break
+        page.wait_for_timeout(50)
+    page.reload()
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    if not page.locator("#clean-tab").count():
+        page.click("#rail-clean")
+    page.wait_for_selector('#clean-steps li[data-op="transform"] .clean-step-text:text("150 mm tall")', timeout=30000)
+    assert page.locator("#clean-steps li").count() == 3
+    page.wait_for_function(f"document.querySelector('#stage-tris').textContent.replace(/\\D/g, '') === '{left}'", timeout=30000)
+
+    # the enhanced model is made from the cleaned one, and so is the file exported
+    page.click('#clean-next [data-next="mesh"]')
+    page.fill("#target-vertices", "12000")
+    page.press("#target-vertices", "Tab")
+    page.click("#mesh-run")
+    page.wait_for_selector("#mesh-next", timeout=120000)
+    page.wait_for_selector('#show-which [data-value="enhanced"][aria-pressed="true"]')
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    assert page.text_content("#stage-size .stage-dims").endswith("× 150 mm")
+    page.click("#rail-export")
+    page.wait_for_selector('#export-working[data-which="enhanced"]')
+    page.wait_for_selector("#export-scaled")
+    page.fill("#export-folder", str(tmp_path / "out"))
+    page.press("#export-folder", "Tab")
+    page.click("#export-run")
+    page.wait_for_selector("#export-done", timeout=60000)
+    data = (tmp_path / "out" / "figure_enhanced.stl").read_bytes()
+    n = struct.unpack_from("<I", data, 80)[0]
+    tri = np.frombuffer(data, dtype=np.dtype([("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")]), count=n, offset=84)["v"].reshape(-1, 3)
+    size = tri.max(0) - tri.min(0)
+    assert abs(size[2] - 150) < 0.5 and tri[:, 2].min() > -0.01  # 150 mm tall, on the floor
+    assert size[1] < 30  # 25 mm across the cuirass: the cape behind the body (37.5 mm with it) isn't there
+
+
 def test_the_model_page_reads_in_the_order_the_work_happens(browser, app, weapon_dir, tmp_path):  # noqa: F811
     """On a 1280 x 720 window: the rail's tabs in their groups, one place to choose the model worked on,
     explanations folded once a tab's job has run, the Next strip, toasts clear of the footer, the game's tree folded
@@ -589,7 +728,7 @@ def test_the_model_page_reads_in_the_order_the_work_happens(browser, app, weapon
     groups = page.eval_on_selector_all("#inspector .rail-group", "els => els.map((e) => e.dataset.group)")
     assert groups == ["Model", "Edit", "Export"]
     tabs = page.eval_on_selector_all("#inspector .rail-tab", "els => els.map((e) => [e.dataset.tab, e.dataset.group])")
-    assert tabs == [["model", "Model"], ["textures", "Model"], ["mesh", "Edit"], ["displace", "Edit"],
+    assert tabs == [["model", "Model"], ["textures", "Model"], ["clean", "Edit"], ["mesh", "Edit"], ["displace", "Edit"],
                     ["finish", "Edit"], ["cut", "Edit"], ["export", "Export"]]
     assert page.eval_on_selector("#rail-mesh .rail-name", "e => getComputedStyle(e).writingMode") == "horizontal-tb"
     assert page.eval_on_selector("#inspector .rail", "e => e.getBoundingClientRect().width") == 64
@@ -1354,9 +1493,11 @@ def test_the_list_view_sorts_by_its_columns(page, app, tmp_path):
     page.goto(app.url + "#/browse/statues/Models")
     page.wait_for_selector('#list-head [data-sort="size"][aria-pressed="true"]')
     # and in the preferences, so it's there when the app is opened again (saved a moment after the click)
+    # (an earlier sort may be saved already: wait for this one, the page saves 250 ms after the last change)
+    want = {"browse:statues/Models": {"by": "size", "desc": False}}
     end = time.time() + 10
-    while time.time() < end and not app.service.call("prefs_get", {}).get("ds-ui", {}).get("sorts"):
+    while time.time() < end and app.service.call("prefs_get", {}).get("ds-ui", {}).get("sorts") != want:
         time.sleep(0.05)
-    assert app.service.call("prefs_get", {})["ds-ui"]["sorts"] == {"browse:statues/Models": {"by": "size", "desc": False}}
+    assert app.service.call("prefs_get", {})["ds-ui"]["sorts"] == want
     page.reload()
     page.wait_for_selector('#list-head [data-sort="size"][aria-pressed="true"]')

@@ -103,6 +103,7 @@ class MeshOptions:
     parts: set[int] | None = None  # part indices to include (None = all)
     flags: dict[str, bool] = field(default_factory=dict)  # BuildOption values by key
     pose: tuple[str, int] | None = None  # (animation name, frame) to pose the model in; None = bind pose
+    clean: Any = None  # a clean.CleanList: the Clean tab's operations, done on the model as built and posed
 
 
 @dataclass
@@ -155,6 +156,17 @@ class SourceModel:
     rig: Rig | None = field(default=None, repr=False)  # the skeleton animations pose, for model packages
 
     def build_mesh(self, options: MeshOptions | None = None) -> TriMesh:
+        """The model's mesh with ``options``: its parts, switches and pose, then its clean-up (Clean tab), last."""
+        options = options or MeshOptions()
+        mesh = self.build_raw(options)
+        if options.clean:
+            from .clean import apply
+
+            mesh = apply(mesh, options.clean).mesh
+        return mesh
+
+    def build_raw(self, options: MeshOptions | None = None) -> TriMesh:
+        """The model's mesh as the importer builds it with ``options`` (parts, switches, pose), before any clean-up."""
         options = options or MeshOptions()
         flags = {o.key: o.default for o in self.options}
         flags.update(options.flags)
