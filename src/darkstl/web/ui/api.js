@@ -50,11 +50,19 @@ export async function stopJob(id) {
   try { await api("job_stop", { id }); } catch (e) { toast(String(e.message || e)); }
 }
 
-/** Show a short message at the foot of the window. `opts`: how long (ms), or { ms, action: { label, run } }. */
+/** Show a short message at the foot of the window; on a model's page, at the top right of its 3D view, so it never
+ *  covers the buttons under the view. `opts`: how long (ms), or { ms, action: { label, run } }. */
 export function toast(text, opts = {}) {
   const { ms = 3500, action = null } = typeof opts === "number" ? { ms: opts } : opts;
   const el = document.getElementById("toast");
   if (!el) return;
+  const stage = document.getElementById("stage-canvas")?.getBoundingClientRect();
+  el.classList.toggle("on-stage", !!stage?.width);
+  if (stage?.width) {
+    el.style.setProperty("--toast-top", `${Math.round(stage.top + 12)}px`);
+    el.style.setProperty("--toast-right", `${Math.round(Math.max(12, innerWidth - stage.right + 12))}px`);
+    el.style.setProperty("--toast-width", `${Math.round(Math.max(220, stage.width - 24))}px`);
+  }
   const span = document.createElement("span");
   span.textContent = text;
   el.replaceChildren(span);

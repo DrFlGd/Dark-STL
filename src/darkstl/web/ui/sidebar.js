@@ -52,11 +52,17 @@ function useOpenTo(place) {
   }, [key, place?.group]);
 }
 
-/** The game's categories beside the menu: resizable, folds to a strip with its name. */
+/** The game's categories beside the menu: resizable, folds to a strip with its name. Beside a model in a window
+ *  under 1440 px it starts folded, to give the 3D view room, and opens again on the way back; opening or folding it
+ *  there by hand is kept for model pages (catPanelModel), apart from the other pages' choice (catPanel). */
 function GamePanel({ game, place, route, open }) {
-  const prefs = useStore(ui, (s) => [s.catPanel, s.catPanelWidth]);
+  const prefs = useStore(ui, (s) => [s.catPanel, s.catPanelWidth, s.catPanelModel]);
   const medium = useMedia("(max-width: 1250px)");
-  const folded = prefs[0] === "folded" || (prefs[0] == null && medium);
+  const cramped = useMedia("(max-width: 1439px)");
+  const onModel = route.startsWith("model:");
+  const usual = prefs[0] === "folded" || (prefs[0] == null && medium);
+  const folded = onModel ? (prefs[2] ? prefs[2] === "folded" : usual || cramped) : usual;
+  const setFolded = (v) => setPref(onModel ? { catPanelModel: v ? "folded" : "open" } : { catPanel: v ? "folded" : "open" });
   const width = Math.max(180, Math.min(420, prefs[1] || 230));
   const stopResize = useRef(null);
   useEffect(() => () => stopResize.current?.(), []);
@@ -73,7 +79,7 @@ function GamePanel({ game, place, route, open }) {
   };
   if (folded) {
     return html`<aside class="category-panel folded" id="category-panel" aria-label=${`${game.name}'s categories`}>
-      <button type="button" class="ghost panel-strip" id="category-panel-open" title="Show categories" aria-label="Show categories" onClick=${() => setPref({ catPanel: "open" })}>
+      <button type="button" class="ghost panel-strip" id="category-panel-open" title="Show categories" aria-label="Show categories" onClick=${() => setFolded(false)}>
         <span class="panel-strip-icon"><${GameBadge} name=${game.name} /></span><span class="panel-strip-name">${game.name}</span>${Icon.chevronsRight(13)}</button>
     </aside>`;
   }
@@ -82,7 +88,7 @@ function GamePanel({ game, place, route, open }) {
       <a class=${`cat-panel-title${route === top ? " active" : ""}`} href=${routeHash(top)} title=${game.name}
         onContextMenu=${(e) => openMenu(e, gameMenu(game))}><${GameBadge} name=${game.name} size=${17} /><span>${game.name}</span>
         <span class="nav-count">${game.count.toLocaleString()}</span></a>
-      <button type="button" class="ghost panel-fold" id="category-panel-close" title="Hide categories" aria-label="Hide categories" onClick=${() => setPref({ catPanel: "folded" })}>${Icon.chevronsLeft(14)}</button>
+      <button type="button" class="ghost panel-fold" id="category-panel-close" title="Hide categories" aria-label="Hide categories" onClick=${() => setFolded(true)}>${Icon.chevronsLeft(14)}</button>
     </header>
     <ul class="nav-list cat-panel-tree" id="category-tree">
       <${CategoryRows} game=${game} current=${route} open=${open} depth=${0} />
