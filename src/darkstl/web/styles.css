@@ -116,6 +116,8 @@ a { color: inherit; }
 .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 50; display: flex; gap: 12px; align-items: center;
   background: var(--ink); color: var(--white); padding: 10px 14px; border-radius: var(--radius-m); box-shadow: 0 8px 28px rgba(0,0,0,.3); font-size: 14px; max-width: calc(100vw - 32px); }
 .toast span { overflow-wrap: anywhere; }
+/* on a model's page: at the top right of the 3D view, clear of the buttons under it */
+.toast.on-stage { left: auto; bottom: auto; transform: none; top: var(--toast-top); right: var(--toast-right); max-width: min(460px, var(--toast-width)); }
 
 /* ---- buttons & inputs ------------------------------------------------- */
 button, .button {
@@ -1222,12 +1224,22 @@ button.tag-link { font-family: inherit; line-height: inherit; min-height: 0; }
 .media-archives .tree-file { padding-left: 38px; }
 .pane-resize { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; touch-action: none; z-index: 3; }
 .pane-resize:hover, .pane-resize:focus-visible { background: var(--focus); opacity: .4; }
-.rail { flex: none; width: 34px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 0; background: var(--panel); box-sizing: border-box; }
-.rail-tab { flex-direction: column; gap: 6px; padding: 8px 0; width: 28px; border: 1px solid transparent; border-radius: var(--radius-s); background: transparent; color: var(--graphite);
-  font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.rail { flex: none; width: 64px; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0 8px; background: var(--panel); box-sizing: border-box;
+  overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; }
+.rail-tab { flex: none; flex-direction: column; gap: 3px; padding: 7px 2px 6px; width: 58px; border: 1px solid transparent; border-radius: var(--radius-s); background: transparent; color: var(--graphite);
+  font-size: 11px; font-weight: 600; letter-spacing: 0; text-transform: none; line-height: 1.15; }
 .rail-tab:hover { color: var(--ink); background: var(--steel); }
 .rail-tab[aria-pressed="true"] { color: var(--ink); background: var(--sel); border-color: var(--steel-2); }
-.rail-name { writing-mode: vertical-rl; white-space: nowrap; }
+.rail-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* a group's name over its first tab, after a thin line (the model page's Model, Edit and Export) */
+.rail-group { flex: none; width: 100%; display: grid; justify-items: center; gap: 5px; padding: 2px 0 1px; }
+.rail-sep { display: block; width: 38px; height: 0; border-top: 1px solid var(--steel-2); margin-top: 5px; }
+.rail-group-name { font-size: 11.5px; font-weight: 700; font-variant-caps: all-small-caps; letter-spacing: .09em; color: var(--graphite); opacity: .85; line-height: 1; }
+/* no room beside the page: icons only, the lines kept */
+.rail-compact { width: 42px; }
+.rail-compact .rail-tab { width: 34px; padding: 8px 0; }
+.rail-compact .rail-name, .rail-compact .rail-group-name { display: none; }
+.rail-compact .rail-sep { width: 24px; margin: 3px 0; }
 .model-workspace > .inspector-side { height: 100%; }
 .browser > .inspector-side, .sw-main > .inspector-side, .dupes-layout > .inspector-side { align-self: stretch; }
 .panel-strip .panel-strip-icon { display: flex; color: var(--graphite); }

@@ -27,6 +27,8 @@ export const ui = createStore({
   inspectorWidth: 360,
   catPanel: null,          // the game's category panel beside the menu: open | folded
   catPanelWidth: 230,
+  catPanelModel: null,     // the same beside a model, when it was opened or folded there by hand (else folded under 1440 px)
+  tipsOpen: null,          // per model page tab: its explanation open (true) or folded (false); unset: open until its job has run
   enhance: null,           // the Mesh, Textures and Displace tabs' settings, kept between models
   exportOpts: null,        // the Export tab's settings
   paintPreview: null,      // { sid, settings }: show the model in the Export tab's paint colours (painted 3MF)
@@ -44,7 +46,7 @@ export const ui = createStore({
 let prefs = null;
 const KEY = "ds-ui";
 const KEPT = ["skin", "theme", "layout", "sort", "lod", "cardSize", "open", "navCollapsed", "inspector", "inspectorTab",
-  "inspectorWidth", "catPanel", "catPanelWidth", "enhance", "exportOpts", "view", "cutOpts", "cutPlans", "configChoices",
+  "inspectorWidth", "catPanel", "catPanelWidth", "catPanelModel", "tipsOpen", "enhance", "exportOpts", "view", "cutOpts", "cutPlans", "configChoices",
   "paintOpts", "paintSources"];
 
 /** Load saved preferences (call once the platform store exists). */

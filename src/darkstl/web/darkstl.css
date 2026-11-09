@@ -120,7 +120,43 @@ a.chip-btn.on { background: var(--sel); }
 .export-done { display: grid; gap: 6px; padding: 10px 12px; border-radius: var(--radius-s); background: var(--panel); border: 1px solid var(--steel-2); }
 .export-done p { margin: 0; overflow-wrap: anywhere; }
 .export-note { font-size: 12.5px; margin: 0; }
-#export-which { align-self: start; }
+
+/* a tab's explanation: its first sentence always there, the rest folded once the tab's job has run (ⓘ opens it again) */
+.tab-pad .insp-section h3:has(.tip-btn) { display: flex; align-items: center; gap: 6px; }
+.tip-btn { padding: 2px; border: 0; border-radius: 50%; color: var(--graphite); background: transparent; line-height: 0; }
+.tip-btn:hover, .tip-btn[aria-pressed="true"] { color: var(--ink); background: var(--steel); }
+.tip { font-size: 13.5px; color: var(--graphite); min-width: 0; }  /* (its one closed line never widens the tab) */
+.tip > summary { display: block; cursor: pointer; list-style: none; line-height: 1.45; }
+.tip > summary::-webkit-details-marker { display: none; }
+.tip > summary::before { content: "▸"; display: inline-block; width: 1.1em; color: var(--graphite); transition: transform .12s; }
+.tip[open] > summary::before { transform: rotate(90deg); }
+.tip:not([open]) > summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tip > p { margin: 4px 0 0 1.1em; }
+
+/* what to do next, under a tab's result */
+.next-step { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding-top: 8px; border-top: 1px dashed var(--steel-2); }
+.next-label { font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--graphite); margin-right: 2px; }
+.export-done .next-step { padding-top: 6px; }
+.painter-hint { display: block; font-size: 12.5px; line-height: 1.4; }
+
+/* "Working on: Enhanced · change": the model a tab works on is the one the 3D view shows */
+.working-on { margin: 0; font-size: 13.5px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 4px; }
+.working-on small { flex-basis: 100%; font-size: 12.5px; line-height: 1.4; margin-top: 2px; }
+.working-change { color: var(--tool); font-weight: 600; }
+.from-pick .seg { align-self: start; justify-self: start; }
+#show-which.flash { animation: picker-flash 1.3s ease-out; }
+@keyframes picker-flash { 0%, 40% { box-shadow: 0 0 0 3px var(--tool); } 100% { box-shadow: 0 0 0 3px transparent; } }
+
+/* the Displace tab's per-material rows: their columns named once */
+.mat-row.mat-head { font-size: 12px; font-weight: 600; color: var(--graphite); }
+.mat-row.mat-head > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#export-painter > p { margin: 0; font-size: 13.5px; }
+
+/* the footer under the 3D view in a window under 1440 px: one row, the size shortened and the view settings in a menu */
+.stage-bar.one-row { flex-wrap: nowrap; }
+.stage-bar.one-row .stage-what { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
+.stage-bar.one-row .stage-tools { flex: none; flex-wrap: nowrap; }
+#view-menu { padding: 5px 9px; font-size: 12.5px; white-space: nowrap; }
 
 /* Settings */
 .folder-list { gap: 0; }
