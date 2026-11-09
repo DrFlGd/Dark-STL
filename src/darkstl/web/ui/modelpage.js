@@ -1,7 +1,8 @@
 // A model's own page (model:<id>[@<variant>]): the 3D view with its textures,
 // and the inspector's Model (parts, options, size, file), Textures (every texture,
 // and the normal maps cleaned up and upsampled for displacement, before and after),
-// Pose (an animation and a frame to hold the model in), Mesh (step 1: the vertices
+// Pose (an animation and a frame to hold the model in, bones turned on top, saved poses, models
+// attached to a bone), Mesh (step 1: the vertices
 // evened out to a count), Displace (step 2: the vertices pushed by the textures'
 // detail), Finish (post-processing for printing: the whole model made watertight, the
 // surfaces inside it removed), Cut (planes placed in the 3D view split it into pieces with
@@ -18,7 +19,7 @@ import { api, binUrl, info, plural, bytesText, followJob, stopJob, toast, showIn
 import { CommandBar } from "./layout.js";
 import { openMenu } from "./actions.js";
 import { Inspector, useWidth } from "./inspector.js";
-import { Viewer, PIECE_COLORS } from "../viewer.js";
+import { Viewer, PIECE_COLORS, addTurn } from "../viewer.js";
 import { ConfigureTab } from "./configure.js";
 
 const ENHANCE = { target_vertices: 1_000_000, method: "subdivide", smooth: true, source: "normal", strength: 1, height_range_mm: 1,
@@ -91,16 +92,26 @@ const variantName = (v) => (v || "").replace(/\.(flver|flv)$/i, "");
 /** Where new vertices will be on average, for a mesh of `area` m² with `n` vertices: equilateral triangles, about 2 per vertex. */
 const spacingMm = (area, n) => (area > 0 && n > 0 ? Math.sqrt((2 * area) / (Math.sqrt(3) * n)) * 1000 : 0);
 
-/** The parts, options and pose as the mesh commands take them, JSON and in a URL. */
-function meshArgs(m, off, flags, pose) {
+/** The parts, options and pose (an animation's frame, the bones turned on top of it, where the attached models
+ *  sit) as the mesh commands take them, JSON and in a URL. */
+function meshArgs(m, off, flags, pose, bones = null, places = null) {
   const parts = off.size ? m.parts.map((_, i) => i).filter((i) => !off.has(i)) : null;
   const p = pose ? [pose.anim, pose.frame] : null;
+  const b = bones && Object.keys(bones).length ? sortedBones(bones) : null;
+  const a = places && Object.keys(places).length ? places : null;
   return {
-    json: { parts, flags, pose: p },
-    url: { parts: parts ? parts.join(",") : "all", flags: Object.entries(flags).map(([k, v]) => `${k}:${v ? 1 : 0}`).join(","), pose: p ? `${p[0]}@${p[1]}` : "" },
-    key: JSON.stringify([parts, flags, p]),
+    json: { parts, flags, pose: p, bones: b, attach: a },
+    url: { parts: parts ? parts.join(",") : "all", flags: Object.entries(flags).map(([k, v]) => `${k}:${v ? 1 : 0}`).join(","), pose: p ? `${p[0]}@${p[1]}` : "",
+      bones: b ? JSON.stringify(b) : "", attach: a ? JSON.stringify(a) : "" },
+    key: JSON.stringify([parts, flags, p, b, a]),
   };
 }
+/** Bone turns in name order, as the engine records them (so a key made of them is the same either way). */
+const sortedBones = (bones) => Object.fromEntries(Object.keys(bones).sort().map((k) => [k, bones[k].map(Number)]));
+/** Where an attached model sits, as the engine writes it (the same keys in the same order). */
+const placeOf = (p = {}) => ({ bone: p.bone || null, socket: p.socket || null, offset_mm: (p.offset_mm || [0, 0, 0]).map(Number),
+  rotate: (p.rotate || [0, 0, 0]).map(Number), scale: p.scale == null ? 1 : Number(p.scale) });
+const savedPlaces = (m) => Object.fromEntries((m.attachments || []).map((a) => [a.id, placeOf(a.place)]));
 /** A cut as kept: its normal made unit length and its point the model's centre moved onto the plane, so the
  *  plane drawn stays centred on the model however it is moved. `header`: the shown mesh's { min, max }. */
 function centred(normal, point, header) {
@@ -111,8 +122,15 @@ function centred(normal, point, header) {
   return { normal: n, point: c.map((x, i) => x + n[i] * s) };
 }
 
-/** The pose as part of a file name: a000_003000_f12. */
-const poseSuffix = (pose) => (pose ? `_${pose.anim}_f${pose.frame}` : "");
+/** The pose as part of a file name: a000_003000_f12, a saved pose's name, _posed for bones turned. */
+const poseSuffix = (pose, posed) => (posed?.name ? `_${posed.name.replace(/[^\w\-]+/g, "_").replace(/^_+|_+$/g, "")}`
+  : `${pose ? `_${pose.anim}_f${pose.frame}` : ""}${posed && Object.keys(posed.bones || {}).length ? "_posed" : ""}`);
+/** What the pose shown is called under the 3D view: a saved pose's name, or the animation's frame, and the bones turned. */
+function poseLabel(posed) {
+  const turned = Object.keys(posed?.bones || {}).length;
+  const shown = posed?.name || (posed?.pose ? `${posed.pose.anim} frame ${posed.pose.frame}` : "");
+  return `${shown}${turned ? `${shown ? ", " : ""}${plural(turned, "bone")} turned` : ""}`;
+}
 
 /** Opens a tab of the model page's inspector (the Next strip, links between tabs); `focus`: a box in it to put the keyboard on. */
 const goTab = (tab, focus) => ui.set({ inspectorAsk: { page: "model", tab, ...(focus ? { focus } : {}) } });
@@ -190,6 +208,7 @@ export function ModelPage({ route }) {
   const choicesKey = JSON.stringify(choices);
   const rev = useStore(ui, (st) => st.configRev);
   const libRev = useStore(ui, (st) => st.libRev); // renamed or moved: the same model, under its new name
+  const attachRev = useStore(ui, (st) => st.attachRev); // a model attached to it or taken off: open it again
   const [switching, setSwitching] = useState(false);
   useEffect(() => {
     let live = true;
@@ -197,7 +216,7 @@ export function ModelPage({ route }) {
     api("model_open", { id, variant, choices }).then((v) => { if (live) { setM(v); setError(""); setSwitching(false); } },
       (e) => { if (live) { setError(msg(e)); setSwitching(false); } });
     return () => { live = false; };
-  }, [id, variant, choicesKey, rev, libRev]);
+  }, [id, variant, choicesKey, rev, libRev, attachRev]);
   // a configurable model opens on its Configure tab
   useEffect(() => { if (m?.configuration && m.id === id) ui.set({ inspectorAsk: { page: "model", tab: "configure" } }); }, [m?.id, !!m?.configuration]);
   const entry = m?.entry;
@@ -256,7 +275,25 @@ function Workspace({ m, variant, switching }) {
   const [result, setResult] = useState(m.enhanced ? { ...m.enhanced, rev: 1 } : null);
   const [resultKey, setResultKey] = useState(null);
   const [which, setWhich] = useState(m.cut?.pieces?.length ? "pieces" : m.finished ? "finished" : m.enhanced ? "enhanced" : "original");
-  const [pose, setPose] = useState(null); // { anim, frame } or null for the bind pose
+  // the pose shown: an animation's frame ({ anim, frame } or null for the bind pose), the bones turned on top
+  // ({ name: [x, y, z] degrees }) and the saved pose's name while it is shown unchanged. Kept for the model
+  // while the app runs, so opening it again (a model attached to it) shows the same pose.
+  const [posed, setPosed] = useState(() => {
+    const kept = (ui.get().poseNow || {})[m.id];
+    return { pose: kept?.pose ?? null, bones: kept?.bones || {}, name: kept?.name || null };
+  });
+  const pose = posed.pose;
+  const changePose = (patch) => setPosed((cur) => {
+    const next = { pose: cur.pose, bones: cur.bones, ...patch, name: patch.name ?? null };
+    ui.set({ poseNow: { ...(ui.get().poseNow || {}), [m.id]: next } });
+    return next;
+  });
+  const setPose = (p) => changePose({ pose: p });
+  // where each attached model sits (its bone, offset, turn, scale), as moved on the Pose tab
+  const [places, setPlaces] = useState(() => savedPlaces(m));
+  const [poseOpen, setPoseOpen] = useState(false); // the Pose tab is open: the bones show in the 3D view
+  const [boneSel, setBoneSel] = useState(null);
+  const [boneList, setBoneList] = useState(null); // { bones, skeleton } in the pose shown
   const [busy, setBusy] = useState(false); // the 3D view is fetching a mesh
   const [over, setOver] = useState({}); // material -> the detail texture chosen on the Displace tab ("" = none)
   const [strengths, setStrengthState] = useState({}); // material -> strength multiplier
@@ -285,7 +322,7 @@ function Workspace({ m, variant, switching }) {
   const saved = useStore(ui, (st) => st.enhance);
   const s = { ...ENHANCE, ...(saved || {}) };
   const set = (patch) => setPref({ enhance: { ...s, ...patch } });
-  const args = meshArgs(m, off, flags, pose);
+  const args = meshArgs(m, off, flags, pose, posed.bones, m.attachments?.length ? places : null);
   // the engine keeps a few models open; if this one was let go, open it again and retry
   const call = async (cmd, a) => {
     try { return await api(cmd, a); } catch (e) {
@@ -295,11 +332,34 @@ function Workspace({ m, variant, switching }) {
     }
   };
   useEffect(() => {
-    if (args.key === meshArgs(m, new Set(), Object.fromEntries(m.options.map((o) => [o.key, o.default])), null).key) { setStats(m.stats); return; }
+    if (args.key === meshArgs(m, new Set(), Object.fromEntries(m.options.map((o) => [o.key, o.default])), null, null,
+      m.attachments?.length ? savedPlaces(m) : null).key) { setStats(m.stats); return; }
     let live = true;
     call("model_stats", { sid: m.sid, ...args.json }).then((s) => { if (live) setStats(s); }, () => {});
     return () => { live = false; };
   }, [args.key]);
+  // the bones where the pose puts them, while the Pose tab is open
+  const poseKey = JSON.stringify([args.json.pose, args.json.bones]);
+  useEffect(() => {
+    if (!poseOpen || !m.bones) return;
+    let live = true;
+    call("model_bones", { sid: m.sid, pose: args.json.pose, bones: args.json.bones }).then((r) => { if (live) setBoneList(r); }, () => {});
+    return () => { live = false; };
+  }, [poseOpen, poseKey, m.sid]);
+  const showBones = useStore(ui, (st) => st.showBones) ?? true;
+  const boneView = useMemo(() => {
+    if (!poseOpen || !boneList?.bones?.length) return null;
+    const turned = posed.bones || {};
+    const list = boneList.bones.map((b, index) => ({ ...b, index, turned: !!turned[b.name] }))
+      .filter((b) => b.name === boneSel || (showBones && (b.used || b.turned)));
+    return { list, chosen: boneSel };
+  }, [poseOpen, boneList, boneSel, showBones, posed.bones]);
+  const turnBone = (name, drag) => {
+    const b = boneList?.bones?.find((x) => x.name === name);
+    const bones = { ...(posed.bones || {}), [name]: addTurn(posed.bones?.[name], drag, b?.flip) };
+    if (bones[name].every((a) => Math.abs(a) < 1e-3)) delete bones[name];
+    changePose({ bones });
+  };
   const box = useRef(null);
   const room = useWidth(box);
   const paneW = Math.max(260, Math.min(520, ui.get().inspectorWidth || 360));
@@ -350,7 +410,9 @@ function Workspace({ m, variant, switching }) {
     return () => { live = false; };
   }, [m.sid]);
   const listed = (items) => setVars((v) => ({ ...(v || {}), items }));
-  const meshKeyOf = (mesh) => JSON.stringify([mesh?.parts ?? null, mesh?.flags || {}, mesh?.pose ?? null]);
+  const meshKeyOf = (mesh) => JSON.stringify([mesh?.parts ?? null, mesh?.flags || {}, mesh?.pose ?? null,
+    mesh?.bones && Object.keys(mesh.bones).length ? sortedBones(mesh.bones) : null,
+    mesh?.attach && Object.keys(mesh.attach).length ? Object.fromEntries(Object.entries(mesh.attach).map(([k, v]) => [k, placeOf(v)])) : null]);
   const variation = {
     vars,
     save: async (label) => {
@@ -378,7 +440,8 @@ function Workspace({ m, variant, switching }) {
       const mesh = v.mesh || {};
       setOff(new Set(mesh.parts ? m.parts.map((_, i) => i).filter((i) => !mesh.parts.includes(i)) : []));
       setFlags({ ...Object.fromEntries(m.options.map((o) => [o.key, o.default])), ...(mesh.flags || {}) });
-      setPose(mesh.pose ? { anim: mesh.pose[0], frame: mesh.pose[1] } : null);
+      changePose({ pose: mesh.pose ? { anim: mesh.pose[0], frame: mesh.pose[1] } : null, bones: mesh.bones || {} });
+      if (mesh.attach) setPlaces({ ...places, ...Object.fromEntries(Object.entries(mesh.attach).filter(([k]) => k in places).map(([k, v]) => [k, placeOf(v)])) });
       toast(`Set to what ${v.name} was made with: change what you like and generate again`, { ms: 5000 });
     },
     rename: async (v, label) => listed((await call("variation_rename", { sid: m.sid, id: v.id, name: label })).items),
@@ -399,21 +462,23 @@ function Workspace({ m, variant, switching }) {
   };
   return html`<div class="model-workspace" ref=${box}>
     <section class="workspace-viewing-area">
-      <${Stage} m=${m} variant=${variant} which=${which} setWhich=${setWhich} args=${args} result=${result} finished=${finished} stats=${stats} pose=${pose} onBusy=${setBusy}
-        cutting=${cutting} showCuts=${cutOpen} onBounds=${setBounds} />
+      <${Stage} m=${m} variant=${variant} which=${which} setWhich=${setWhich} args=${args} result=${result} finished=${finished} stats=${stats} posed=${posed} onBusy=${setBusy}
+        cutting=${cutting} showCuts=${cutOpen} onBounds=${setBounds} boneView=${boneView} onBonePick=${setBoneSel} onBoneTurn=${turnBone} />
     </section>
     <${Inspector} page="model" crowded=${crowded} label="Panels" tabs=${[
       ...(m.configuration ? [{ id: "configure", label: "Configure", icon: "layers", group: GROUP.model, body: html`<${ConfigureTab} m=${m} switching=${switching} />` }]
         : m.configurable_as?.length ? [{ id: "configure", label: "Configure", icon: "layers", group: GROUP.model, body: html`<${ConfigureLinks} m=${m} />` }] : []),
       { id: "model", label: "Model", icon: "box", group: GROUP.model, body: html`<${ModelTab} m=${m} off=${off} setOff=${setOff} flags=${flags} setFlags=${setFlags} stats=${stats} />` },
       { id: "textures", label: "Textures", icon: "image", group: GROUP.model, body: html`<${TexturesTab} ...${shared} over=${over} upscale=${upscale} />` },
-      ...(m.animated ? [{ id: "pose", label: "Pose", icon: "play", group: GROUP.model, body: html`<${PoseTab} m=${m} pose=${pose} setPose=${setPose} busy=${busy} call=${call} />` }] : []),
+      ...(m.animated || m.posable || m.sockets?.length || m.attachments?.length ? [{ id: "pose", label: "Pose", icon: "play", group: GROUP.model,
+        body: html`<${PoseTab} m=${m} posed=${posed} changePose=${changePose} busy=${busy} call=${call} args=${args} setOpen=${setPoseOpen}
+          boneList=${boneList} boneSel=${boneSel} setBoneSel=${setBoneSel} places=${places} setPlaces=${setPlaces} />` }] : []),
       { id: "mesh", label: "Mesh", icon: "grid", group: GROUP.edit, body: html`<${MeshTab} ...${shared} result=${result} generate=${generate} />` },
       { id: "displace", label: "Displace", icon: "stack", group: GROUP.edit, body: html`<${DisplaceTab} ...${shared} result=${result} stale=${!!result && !!resultKey && resultKey !== args.key}
         over=${over} setOver=${setOver} strengths=${strengths} setStrengths=${setStrengths} generate=${generate} variation=${variation} />` },
       { id: "finish", label: "Finish", icon: "drop", group: GROUP.edit, body: html`<${FinishTab} ...${shared} result=${result} finished=${finished} which=${which} setWhich=${setWhich} finishModel=${finishModel} />` },
       { id: "cut", label: "Cut", icon: "scissors", group: GROUP.edit, body: html`<${CutTab} ...${shared} ...${cutting} result=${result} finished=${finished} which=${which} setWhich=${setWhich} setOpen=${setCutOpen} cutModel=${cutModel} />` },
-      { id: "export", label: "Export", icon: "download", group: GROUP.out, body: html`<${ExportTab} m=${m} args=${args} result=${result} finished=${finished} which=${which} pose=${pose} call=${call} pieces=${pieces} />` },
+      { id: "export", label: "Export", icon: "download", group: GROUP.out, body: html`<${ExportTab} m=${m} args=${args} result=${result} finished=${finished} which=${which} pose=${pose} posed=${posed} call=${call} pieces=${pieces} />` },
     ]} />
   </div>`;
 }
@@ -428,7 +493,7 @@ function ConfigureLinks({ m }) {
 }
 
 /** The 3D view: the model with its textures, clay or wireframe, its size, and the views. */
-function Stage({ m, variant, which, setWhich, args, result, finished, stats, pose, onBusy, cutting, showCuts, onBounds }) {
+function Stage({ m, variant, which, setWhich, args, result, finished, stats, posed, onBusy, cutting, showCuts, onBounds, boneView, onBonePick, onBoneTurn }) {
   const canvas = useRef(null);
   const viewer = cutting.viewer;
   // the meshes shown lately, built, the newest last: showing the original and the enhanced model in
@@ -527,6 +592,16 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
     v.setCuts(showCuts && which !== "pieces" ? cuts.map((c) => ({ ...c })) : [], cutSel);
   }, [cuts, cutSel, showCuts, which, state.key]);
   useEffect(() => { if (which === "pieces") viewer.current?.setExplode(explode); }, [explode]);
+  // the Pose tab's bones, over the model as the game has it
+  const bonesNow = useRef(null);
+  bonesNow.current = { onBonePick, onBoneTurn };
+  useEffect(() => {
+    const v = viewer.current;
+    if (!v) return;
+    v.onBonePick = (name) => bonesNow.current.onBonePick?.(name);
+    v.onBoneTurn = (name, drag) => bonesNow.current.onBoneTurn?.(name, drag);
+    v.setBones(boneView && which === "original" ? boneView.list : [], boneView?.chosen);
+  }, [boneView, which, state.key]);
   const setView = (patch) => setPref({ view: { ...view, ...patch } });
   const edges = (on) => { setView({ edges: on }); viewer.current?.setEdges(on); };
   const seg = (id, label, options, value, onChange) => html`<div class="seg" role="group" aria-label=${label} id=${id}>${options.map(([k, l, title, disabled]) =>
@@ -556,7 +631,7 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
         ${!state.loading && !state.error && size && !size.triangles ? html`<div class="stage-note muted">No parts are switched on (Model tab).</div>` : null}
       </div>
       <div class=${`stage-bar${roomy ? "" : " one-row"}`} id="stage-bar" ref=${barBox}>
-        <span class="stage-what" id="stage-size" title=${`${size?.triangles ? `${sizeText([size.x, size.y, size.z])}, ${plural(size.triangles, "triangle")}` : sizeText(stats?.size_mm)}: width × depth × height, as exported in millimetres`}><span class="stage-dims">${size?.triangles ? sizeText([size.x, size.y, size.z]) : sizeText(stats?.size_mm)}</span>${size?.triangles ? html`<span class="muted stage-tris" id="stage-tris">\u00a0· ${plural(size.triangles, "triangle")}</span>` : null}${pose ? html`<span class="muted stage-pose" id="stage-pose" title="The pose shown (Pose tab)">\u00a0· ${pose.anim} frame ${pose.frame}</span>` : null}</span>
+        <span class="stage-what" id="stage-size" title=${`${size?.triangles ? `${sizeText([size.x, size.y, size.z])}, ${plural(size.triangles, "triangle")}` : sizeText(stats?.size_mm)}: width × depth × height, as exported in millimetres`}><span class="stage-dims">${size?.triangles ? sizeText([size.x, size.y, size.z]) : sizeText(stats?.size_mm)}</span>${size?.triangles ? html`<span class="muted stage-tris" id="stage-tris">\u00a0· ${plural(size.triangles, "triangle")}</span>` : null}${poseLabel(posed) ? html`<span class="muted stage-pose" id="stage-pose" title="The pose shown (Pose tab)">\u00a0· ${poseLabel(posed)}</span>` : null}</span>
         <span class="stage-tools">
           ${seg("show-which", "Show", [["original", "Original", "The model as the game has it"], ["enhanced", "Enhanced", result ? "The enhanced model" : "Make it first (Mesh or Displace tab)", !result],
             ["finished", "Finished", finished ? "The model made watertight, without its textures" : "Make it watertight first (Finish tab)", !finished],
@@ -849,9 +924,13 @@ function reach(a, bones) {
   return a.fixed ? ` · one pose, ${part}` : ` · moves ${part}`;
 }
 
-/** Pose: hold the model at a frame of one of its animations. The pose shown is what Generate and Export use. */
-function PoseTab({ m, pose, setPose, busy, call }) {
-  const [list, setList] = useState(null); // the animations, once asked for
+/** Pose: hold the model at a frame of one of its animations, turn its bones on top (or on the bind pose), save the
+ *  pose under a name, and attach other models to its bones. The pose shown is what Generate and Export use. */
+function PoseTab({ m, posed, changePose, busy, call, args, setOpen, boneList, boneSel, setBoneSel, places, setPlaces }) {
+  const pose = posed.pose;
+  const setPose = (p) => changePose({ pose: p, bones: posed.bones });
+  useEffect(() => { setOpen(true); return () => setOpen(false); }, []);
+  const [list, setList] = useState(m.animated ? null : []); // the animations, once asked for
   const [note, setNote] = useState(null); // where the importer found them, when it says
   const [bones, setBones] = useState(0); // the model's bone count, for "moves N of M bones"
   const [error, setError] = useState(null);
@@ -859,6 +938,7 @@ function PoseTab({ m, pose, setPose, busy, call }) {
   const [playing, setPlaying] = useState(false);
   const [draft, setDraft] = useState(null); // the frame box while it is being typed in
   useEffect(() => {
+    if (!m.animated) return;
     let live = true;
     call("model_animations", { sid: m.sid }).then((r) => { if (live) { setList(r.animations); setBones(r.bones || 0); setNote(r.note || null); } }, (e) => { if (live) setError(msg(e)); });
     return () => { live = false; };
@@ -879,11 +959,13 @@ function PoseTab({ m, pose, setPose, busy, call }) {
   const shown = (list || []).filter((a) => !q || a.name.toLowerCase().includes(q));
   const readable = (list || []).filter((a) => a.frames > 0);
   const seconds = (f) => (anim && anim.fps ? (f / anim.fps).toFixed(2) : "0.00");
+  const turned = Object.keys(posed.bones || {}).length;
   return html`<div class="tab-pad" id="pose-tab">
     ${error ? html`<p class="warn-note" role="alert" id="pose-error">${error}</p>` : null}
-    ${!list && !error ? html`<p class="muted" id="pose-loading">Reading the animations… The first time for an Unreal game this can look through all of its files, which may take a few minutes.</p>` : null}
-    ${list && !list.length ? html`<p id="pose-none">No animations were found for this model.</p>` : null}
-    ${list && !list.length && note ? html`<p class="muted" id="pose-none-why">${note}</p>` : null}
+    <${SavedPoses} m=${m} posed=${posed} changePose=${changePose} call=${call} args=${args} list=${list} />
+    ${m.animated && !list && !error ? html`<p class="muted" id="pose-loading">Reading the animations… The first time for an Unreal game this can look through all of its files, which may take a few minutes.</p>` : null}
+    ${m.animated && list && !list.length ? html`<p id="pose-none">No animations were found for this model.</p>` : null}
+    ${m.animated && list && !list.length && note ? html`<p class="muted" id="pose-none-why">${note}</p>` : null}
     ${list && list.length ? html`<section class="insp-section" id="pose-pick"><h3>Animation</h3>
       <input type="search" id="pose-filter" placeholder=${`Find among ${plural(list.length, "animation")}…`} value=${filter} onInput=${(e) => setFilter(e.target.value)} aria-label="Find an animation" />
       <select id="pose-anim" size="8" value=${pose?.anim || ""} onChange=${(e) => choose(e.target.value)} aria-label="Animation">
@@ -902,9 +984,215 @@ function PoseTab({ m, pose, setPose, busy, call }) {
       </div>
       <small class="muted" id="pose-time">${seconds(pose.frame)} s of ${anim.duration.toFixed(2)} s · ${anim.fps ? `${Math.round(anim.fps)} frames per second` : ""}</small>
     </section>` : null}
-    ${list && list.length ? html`<div class="insp-actions"><button type="button" class="ghost" id="pose-reset" disabled=${!pose} onClick=${() => choose("")}>Back to the bind pose</button></div>` : null}
+    ${(list && list.length) || turned ? html`<div class="insp-actions"><button type="button" class="ghost" id="pose-reset" disabled=${!pose && !turned}
+      title="No animation and no bones turned: the model as its file holds it" onClick=${() => { setPlaying(false); changePose({ pose: null, bones: {} }); }}>Back to the bind pose</button></div>` : null}
+    ${m.bones ? html`<${BonesSection} m=${m} posed=${posed} changePose=${changePose} call=${call} boneList=${boneList} boneSel=${boneSel} setBoneSel=${setBoneSel} />` : null}
+    ${m.entry && !m.configuration ? html`<${AttachedModels} m=${m} call=${call} boneList=${boneList} places=${places} setPlaces=${setPlaces} />` : null}
     <p class="muted export-note">The pose shown is what Generate works on and Export writes; each pose generated is kept, so switching back to one doesn't generate it again. Cloth and hair bones the animation doesn't move stay as in the bind pose.</p>
   </div>`;
+}
+
+/** Saved poses: the pose shown kept under a name with the model (its animation, frame and bones turned), and those
+ *  saved on other models with the same skeleton, to apply here. */
+function SavedPoses({ m, posed, changePose, call, args, list }) {
+  const [saved, setSaved] = useState(null); // { own, shared, why }
+  const [name, setName] = useState("");
+  const [renaming, setRenaming] = useState(null); // { from, to }
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    let live = true;
+    call("poses", { sid: m.sid }).then((r) => live && setSaved(r), (e) => live && setError(msg(e)));
+    return () => { live = false; };
+  }, [m.sid]);
+  if (saved?.why) return null; // a file opened on its own: nowhere to keep them
+  const run = async (fn) => { setError(null); try { await fn(); } catch (e) { setError(msg(e)); } };
+  const empty = !posed.pose && !Object.keys(posed.bones || {}).length;
+  const save = () => run(async () => {
+    const r = await call("pose_save", { sid: m.sid, name: name.trim() || suggestName(posed), pose: args.json.pose, bones: args.json.bones });
+    setSaved(r); setName("");
+    changePose({ pose: posed.pose, bones: posed.bones, name: r.saved });
+    toast(`Saved ${r.saved}: models with the same skeleton offer it too`, { ms: 4000 });
+  });
+  const apply = (p) => {
+    const known = !p.animation || (list || []).some((a) => a.name === p.animation);
+    const anim = p.animation && known ? (list || []).find((a) => a.name === p.animation) : null;
+    changePose({ pose: anim ? { anim: p.animation, frame: Math.min(Math.max(0, p.frame || 0), Math.max(0, anim.frames - 1)) } : null,
+      bones: { ...(p.bones || {}) }, name: p.name });
+    if (p.animation && !known) toast(`This model has no animation ${p.animation}: the bones are turned on its bind pose`, { ms: 5000 });
+  };
+  const rename = () => run(async () => {
+    const r = await call("pose_rename", { sid: m.sid, name: renaming.from, to: renaming.to });
+    setSaved(r); setRenaming(null);
+    if (posed.name === renaming.from) changePose({ pose: posed.pose, bones: posed.bones, name: r.renamed });
+  });
+  const remove = (p) => ui.set({ dialog: { type: "confirm", title: `Delete the pose ${p.name}?`, button: "Delete",
+    text: "It is taken off this model's saved poses (and those offered to models with the same skeleton). The pose shown stays.",
+    run: async () => { setSaved(await call("pose_delete", { sid: m.sid, name: p.name })); } } });
+  const describe = (p) => [p.animation ? `${p.animation} frame ${p.frame}` : "bind pose", Object.keys(p.bones || {}).length ? plural(Object.keys(p.bones).length, "bone") + " turned" : ""]
+    .filter(Boolean).join(", ");
+  const row = (p, own) => html`<li key=${(own ? "" : `${p.key}|`) + p.name} class="saved-pose" data-pose=${p.name} aria-current=${own && posed.name === p.name ? "true" : null}>
+    ${own && renaming?.from === p.name ? html`<form class="field-row" onSubmit=${(e) => { e.preventDefault(); rename(); }}>
+        <input id="pose-rename" value=${renaming.to} aria-label="New name" onInput=${(e) => setRenaming({ ...renaming, to: e.target.value })} />
+        <button type="submit" class="primary compact">Rename</button><button type="button" class="ghost compact" onClick=${() => setRenaming(null)}>Cancel</button></form>`
+      : html`<span class="saved-pose-name">${p.name}<small class="muted">${own ? describe(p) : `from ${p.model} · ${describe(p)}`}</small></span>
+        <span class="saved-pose-tools">
+          <button type="button" class="ghost compact pose-apply" title="Show the model in this pose" onClick=${() => apply(p)}>Apply</button>
+          ${own ? html`<button type="button" class="ghost compact pose-rename" title="Rename this pose" onClick=${() => setRenaming({ from: p.name, to: p.name })}>${Icon.edit(13)}</button>
+            <button type="button" class="ghost compact pose-delete" title="Delete this pose" onClick=${() => remove(p)}>${Icon.close(13)}</button>` : null}</span>`}</li>`;
+  return html`<section class="insp-section" id="pose-saved"><h3>Saved poses</h3>
+    ${error ? html`<p class="warn-note" role="alert">${error}</p>` : null}
+    ${saved?.own?.length ? html`<ul class="saved-poses" id="pose-saved-own">${saved.own.map((p) => row(p, true))}</ul>` : null}
+    <form class="field-row" onSubmit=${(e) => { e.preventDefault(); if (!empty) save(); }}>
+      <input id="pose-save-name" value=${name} placeholder=${empty ? "Pick a frame or turn a bone first" : suggestName(posed)} disabled=${empty} aria-label="Name for this pose"
+        onInput=${(e) => setName(e.target.value)} />
+      <button type="submit" class="primary compact" id="pose-save" disabled=${empty} title="Keep the animation, frame and bones turned under this name, with this model">Save pose</button></form>
+    <small class="muted">Kept with the model in Dark STL's library, and offered to every model of the game with the same skeleton.</small>
+    ${saved?.shared?.length ? html`<h4>From models with the same skeleton</h4><ul class="saved-poses" id="pose-saved-shared">${saved.shared.map((p) => row(p, false))}</ul>` : null}
+  </section>`;
+}
+
+/** A name for the pose shown, when none is typed. */
+const suggestName = (posed) => (posed.pose ? `${posed.pose.anim} frame ${posed.pose.frame}` : "My pose") + (Object.keys(posed.bones || {}).length ? " adjusted" : "");
+
+/** An angle: a slider from -180° to 180° and a box to type it in. Moves are sent a moment after the slider stops. */
+function AngleField({ id, label, value, onChange, title }) {
+  const [now, setNow] = useState(null); // while it is being dragged or typed
+  const timer = useRef(0);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const shown = now ?? value;
+  const send = (v, at = 120) => {
+    setNow(v);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => { setNow(null); onChange(v); }, at);
+  };
+  return html`<div class="angle-field" title=${title}><label for=${id}>${label}</label>
+    <input type="range" id=${id} min="-180" max="180" step="1" value=${shown} onInput=${(e) => send(parseFloat(e.target.value))} />
+    <span class="angle-number"><input type="number" id=${`${id}-number`} min="-180" max="180" step="0.1" value=${Math.round(shown * 10) / 10} aria-label=${`${label} in degrees`}
+        onChange=${(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) send(Math.max(-180, Math.min(180, v)), 0); }} />
+      <span class="muted unit">°</span></span></div>`;
+}
+
+/** Bones: the skeleton as a tree to find a bone in, and the chosen bone's turn about its own axes (X, Y, Z), on top
+ *  of the animation's frame; mirrored to the other side by name, reset one or all. */
+function BonesSection({ m, posed, changePose, call, boneList, boneSel, setBoneSel }) {
+  const [filter, setFilter] = useState("");
+  const [every, setEvery] = useState(false); // bones that move nothing too
+  const [error, setError] = useState(null);
+  const showBones = useStore(ui, (st) => st.showBones) ?? true;
+  const turns = posed.bones || {};
+  const all = boneList?.bones || [];
+  const q = filter.trim().toLowerCase();
+  const rows = all.filter((b) => (every || b.used || turns[b.name] || b.name === boneSel) && (!q || b.name.toLowerCase().includes(q)));
+  const hidden = all.filter((b) => !b.used && !turns[b.name]).length;
+  const bone = all.find((b) => b.name === boneSel);
+  const deg = turns[boneSel] || [0, 0, 0];
+  const setTurn = (axis, v) => {
+    const next = [...deg];
+    next[axis] = v;
+    const bones = { ...turns, [boneSel]: next };
+    if (next.every((a) => Math.abs(a) < 1e-3)) delete bones[boneSel];
+    changePose({ bones });
+  };
+  const reset = (name) => { const bones = { ...turns }; delete bones[name]; changePose({ bones }); };
+  const mirror = async (req) => {
+    setError(null);
+    try { changePose({ bones: (await call("pose_mirror", { sid: m.sid, bones: turns, ...req })).bones }); } catch (e) { setError(msg(e)); }
+  };
+  const sides = all.some((b) => b.partner);
+  const turnedCount = Object.keys(turns).length;
+  return html`<section class="insp-section" id="pose-bones"><h3>Bones</h3>
+    <label class="check-row" title="Small balls at each bone's pivot in the 3D view; click one to choose that bone">
+      <input type="checkbox" id="pose-show-bones" checked=${showBones} onChange=${(e) => setPref({ showBones: e.target.checked })} />
+      <span>Show bones in the 3D view<small class="muted">Click a ball to choose its bone; drag the chosen bone's rings to turn it.</small></span></label>
+    ${!boneList ? html`<p class="muted">Reading the skeleton…</p>` : html`
+      <input type="search" id="bone-filter" placeholder=${`Find among ${plural(all.length, "bone")}…`} value=${filter} onInput=${(e) => setFilter(e.target.value)} aria-label="Find a bone" />
+      <div class="bone-list" id="bone-list" role="listbox" aria-label="Bones">${rows.map((b) => html`<button type="button" role="option" key=${b.name} class="bone-row" data-bone=${b.name}
+          aria-selected=${b.name === boneSel ? "true" : "false"} style=${{ paddingLeft: `${6 + Math.min(b.depth, 14) * 10}px` }}
+          title=${b.used ? b.name : `${b.name}: moves none of the model's vertices`} onClick=${() => setBoneSel(b.name === boneSel ? null : b.name)}>
+          <span class=${b.used ? "" : "muted"}>${b.name}</span>${turns[b.name] ? html`<span class="bone-turned" title="Turned">●</span>` : null}</button>`)}
+        ${!rows.length ? html`<p class="muted picker-empty">No bone matches.</p>` : null}</div>
+      ${hidden ? html`<label class="check-row"><input type="checkbox" id="bone-every" checked=${every} onChange=${(e) => setEvery(e.target.checked)} />
+        <span>Every bone<small class="muted">${plural(hidden, "bone")} that move${hidden === 1 ? "s" : ""} none of the model's vertices ${hidden === 1 ? "is" : "are"} left out of the list.</small></span></label>` : null}
+      ${bone ? html`<div class="bone-edit" id="bone-edit" data-bone=${bone.name}><h4>${bone.name}</h4>
+        ${["X", "Y", "Z"].map((a, i) => html`<${AngleField} key=${`${bone.name}-${a}`} id=${`bone-${a.toLowerCase()}`} label=${`Turn about ${a}`} value=${deg[i]}
+          title=${`Turns ${bone.name} about its own ${a} axis (the ${["red", "green", "blue"][i]} ring of the gizmo), on top of the animation's frame`}
+          onChange=${(v) => setTurn(i, v)} />`)}
+        <div class="insp-actions">
+          <button type="button" class="ghost compact" id="bone-mirror" disabled=${!bone.partner} title=${bone.partner ? `Give ${bone.partner} the same turn, mirrored to its side` : "This bone has no partner on the other side (bones pair up by their names)"}
+            onClick=${() => mirror({ names: [bone.name] })}>Mirror to ${bone.partner || "the other side"}</button>
+          <button type="button" class="ghost compact" id="bone-reset" disabled=${!turns[bone.name]} title="Take this bone's turn away" onClick=${() => reset(bone.name)}>Reset bone</button>
+        </div></div>` : html`<p class="muted" id="bone-none">Choose a bone in the list or the 3D view to turn it.</p>`}
+      <div class="insp-actions" id="bones-all">
+        <button type="button" class="ghost compact" id="bones-reset" disabled=${!turnedCount} title="Take every bone's turn away (the animation's frame stays)" onClick=${() => changePose({ bones: {} })}>Reset all</button>
+        ${sides ? html`<button type="button" class="ghost compact" id="bones-left-right" title="Give every right bone its left partner's turn, mirrored" onClick=${() => mirror({ side: "left" })}>Mirror left → right</button>
+          <button type="button" class="ghost compact" id="bones-right-left" title="Give every left bone its right partner's turn, mirrored" onClick=${() => mirror({ side: "right" })}>Mirror right → left</button>` : null}
+      </div>
+      ${error ? html`<p class="warn-note" role="alert">${error}</p>` : null}
+      <small class="muted">Turns go on top of the animation's frame, or on the bind pose without one; the bone's children follow. Left and right pair up by their names (L_ and R_, _l and _r, Left and Right).</small>`}
+  </section>`;
+}
+
+/** Attached models: other models of the library held by a bone (or a socket) of this one, which follow the pose and
+ *  are part of the model from here on (Clean, Mesh, Displace, Export); each one moved, turned and scaled from its bone. */
+function AttachedModels({ m, call, boneList, places, setPlaces }) {
+  const items = m.attachments || [];
+  const [sel, setSel] = useState(items[items.length - 1]?.id || null);
+  const [error, setError] = useState(null);
+  const ids = items.map((x) => x.id).join(" ");
+  const known = useRef(ids);
+  useEffect(() => { // one just attached is the one to place; one taken off can't stay chosen
+    const before = new Set(known.current.split(" "));
+    known.current = ids;
+    const added = items.filter((x) => !before.has(x.id));
+    if (added.length) setSel(added[added.length - 1].id);
+    else if (sel && !items.some((x) => x.id === sel)) setSel(null);
+  }, [ids]);
+  const timer = useRef(0);
+  const latest = useRef(places);
+  latest.current = places;
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const save = (list, reopen) => call("attach_save", { sid: m.sid, items: list }).then((r) => {
+    if (reopen || r.reopen) ui.set({ attachRev: (ui.get().attachRev || 0) + 1 });
+  }, (e) => setError(msg(e)));
+  const withPlaces = (pl) => items.map((a) => ({ id: a.id, file: a.file, variant: a.variant, label: a.label, place: pl[a.id] || placeOf(a.place) }));
+  const move = (id, patch) => {
+    const next = { ...latest.current, [id]: placeOf({ ...(latest.current[id] || {}), ...patch }) };
+    setPlaces(next);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => save(withPlaces(latest.current), false), 700); // kept with the model, a moment after the last change
+  };
+  const remove = (a) => save(withPlaces(places).filter((x) => x.id !== a.id), true);
+  const holderOf = (p) => (p.bone ? `bone:${p.bone}` : p.socket ? `socket:${p.socket}` : "");
+  const holderName = (p) => (p.bone ? p.bone : p.socket ? `${p.socket} (socket)` : "the model's origin");
+  const bones = (boneList?.bones || []).filter((b) => b.used).map((b) => b.name);
+  const a = items.find((x) => x.id === sel);
+  const p = a ? places[a.id] || placeOf(a.place) : null;
+  const open = () => ui.set({ dialog: { type: "attach", sid: m.sid, game: m.game, model: m.entry, items: withPlaces(places), bones, sockets: m.sockets || [] } });
+  return html`<section class="insp-section" id="pose-attach"><h3>Attached models</h3>
+    ${items.length ? html`<ul class="saved-poses" id="attach-list">${items.map((x) => html`<li key=${x.id} class="saved-pose attach-row" data-attach=${x.id} aria-current=${x.id === sel ? "true" : null}>
+        <button type="button" class="link-btn saved-pose-name" onClick=${() => setSel(x.id === sel ? null : x.id)}>${x.label}<small class="muted">on ${holderName(places[x.id] || x.place)}</small></button>
+        <span class="saved-pose-tools"><button type="button" class="ghost compact attach-remove" title=${`Take ${x.label} off this model`} onClick=${() => remove(x)}>${Icon.close(13)}</button></span></li>`)}</ul>`
+      : html`<p class="muted" id="attach-none">A sword in a hand, a shield on an arm: models attached to a bone follow the pose, and are part of the model from here on.</p>`}
+    ${a && p ? html`<div class="bone-edit" id="attach-edit" data-attach=${a.id}><h4>${a.label}</h4>
+      <label class="field-block" title="The bone (or socket) that holds it: it follows that bone through every pose"><span>Held by</span>
+        <select id="attach-holder" value=${holderOf(p)} onChange=${(e) => { const [kind, ...rest] = e.target.value.split(":"); const n = rest.join(":");
+          move(a.id, { bone: kind === "bone" ? n : null, socket: kind === "socket" ? n : null }); }}>
+          <option value="">The model's origin</option>
+          ${m.sockets?.length ? html`<optgroup label="Sockets">${m.sockets.map((n) => html`<option key=${n} value=${`socket:${n}`}>${n}</option>`)}</optgroup>` : null}
+          ${bones.length || p.bone ? html`<optgroup label="Bones">${[...new Set([...(p.bone && !bones.includes(p.bone) ? [p.bone] : []), ...bones])].map((n) => html`<option key=${n} value=${`bone:${n}`}>${n}</option>`)}</optgroup>` : null}
+        </select></label>
+      <div class="field-block" title="Moves it from the bone's pivot along the bone's own axes, in millimetres"><span>Offset</span>
+        <span class="field-row offset-row">${["X", "Y", "Z"].map((ax, i) => html`<input type="number" key=${ax} id=${`attach-offset-${ax.toLowerCase()}`} step="1" value=${p.offset_mm[i]} aria-label=${`Offset ${ax} in millimetres`}
+          onChange=${(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) { const o = [...p.offset_mm]; o[i] = v; move(a.id, { offset_mm: o }); } }} />`)}<span class="muted unit">mm</span></span></div>
+      ${["X", "Y", "Z"].map((ax, i) => html`<${AngleField} key=${`${a.id}-${ax}`} id=${`attach-turn-${ax.toLowerCase()}`} label=${`Turn about ${ax}`} value=${p.rotate[i]}
+        title=${`Turns ${a.label} about the bone's own ${ax} axis`} onChange=${(v) => { const r = [...p.rotate]; r[i] = v; move(a.id, { rotate: r }); }} />`)}
+      <label class="field-block" title="Its size: 1 as its file has it"><span>Scale</span>
+        <span class="field-row"><input type="number" id="attach-scale" min="0.001" max="1000" step="0.05" value=${p.scale}
+          onChange=${(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v) && v > 0) move(a.id, { scale: v }); }} /><span class="muted unit">×</span></span></label>
+    </div>` : null}
+    ${error ? html`<p class="warn-note" role="alert">${error}</p>` : null}
+    <div class="insp-actions"><button type="button" class="ghost" id="attach-add" disabled=${items.length >= 16} title="Find a model of this game to attach to one of this model's bones" onClick=${open}>${Icon.box(14)} Attach a model…</button></div>
+  </section>`;
 }
 
 /** A number box saved to the Generate settings. What's typed is kept while the tab draws again
@@ -1355,7 +1643,7 @@ export function shortPath(p) {
 
 /** Export: the model the 3D view shows (its Show picker) as STL, OBJ, PLY, GLB or a painted 3MF, in a folder; or in one
  *  click as a GLB for Model Painter, which the app opens there when it knows where Model Painter is (Settings). */
-function ExportTab({ m, args, result, finished, which, pose, call, pieces }) {
+function ExportTab({ m, args, result, finished, which, pose, posed, call, pieces }) {
   const saved = useStore(ui, (s) => s.exportOpts);
   const o = { ...EXPORT, ...(saved || {}) };
   const set = (patch) => setPref({ exportOpts: { ...o, ...patch } });
@@ -1372,7 +1660,7 @@ function ExportTab({ m, args, result, finished, which, pose, call, pieces }) {
     api("settings_get").then((r) => setWhere({ fallback: r.export_dir, painter: r.model_painter_found || null }), () => {});
   }, []);
   const base = variantName(m.variant) || m.name;
-  const auto = `${base}${poseSuffix(pose)}${which === "enhanced" ? "_enhanced" : which === "finished" ? "_watertight" : ""}`;
+  const auto = `${base}${poseSuffix(pose, posed)}${which === "enhanced" ? "_enhanced" : which === "finished" ? "_watertight" : ""}`;
   const many = which === "pieces";
   const formats = info().formats || [];
   const textured = o.format === ".obj" || o.format === ".glb";
@@ -1383,7 +1671,7 @@ function ExportTab({ m, args, result, finished, which, pose, call, pieces }) {
   /** `preset`: "painter" for Model Painter's GLB (textures and materials, Y up, <model>_for_painter.glb), else the settings below. */
   const go = async (preset) => {
     setBusy(preset || "file"); setError(null); setDone(null);
-    const named = name.trim() || (preset ? `${base}${poseSuffix(pose)}` : auto);
+    const named = name.trim() || (preset ? `${base}${poseSuffix(pose, posed)}` : auto);
     try {
       const { job } = await call("export", { sid: m.sid, which, ...args.json, folder: folder || null, name: named, lay_flat: cutOpts.lay_flat,
         ...(preset ? { preset } : { format: o.format, units: o.units, textures: o.textures, paint: painted ? paintArgs(paint) : undefined }) });
@@ -1418,7 +1706,7 @@ function ExportTab({ m, args, result, finished, which, pose, call, pieces }) {
     <${WorkingOn} id="export-working" which=${which} note=${which === "original" && !result ? "Make the enhanced model first (Mesh or Displace tab) to export the detailed version."
       : which === "pieces" ? `${plural(pieces?.pieces.length || 0, "piece")}, each in its own file.` : null} />
     <section class="insp-section" id="export-painter"><h3>For Model Painter</h3>
-      <p class="muted">A GLB with the textures and materials, Y up, named <b>${name.trim() || `${base}${poseSuffix(pose)}`}_for_painter.glb</b>: Model Painter paints it and finishes it for printing.</p>
+      <p class="muted">A GLB with the textures and materials, Y up, named <b>${name.trim() || `${base}${poseSuffix(pose, posed)}`}_for_painter.glb</b>: Model Painter paints it and finishes it for printing.</p>
       ${which === "finished" ? html`<small class="muted">The Finished model has no textures of its own: Model Painter gets its shape only.</small>` : null}
       <div class="insp-actions"><button type="button" class="primary" id="export-painter-run" disabled=${!!busy || many}
         title=${many ? "Model Painter takes one model: show the Enhanced, Original or Finished model" : "Export the model shown as a GLB for Model Painter"}

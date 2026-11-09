@@ -30,10 +30,12 @@ from typing import Any, Callable
 import numpy as np
 
 from .. import __version__
+from .. import attach
 from .. import collect
 from .. import configs
 from .. import overlay
 from .. import package
+from .. import posing
 from .. import variations
 from ..errors import FormatError
 from ..export import FORMATS, ExportOptions, export_mesh, write_palette_png
@@ -191,6 +193,7 @@ class Session:
     cut_id: str = ""
     finished: Any = None  # finish.FinishResult: the model last made watertight (Finish tab)
     finished_id: str = ""
+    used_bones: Any = None  # the bones whose turns move the mesh (and their parents), once worked out
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def build(self, options: MeshOptions) -> TriMesh:
@@ -203,7 +206,7 @@ class Session:
 
 def _options_key(options: MeshOptions) -> tuple:
     return (None if options.parts is None else tuple(sorted(options.parts)), tuple(sorted(options.flags.items())),
-            options.pose)
+            options.pose, tuple(sorted((options.bones or {}).items())) or None, attach.places_key(options.attach))
 
 
 def generated_key(session: Session, options: MeshOptions, settings: dict) -> tuple:
@@ -235,7 +238,39 @@ def mesh_options(args: dict) -> MeshOptions:
     parts = args.get("parts")
     flags = args.get("flags") or {}
     return MeshOptions(None if parts is None else {int(p) for p in parts}, {str(k): bool(v) for k, v in flags.items()},
-                       parse_pose(args.get("pose")))
+                       parse_pose(args.get("pose")), parse_bones(args.get("bones")), parse_places(args.get("attach")))
+
+
+def _json_value(value, what: str):
+    """A value the page sends as JSON in a command, or as JSON text in a URL."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            raise AppError(f"{what} couldn't be read.") from None
+    return value
+
+
+def parse_bones(value) -> dict[str, tuple[float, float, float]] | None:
+    """Bone adjustments as the page sends them: ``{"L_Hand": [0, 0, 30]}`` (degrees), JSON or JSON text."""
+    value = _json_value(value, "The bone adjustments")
+    if value in (None, "", {}, []):
+        return None
+    if not isinstance(value, dict):
+        raise AppError("Bone adjustments are sent as {bone: [x, y, z]} in degrees.")
+    try:
+        return posing.clean_bones(value) or None
+    except FormatError as exc:
+        raise AppError(str(exc)) from None
+
+
+def parse_places(value) -> dict | None:
+    """Where the attached models sit, as the page sends it: ``{id: {bone, offset_mm, rotate, scale}}``."""
+    value = _json_value(value, "The attached models' places")
+    try:
+        return attach.parse_places(value if value not in ("", []) else None)
+    except FormatError as exc:
+        raise AppError(str(exc)) from None
 
 
 def parse_pose(value) -> tuple[str, int] | None:
@@ -252,6 +287,10 @@ def parse_pose(value) -> tuple[str, int] | None:
         return str(name), int(frame)
     except (TypeError, ValueError):
         raise AppError("A pose is an animation name and a frame number.") from None
+
+
+def _places_json(places: dict | None) -> dict | None:
+    return None if places is None else {k: attach.place_json(v) for k, v in places.items()}
 
 
 def entry_json(e: CatalogEntry) -> dict:
@@ -279,7 +318,23 @@ def model_json(m: SourceModel, mesh: TriMesh) -> dict:
         "textures": [{"key": k, "name": t.name, "source": t.source} for k, t in sorted(m.textures.items())],
         "info": m.info, "notes": m.notes, "stats": mesh_stats(mesh), "animated": m.animations is not None,
         "configuration": m.configuration,
+        # bones the Pose tab can adjust (a model with a skeleton, animated or not), and what is attached to it
+        "posable": _posable(m, mesh), "bones": len(m.rig.names) if m.rig is not None else 0,
+        "sockets": sorted(m.sockets), "attachments": list(m.attachments),
     }
+
+
+def _posable(m: SourceModel, mesh: TriMesh) -> bool:
+    """Whether the Pose tab has something to do: animations, or bones whose turns move the mesh."""
+    if m.animations is not None:
+        return True
+    if m.rig is None or len(m.rig.names) < 2:
+        return False
+    skin = mesh.metadata.get("skin")
+    if skin is None:
+        return m.adjusts_bones
+    joints, weights = skin
+    return bool(((np.asarray(joints) >= 0) & (np.asarray(weights) > 0)).any())
 
 
 def mesh_stats(mesh: TriMesh) -> dict:
@@ -1664,6 +1719,7 @@ class Service:
                 if rel is not None:
                     key = overlay.model_key(rel, model.variant if model.variants else None)
                     model = overlay.apply(model, self._overlay(entry.game).textures(key), self._store_root(entry.game))
+                    model = self._with_attachments(entry, model, self._overlay(entry.game).attachments(key))
             session = Session(sid, model, entry)
             self._show_kept(session)
             with self.lock:
@@ -1682,6 +1738,39 @@ class Service:
                     "configurable_as": self._configurable_as(path) if config is None else [],
                     "assigned": self._assigned_json(session)})
         return out
+
+    def _with_attachments(self, entry: CatalogEntry, model: SourceModel, items: list[dict]) -> SourceModel:
+        """``model`` with the models the overlay attaches to it (those found in the library)."""
+        if not items:
+            return model
+        held, notes = [], []
+        for raw in items[:attach.MAX_ATTACHMENTS]:
+            try:
+                spec = attach.parse_attachment(raw)
+            except FormatError:
+                continue
+            path = self._find_model(entry.game, spec.file)
+            if path is None:
+                notes.append(f"{spec.label or spec.file} is attached to this model, but it isn't in the library now.")
+                continue
+            try:
+                held.append((spec, self._part_model(str(path), spec.variant)))
+            except (FormatError, OSError) as exc:
+                notes.append(f"{spec.label or spec.file} couldn't be opened to attach it: {exc}")
+        if not held and not notes:
+            return model
+        return attach.attached(model, held, notes)
+
+    def _find_model(self, game: str, file: str) -> Path | None:
+        """A model file a configuration or an attachment names (its path in the game, or a whole path),
+        among the game's models: the game's file, a collected copy or its package."""
+        p = Path(file)
+        if p.is_absolute() and p.is_file():
+            return p
+        with self.lock:
+            roots = [r for r, g in self.library.roots.items() if g == game]
+            entries = [e for e in self.library.entries if e.game == game]
+        return configs.Resolver(entries, roots).find(configs.ModelRef(file))
 
     def _assigned_json(self, session: Session) -> dict:
         """The textures the overlay assigns to the open model's materials: {material: {role: name}}."""
@@ -2075,13 +2164,202 @@ class Service:
         session = self._session(args)
         anims = session.model.animations
         if anims is None:
-            return {"animations": [], "bones": 0, "note": getattr(session.model, "pose_note", None)}
+            rig = getattr(session.model, "rig", None)
+            return {"animations": [], "bones": len(rig.names) if rig is not None else 0,
+                    "note": getattr(session.model, "pose_note", None)}
         try:
             infos = anims.list()
             bones = len(anims.skeleton)
         except Exception as exc:  # noqa: BLE001 - a broken archive is reported, not fatal
             raise AppError(f"The animations couldn't be read: {exc}") from exc
         return {"animations": [i.as_dict() for i in infos], "bones": bones, "note": getattr(anims, "note", None)}
+
+    # ------------------------------------------------------------ bones, saved poses, attached models
+
+    def _used_bones(self, session: Session) -> set[int] | None:
+        """The bones the model's vertices are weighted to, and their parents (whose turns move them too)."""
+        if session.used_bones is None:
+            rig = session.model.rig
+            used: set[int] | None = None
+            skin = session.build(MeshOptions()).metadata.get("skin")
+            if skin is not None and rig is not None:
+                joints, weights = (np.asarray(a) for a in skin)
+                found = {int(b) for b in np.unique(joints[(weights > 0) & (joints >= 0)])}
+                used = set()
+                for b in found:
+                    while 0 <= b < len(rig.names) and b not in used:
+                        used.add(b)
+                        b = int(rig.parents[b])
+            session.used_bones = used if used is not None else set(range(len(rig.names) if rig else 0))
+        return session.used_bones
+
+    def cmd_model_bones(self, args: dict) -> dict:
+        """The model's bones in the pose shown (``pose`` and ``bones`` as the mesh commands take them): each
+        one's name, parent, depth in the tree, place (millimetres) and axes (a quaternion), its partner on the
+        other side of the body, and whether turning it moves the mesh."""
+        session = self._session(args)
+        rig = session.model.rig
+        if rig is None:
+            return {"bones": [], "skeleton": None,
+                    "why": session.model.pose_note or "This model has no skeleton whose bones can be turned."}
+        options = mesh_options(_parse_lists(args))
+        try:
+            world = posing.bone_world(rig, options.pose, options.bones)
+        except FormatError as exc:
+            raise AppError(str(exc)) from exc
+        used = self._used_bones(session)
+        names = list(rig.names)
+        known = set(names)
+        parents = [int(p) if 0 <= int(p) < len(names) and int(p) != i else -1 for i, p in enumerate(rig.parents)]
+        depth = [0] * len(names)
+        for i in range(len(names)):
+            d, j, seen = 0, parents[i], set()
+            while j >= 0 and j not in seen and d < 256:
+                seen.add(j)
+                d, j = d + 1, parents[j]
+            depth[i] = d
+        out = []
+        for i, name in enumerate(names):
+            q, flip = posing.quaternion(world[i])
+            out.append({"name": name, "parent": parents[i], "depth": depth[i],
+                        "pos": [round(float(x) * 1000, 3) for x in world[i][:3, 3]], "quat": q, "flip": flip,
+                        "used": i in used, "partner": posing.mirror_name(name, known),
+                        "side": posing.side_of(name, known)})
+        return {"bones": out, "skeleton": posing.skeleton_signature(names),
+                "adjusted": {k: list(v) for k, v in (options.bones or {}).items()}}
+
+    def cmd_pose_mirror(self, args: dict) -> dict:
+        """The bone adjustments ``bones`` with those of ``names`` (or of every bone on one ``side``, "left" or
+        "right") copied, mirrored, onto their partners on the other side."""
+        session = self._session(args)
+        rig = session.model.rig
+        if rig is None:
+            raise AppError("This model has no skeleton.")
+        bones = parse_bones(args.get("bones")) or {}
+        side = str(args.get("side") or "")
+        if side:
+            known = set(rig.names)
+            names = [n for n in rig.names if posing.side_of(n, known) == side]
+        else:
+            names = [str(n) for n in args.get("names") or []]
+        if not any(posing.mirror_name(n, set(rig.names)) for n in names):
+            raise AppError("No bone with a partner on the other side was chosen (bones pair up by their names: "
+                           "L_ and R_, _l and _r, Left and Right).")
+        return {"bones": {k: list(v) for k, v in posing.mirror_bones(rig, bones, names).items()}}
+
+    def _model_place(self, session: Session, what: str) -> tuple[overlay.Overlay, str]:
+        """The overlay and key the open model's own things (saved poses, attached models) are kept under."""
+        entry = session.entry
+        if entry is None:
+            raise AppError(f"{what} are kept for models in the library (not for files opened on their own).")
+        if entry.config is not None:
+            return self._overlay(entry.game), f"config:{entry.config.id}"
+        rel = self._overlay_rel(entry)
+        if rel is None:
+            raise AppError("That model isn't in one of the game's folders.")
+        m = session.model
+        return self._overlay(entry.game), overlay.model_key(rel, m.variant if m.variants else None)
+
+    def _poses_json(self, session: Session) -> dict:
+        try:
+            ov, key = self._model_place(session, "Saved poses")
+        except AppError as exc:
+            return {"own": [], "shared": [], "why": str(exc)}
+        rig = session.model.rig
+        sig = posing.skeleton_signature(rig.names) if rig is not None else None
+        names = set(rig.names) if rig is not None else set()
+
+        def row(name: str, p: dict, **extra) -> dict:
+            bones = {k: v for k, v in (p.get("bones") or {}).items() if k in names}
+            return {"name": name, "animation": p.get("animation"), "frame": int(p.get("frame") or 0),
+                    "bones": bones, "saved": p.get("saved"), **extra}
+
+        own = [row(n, p) for n, p in ov.poses(key).items()]
+        shared = []
+        if sig:
+            for other, name, p in ov.poses_like(sig, but=key):
+                shared.append(row(name, p, model=p.get("label") or other.split("|")[0].rsplit("/", 1)[-1], key=other))
+        return {"own": own, "shared": shared, "skeleton": sig}
+
+    def cmd_poses(self, args: dict) -> dict:
+        """The model's saved poses, and those saved on other models of the game with the same skeleton."""
+        return self._poses_json(self._session(args))
+
+    def cmd_pose_save(self, args: dict) -> dict:
+        """Keep the pose shown (``pose``: animation and frame, ``bones``: adjustments) as ``name``."""
+        session = self._session(args)
+        ov, key = self._model_place(session, "Saved poses")
+        options = mesh_options(_parse_lists(args))
+        rig = session.model.rig
+        if options.pose is None and not options.bones:
+            raise AppError("Choose an animation's frame or turn a bone first: the bind pose needs no saving.")
+        label = session.entry.label if session.entry is not None else session.model.name
+        pose = {"animation": options.pose[0] if options.pose else None, "frame": options.pose[1] if options.pose else 0,
+                "bones": {k: list(v) for k, v in (options.bones or {}).items()},
+                "skeleton": posing.skeleton_signature(rig.names) if rig is not None else None,
+                "label": label, "saved": time.strftime("%Y-%m-%d %H:%M")}
+        try:
+            name = ov.save_pose(key, str(args.get("name") or ""), pose)
+        except ValueError as exc:
+            raise AppError(str(exc)) from None
+        ov.save()
+        return {**self._poses_json(session), "saved": name}
+
+    def cmd_pose_rename(self, args: dict) -> dict:
+        session = self._session(args)
+        ov, key = self._model_place(session, "Saved poses")
+        try:
+            name = ov.rename_pose(key, str(args.get("name") or ""), str(args.get("to") or ""))
+        except KeyError:
+            raise AppError("That pose isn't saved any more.") from None
+        except ValueError as exc:
+            raise AppError(str(exc)) from None
+        ov.save()
+        return {**self._poses_json(session), "renamed": name}
+
+    def cmd_pose_delete(self, args: dict) -> dict:
+        session = self._session(args)
+        ov, key = self._model_place(session, "Saved poses")
+        ov.delete_pose(key, str(args.get("name") or ""))
+        ov.save()
+        return self._poses_json(session)
+
+    def cmd_attach_save(self, args: dict) -> dict:
+        """Keep the models attached to the open model: ``items`` [{id (none for a new one), file, variant,
+        label, place}]. ``reopen`` says the set changed, so the page opens the model again to show it."""
+        session = self._session(args)
+        entry = session.entry
+        if entry is None or entry.config is not None:
+            raise AppError("Models can be attached to models in the library (not to files opened on their own or "
+                           "configurable models) for now.")
+        ov, key = self._model_place(session, "Attached models")
+        raw = args.get("items")
+        if not isinstance(raw, list):
+            raise AppError("No attached models were sent.")
+        if len(raw) > attach.MAX_ATTACHMENTS:
+            raise AppError(f"At most {attach.MAX_ATTACHMENTS} models can be attached to one.")
+        before = [[a.get("id"), a.get("file"), a.get("variant"), a.get("label")] for a in ov.attachments(key)]
+        items = []
+        for r in raw:
+            if not isinstance(r, dict) or not r.get("file"):
+                raise AppError("Each attached model names its file.")
+            file = str(r["file"])
+            if Path(file).is_absolute():
+                file = self._relative(file)
+            try:
+                place = attach.parse_place(r.get("place") or {})
+            except FormatError as exc:
+                raise AppError(str(exc)) from None
+            spec = attach.Attachment(str(r.get("id") or uuid.uuid4().hex[:8]), file, str(r.get("variant") or "") or None,
+                                     str(r.get("label") or "").strip()[:120], place)
+            items.append(attach.attachment_json(spec))
+        if any(a["file"] == self._relative(str(entry.path)) for a in items):
+            raise AppError("A model can't be attached to itself.")
+        with self.lock:
+            ov.set_attachments(key, items)
+            ov.save()
+        after = [[a.get("id"), a.get("file"), a.get("variant"), a.get("label")] for a in items]
+        return {"items": items, "reopen": after != before}
 
     def cmd_model_mesh(self, args: dict) -> bytes:
         session = self._session(args)
@@ -2256,7 +2534,9 @@ class Service:
             job.check()  # stopped in its last step: not kept
             if getattr(result, "made_with", None) is None:  # what it was made with, kept with it as a variation
                 result.made_with = {"settings": dict(args.get("settings") or {}), "step": args.get("step") or "both",
-                                    "parts": args.get("parts"), "flags": args.get("flags") or {}, "pose": args.get("pose")}
+                                    "parts": args.get("parts"), "flags": args.get("flags") or {}, "pose": args.get("pose"),
+                                    "bones": {k: list(v) for k, v in (options.bones or {}).items()} or None,
+                                    "attach": _places_json(options.attach)}
             self._keep(key, result)
             session.result, session.result_id = result, _key_id(key)
             return {**self._result_json(session), "kept": kept is not None, "mesh_reused": mesh is not None}
@@ -2487,7 +2767,8 @@ class Service:
         made = getattr(result, "made_with", None) or {}
         info = {"variant": variant, "model": {"label": session.entry.label, "stem": session.entry.stem},
                 "settings": made.get("settings") or {}, "step": made.get("step") or "both",
-                "mesh": {"parts": made.get("parts"), "flags": made.get("flags") or {}, "pose": made.get("pose")},
+                "mesh": {"parts": made.get("parts"), "flags": made.get("flags") or {}, "pose": made.get("pose"),
+                         **{k: made[k] for k in ("bones", "attach") if made.get(k)}},
                 "result": {k: shown[k] for k in ("stats", "size_mm", "fields", "warnings", "displaced")},
                 "from": getattr(result, "variation", None)}
 
@@ -2525,7 +2806,7 @@ class Service:
                                bool(made.get("displaced", True)))
         result.saved, result.variation = made, vid
         result.made_with = {"settings": row.get("settings") or {}, "step": row.get("step") or "both",
-                            **{k: (row.get("mesh") or {}).get(k) for k in ("parts", "flags", "pose")}}
+                            **{k: (row.get("mesh") or {}).get(k) for k in ("parts", "flags", "pose", "bones", "attach")}}
         session.result, session.result_id = result, f"var-{vid}"
         return {**self._result_json(session), "saved": row}
 
@@ -2608,14 +2889,46 @@ class Service:
                 opts.textures = _paint_textures(model, mesh, paint)
             elif args.get("textures", True) and ext in (".obj", ".glb"):
                 opts.textures = _albedo(model, mesh)
+            out_mesh = mesh
+            if ext == ".glb":  # the skeleton too, standing in the pose the mesh is in
+                out_mesh, opts.skeleton, opts.skin = self._export_skeleton(session, which, args, mesh)
             job.report(0.2, "Writing")
-            path = export_mesh(mesh, _free_name(folder / f"{base}{ext}"), opts)
+            path = export_mesh(out_mesh, _free_name(folder / f"{base}{ext}"), opts)
             out = {"path": str(path), "bytes": path.stat().st_size}
             if opts.painting is not None:
                 out["paint"] = {**opts.painting.stats(), "palette_file": str(path.with_name(f"{path.stem}_palette.png"))}
             return out
 
         return {"job": self.jobs.start(f"Exporting {base}{ext}", run, stoppable=True).id}
+
+    def _export_skeleton(self, session: Session, which: str, args: dict, mesh: TriMesh):
+        """(mesh, skeleton, skin) for a GLB: the model's bones in the pose the mesh shows, and for the original
+        model its weights, so the glTF's skeleton stands in that pose with the mesh bound to it. An enhanced
+        model's vertices are new, so it gets the skeleton without weights."""
+        model = session.model
+        rig = model.rig
+        if rig is None or which not in ("original", "enhanced"):
+            return mesh, None, None
+        if which == "enhanced":
+            made = getattr(session.result, "made_with", None) or {}
+            try:
+                world = posing.bone_world(rig, parse_pose(made.get("pose")), parse_bones(made.get("bones")))
+            except (FormatError, AppError):
+                return mesh, None, None
+            return mesh, (list(rig.names), rig.parents, world), None
+        options = mesh_options(_parse_lists(args))
+        if "pose" not in mesh.metadata and mesh.metadata.get("skin") is None and not model.adjusts_bones:
+            try:  # posed by its importer: the same pose from its skeleton, which keeps the weights
+                mesh = posing.pose_adjusted(model, dataclasses.replace(options, flags={
+                    **{o.key: o.default for o in model.options}, **options.flags}))
+            except FormatError:
+                return mesh, None, None
+        world = mesh.metadata.get("pose")
+        if world is None:
+            world = rig.bind_world if options.pose is None and not options.bones else \
+                posing.bone_world(rig, options.pose, options.bones)
+        skin = mesh.metadata.get("skin")
+        return mesh, (list(rig.names), rig.parents, world), skin
 
     # ------------------------------------------------------------ painting (3MF)
 

@@ -164,7 +164,8 @@ the tests call directly.
   inspector's tabs in the order the work happens, in three groups on the rail (each tab's icon
   with its short name upright under it; icons only when the page is crowded): **Model**
   (Configure, Model: parts, importer options, size, file; Textures; Pose: an animation and a
-  frame, with a slider, stepping and playback, only for models with animations), **Edit** (Mesh,
+  frame, with a slider, stepping and playback, bones turned on top, saved poses and attached
+  models, for models with a skeleton, sockets or models attached), **Edit** (Mesh,
   Displace, Finish, Cut) and **Export**. Since 0.43.0:
   - *One place chooses the model worked on*: the Show buttons under the 3D view (Original,
     Enhanced, Finished, Pieces). Finish, Cut and Export say "Working on: Enhanced · change" (the
@@ -272,6 +273,48 @@ AnimSet isn't `bAnimRotationOnly` (the default) or names them in `UseTranslation
 (`ForceMeshTranslationBoneNames` keeps the mesh's); the root keeps its place on the floor. A
 skeletal mesh with bones shows the Pose tab until the game's AnimSets are listed, then only if
 one fits. Collect copies the packages its AnimSets are read from.
+
+**Posing freedom (0.47.0).** On top of an animation's frame, or on the bind pose of a model
+with no animations, any bone can be turned (`posing.py`, the same for every importer that gives a
+`Rig`: FromSoftware and RE Engine models with or without animations, Unreal 3/4/5 skeletal meshes
+whose animations are found, and the packages made of them). A turn is three
+angles in degrees about the bone's own axes, X then Y then Z (three.js's "XYZ" Euler order:
+`Rx · Ry · Rz`), kept by bone name in `MeshOptions.bones`. Each bone's local matrix is the bind
+pose's, replaced by the animation's where it moves the bone, then multiplied by its turn on the
+right; the hierarchy is composed again so children follow, and the bind-pose mesh is skinned with
+its own weights (`world · bind⁻¹`). Without turns the importers pose the model as before. A model
+made of others (configurable models, attached models) passes the turns to each part that has the
+bone (`SourceModel.adjusts_bones`).
+- *Mirror*: bones pair up by the side their names say (`L_`/`R_`, `_l`/`_r`, `Left`/`Right`,
+  ` L `/` R `, `.L`/`.R`, `LUpperArm`/`RUpperArm`, `_L1`/`_R1`), only when the partner exists. A turn
+  is carried across in the model's frame: `D = B·R·Bᵀ` with `B` the bone's bind rotation, reflected
+  across the plane the two bones lie apart in (`S·D·S`, the axis along which the pairs' pivots
+  differ most), then into the partner's frame (`R' = B'ᵀ·D'·B'`).
+- *In the page*: the Pose tab lists the bones as a tree (those that move none of the model's
+  vertices behind *Every bone*), with a find box; the chosen bone gets X, Y and Z sliders with
+  boxes to type in, *Mirror to …*, *Reset bone*; *Reset all*, *Mirror left → right* and back.
+  *Show bones in the 3D view* draws a ball at each bone's pivot (click one to choose it) and three.js's
+  `TransformControls` rotate gizmo, in the bone's local space, on the chosen one; a drag is composed
+  with the turn already there (`q_turn · q_drag`, a bone with mirrored axes conjugated) and sent when
+  it ends.
+- *Saved poses*: the animation, frame and turns kept under a name in the game's library overlay
+  (`poses` of the model's entry, with the skeleton's signature: a hash of its sorted bone names),
+  listed on the Pose tab to apply, rename or delete, and offered to every model of the game with
+  the same signature. The footer under the 3D view names the pose shown; Export's file name, the
+  Generate result's record and saved variations carry the turns.
+- *Attached models*: a model of the library held by a bone or socket of this one, with an offset
+  (millimetres, along the bone's axes), a turn and a scale (`attach.py`, kept in the overlay's
+  `attach` list of the model, by the attached model's path in the game). The model opened is then a
+  wrapper: the base's parts, materials and textures followed by each attached model's (named
+  "Label / part"), its bind-pose mesh weighted whole to the holding bone, posed with the rest, so it
+  follows every frame and turn and goes through Clean, Mesh, Displace, Finish, Cut and Export like
+  the model's own parts. What is attached is part of what the page opens (the overlay's signature for
+  the file); where each one sits is in `MeshOptions.attach`, so moving it only builds the mesh again.
+  A socket holds it where the socket is in the bind pose. Up to 16 per model.
+- *GLB export*: the original model exported as GLB carries its skeleton in the pose shown (each
+  bone's local matrix in the export frame, Y up and scaled like the mesh), the posed mesh bound to it
+  with its four largest weights per vertex, so Blender opens it posed and rigged. An enhanced model's
+  GLB carries the skeleton in its pose without weights (remeshing doesn't keep them).
 
 The library groups models by their FromSoftware naming:
 
@@ -902,6 +945,9 @@ differs:
 - [x] The model page in the order the work happens (0.43.0): the rail's Model, Edit and Export groups,
       one picker for the model worked on, explanations folded once used, a Next strip, a one-row footer,
       and the handoff to Model Painter (For Model Painter GLB, Open in Model Painter)
+- [x] Posing freedom (0.47.0): bones turned on top of a frame or the bind pose (sliders and a
+      rotate gizmo), mirrored left ↔ right by name, saved poses offered to models with the same
+      skeleton, library models attached to a bone or socket, the GLB keeping the skeleton posed
 - [ ] In-game names (weapon, armor and enemy names from the game's text and param files)
 - [ ] Batch queue: enhance and export a whole group with one set of settings
 - [ ] Read Elden Ring MATBIN files for exact material maps
@@ -1027,5 +1073,14 @@ The plan is in Reading id Tech 6/7/8 files above.
   (`c0000.anibnd`) only when that archive is copied next to them.
 - Animations that use root motion are shown in place; cloth simulated in the game keeps its
   bind pose.
+- Posing freedom: turning bones needs a skeleton and the bind-pose mesh's skin weights. Unreal
+  skeletal meshes with no animations found, Cyberpunk models, and glTF and PSK files from other
+  tools (read in their bind pose without weights) have no bones to turn yet. Packages made
+  before 0.47.0 of models without animations kept no skeleton: collect them again to turn their
+  bones. A socket holds an attached model where the socket is in the bind pose (sockets aren't
+  posed); attach to a bone to have it follow. Mirroring works out the plane from the bind pose's
+  pairs of bones, so a skeleton whose sides aren't mirror images in its bind pose mirrors only
+  roughly. Attaching is for library models (not files opened on their own, or configurable
+  models). An enhanced model's GLB has the skeleton without skin weights.
 - Isotropic remeshing needs the optional `pyacvd` package; the app falls back to subdivision
   without it. The Windows app includes it, with only the parts of VTK it uses.

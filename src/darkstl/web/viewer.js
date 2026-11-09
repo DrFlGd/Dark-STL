@@ -2,8 +2,11 @@
 // a Z-up scene on a floor grid in 10 mm squares, orbit with the mouse, three
 // views, edges on or off. Dark STL sends meshes in its own packed form
 // (darkstl/app/meshpack.py) so each material can carry its game texture.
+// The Pose tab's bones show as small balls joined to their parents; the one chosen
+// carries a rotate gizmo (three's TransformControls) in its own axes.
 import * as THREE from "three";
 import { OrbitControls } from "./vendor/three/OrbitControls.js";
+import { TransformControls } from "./vendor/three/TransformControls.js";
 
 const STEP = 10; // mm
 export const GRAY = "#a3a9ae";
@@ -12,6 +15,19 @@ const EDGES_UP_TO = 400000; // triangles: more would take long to work out, and 
 /** Colours of the pieces of a cut model, in turn. */
 export const PIECE_COLORS = ["#d08c4a", "#5b9bd5", "#7cb46b", "#c96f9b", "#d9c35a", "#8a7fd1", "#4fb3b0", "#c9644f", "#9aa25a", "#6f8fb0"];
 const CUT_COLOR = 0xe0913a, CUT_IDLE = 0x7d8fa3;
+const BONE_COLOR = 0x4fb3e8, BONE_TURNED = 0xe0913a, BONE_CHOSEN = 0xffd166, BONE_LINE = 0x8fb8d6;
+
+/** A bone's turn (x, y, z degrees about its own axes, three's "XYZ" order) followed by `drag`, a turn in the
+ *  same axes as the gizmo made it (a quaternion [x, y, z, w]); `flip`: the bone's axes are mirrored, which the
+ *  gizmo's aren't. The turn it makes, as three angles again. */
+export function addTurn(deg, drag, flip = false) {
+  const d = new THREE.Quaternion(...drag);
+  if (flip) d.set(-d.x, -d.y, d.z, d.w);
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(...(deg || [0, 0, 0]).map((a) => THREE.MathUtils.degToRad(a)), "XYZ"));
+  q.multiply(d).normalize();
+  const e = new THREE.Euler().setFromQuaternion(q, "XYZ");
+  return [e.x, e.y, e.z].map((a) => Math.round(THREE.MathUtils.radToDeg(a) * 100) / 100 + 0);
+}
 
 /** Read a packed mesh: { header, positions, normals, uvs, index }. */
 export function unpackMesh(buf) {
@@ -85,6 +101,17 @@ export class Viewer {
     this.onCutSelect = null; // (id) when a plane is clicked
     this.placing = null; // (point, normal) for the next click on the model
     this.explode = 0;
+    // the Pose tab's bones: [{ name, parent, pos (mm), quat, flip, turned }], the one chosen, and what a click
+    // on a ball (onBonePick) or a turn of the gizmo (onBoneTurn(name, quaternion)) does
+    this.boneGroup = new THREE.Group();
+    this.scene.add(this.boneGroup);
+    this.bones = [];
+    this.boneChosen = null;
+    this.onBonePick = null;
+    this.onBoneTurn = null;
+    this.boneHandle = new THREE.Object3D();
+    this.scene.add(this.boneHandle);
+    this.gizmo = null;
     this._raycaster = new THREE.Raycaster();
     this._drag = null;
     this._onDown = (e) => this._pointerDown(e);
@@ -202,6 +229,7 @@ export class Viewer {
     this._buildGrid(this.bbox);
     this._applyExplode();
     this._drawCuts();
+    if (this.bones.length) this._drawBones();
     if (!keepView) this.view("iso");
     this.redraw();
     const size = this.bbox.getSize(new THREE.Vector3());
@@ -264,10 +292,97 @@ export class Viewer {
     this._observer.disconnect();
     window.removeEventListener("resize", this._onWindowResize);
     this.clear();
+    this._clearBones();
+    if (this.gizmo) { this.scene.remove(this.gizmo.getHelper()); this.gizmo.dispose(); this.gizmo = null; }
     for (const t of this.textures.values()) t.dispose();
     this.textures.clear();
     this.controls.dispose();
     this.renderer.dispose();
+  }
+
+  // ---------------------------------------------------------------- bones
+
+  /** Show the model's bones (balls at their pivots, lines to their parents), or none with `bones` empty;
+   *  `chosen` names the one with the rotate gizmo. Positions are the model's millimetres, as the mesh's. */
+  setBones(bones, chosen) {
+    this.bones = bones || [];
+    this.boneChosen = chosen && this.bones.some((b) => b.name === chosen) ? chosen : null;
+    this._drawBones();
+    this.redraw();
+  }
+
+  _clearBones() {
+    for (const c of [...this.boneGroup.children]) {
+      this.boneGroup.remove(c);
+      c.geometry?.dispose();
+      c.material?.dispose();
+    }
+  }
+
+  _boneSize() {
+    const bb = this.bbox;
+    return bb ? Math.max(bb.getSize(new THREE.Vector3()).length() * 0.008, 0.6) : 2;
+  }
+
+  _drawBones() {
+    this._clearBones();
+    const r = this._boneSize();
+    const ball = new THREE.SphereGeometry(r, 12, 8);
+    const at = (b) => new THREE.Vector3(...b.pos).add(this.offset);
+    const lines = [];
+    for (const b of this.bones) {
+      const chosen = b.name === this.boneChosen;
+      const m = new THREE.Mesh(chosen ? ball.clone().scale(1.6, 1.6, 1.6) : ball.clone(),
+        new THREE.MeshBasicMaterial({ color: chosen ? BONE_CHOSEN : b.turned ? BONE_TURNED : BONE_COLOR, depthTest: false, transparent: true, opacity: 0.95 }));
+      m.position.copy(at(b));
+      m.renderOrder = 20;
+      m.userData.bone = b.name;
+      this.boneGroup.add(m);
+      const p = b.parent >= 0 ? this.bones.find((x) => x.index === b.parent) : null;
+      if (p) lines.push(at(p), at(b));
+    }
+    ball.dispose();
+    if (lines.length) {
+      const seg = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(lines),
+        new THREE.LineBasicMaterial({ color: BONE_LINE, depthTest: false, transparent: true, opacity: 0.7 }));
+      seg.renderOrder = 19;
+      this.boneGroup.add(seg);
+    }
+    this._placeGizmo();
+  }
+
+  /** The rotate gizmo on the chosen bone, in its axes: turning a ring turns the bone about that axis. */
+  _placeGizmo() {
+    const b = this.bones.find((x) => x.name === this.boneChosen);
+    if (!b) {
+      if (this.gizmo) { this.gizmo.detach(); this.gizmo.getHelper().visible = false; }
+      return;
+    }
+    if (!this.gizmo) {
+      const g = new TransformControls(this.camera, this.canvas);
+      g.setMode("rotate");
+      g.setSpace("local");
+      g.addEventListener("change", this.redraw);
+      g.addEventListener("dragging-changed", (e) => {
+        this.controls.enabled = !e.value;
+        if (e.value) { this._turnStart = this.boneHandle.quaternion.clone(); return; }
+        const start = this._turnStart;
+        this._turnStart = null;
+        if (!start || !this.boneChosen) return;
+        const drag = start.clone().invert().multiply(this.boneHandle.quaternion).normalize();
+        if (Math.abs(drag.w) > 0.999999) return; // not turned
+        this.onBoneTurn?.(this.boneChosen, [drag.x, drag.y, drag.z, drag.w]);
+      });
+      this.scene.add(g.getHelper());
+      this.gizmo = g;
+    }
+    if (this.gizmo.dragging) return;
+    this.boneHandle.position.copy(new THREE.Vector3(...b.pos).add(this.offset));
+    this.boneHandle.quaternion.set(...b.quat);
+    this.boneHandle.updateMatrixWorld();
+    this.gizmo.attach(this.boneHandle);
+    this.gizmo.getHelper().visible = true;
+    this.gizmo.setSize(0.8);
   }
 
   // ---------------------------------------------------------------- cut planes
@@ -365,6 +480,15 @@ export class Viewer {
   _pointerDown(e) {
     if (e.button !== 0) return;
     const ray = this._ray(e);
+    if (this.bones.length && this.boneGroup.children.length && !(this.gizmo?.axis)) {
+      const hit = this._raycaster.intersectObjects(this.boneGroup.children, false).find((h) => h.object.userData.bone);
+      if (hit) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        this.onBonePick?.(hit.object.userData.bone);
+        return;
+      }
+    }
     if (this.placing && this.mesh) {
       const hit = this._raycaster.intersectObject(this.mesh, true)[0];
       if (hit) {
