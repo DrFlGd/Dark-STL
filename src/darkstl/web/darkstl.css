@@ -71,6 +71,17 @@ a.chip-btn.on { background: var(--sel); }
 .stage-tools .seg button:disabled { opacity: .45; cursor: not-allowed; }
 .stage-tools .seg button { padding: 5px 8px; font-size: 12.5px; }
 .stage-note .warn-note { max-width: 520px; pointer-events: auto; }
+/* the Thickness shading's panel: top left of the 3D view (the toast takes the top right) */
+.thickness-panel { position: absolute; top: 10px; left: 10px; z-index: 2; display: grid; gap: 8px; width: min(250px, calc(100% - 20px));
+  padding: 10px 12px; background: var(--panel); border: 1px solid var(--steel-2); border-radius: var(--radius-m);
+  box-shadow: 0 4px 16px rgba(0,0,0,.18); font-size: 12.5px; }
+.thickness-panel .field-block { display: grid; gap: 3px; }
+.thickness-panel .field-row { display: flex; gap: 6px; align-items: center; }
+.thickness-panel input[type="number"] { width: auto; flex: 1 1 80px; min-width: 0; }
+.thickness-panel .unit { white-space: nowrap; }
+.thick-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.thick-legend li { display: flex; gap: 6px; align-items: baseline; }
+.thick-swatch { flex: none; width: 10px; height: 10px; border-radius: 2px; border: 1px solid rgba(0,0,0,.25); transform: translateY(1px); }
 .variant-pick select { width: auto; max-width: 220px; }
 .tab-pad { padding: 12px 14px 24px; display: grid; gap: 16px; align-content: start; min-width: 0; }
 .tab-pad .insp-section { display: grid; gap: 8px; min-width: 0; }

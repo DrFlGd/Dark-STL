@@ -165,6 +165,11 @@ def test_open_a_model_and_read_its_mesh_and_textures(service):
     assert arrays["index"].max() < header["vertices"]
     # size in mm: the test weapon is a 1 m square
     assert np.allclose(np.array(header["max"]) - np.array(header["min"]), [1000, 1000, 0], atol=1)
+    assert "scalar" not in header
+    # the Thickness shading's mesh: a thickness per vertex, 0 here (the test weapon is a single sheet)
+    header, arrays = unpack_mesh(service.call("model_mesh", {"sid": m["sid"], "uv": "1", "thickness": "1"}))
+    assert header["scalar"] == "thickness" and len(arrays["scalar"]) == header["vertices"]
+    assert (arrays["scalar"] == 0).all()
     # no parts switched on: an empty mesh
     header, _ = unpack_mesh(service.call("model_mesh", {"sid": m["sid"], "parts": ""}))
     assert header["triangles"] == 0
@@ -203,6 +208,12 @@ def test_enhance_then_export(service, tmp_path):
     glb = wait(service, service.call("export", {"sid": m["sid"], "which": "original", "format": ".glb", "folder": str(out),
                                                 "name": "plate"})["job"])
     assert Path(glb["path"]).name == "plate.glb" and Path(glb["path"]).read_bytes()[:4] == b"glTF"
+    # nothing is thin on a flat plate: nothing lowered; switched off, nothing reported
+    assert r["stats"]["thin_capped"] == 0 and r["stats"]["thin_kept_percent"] == 100
+    off = wait(service, service.call("enhance", {"sid": m["sid"], "settings": {"target_vertices": 4000, "thin_parts": False}})["job"])
+    assert "thin_capped" not in off["stats"] and off["stats"]["vertices"] == r["stats"]["vertices"]
+    header, arrays = unpack_mesh(service.call("model_mesh", {"sid": m["sid"], "which": "enhanced", "thickness": "1"}))
+    assert len(arrays["scalar"]) == header["vertices"]
 
 
 def test_generated_models_are_kept(service, monkeypatch):

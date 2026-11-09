@@ -19,13 +19,14 @@ import { api, binUrl, info, plural, bytesText, followJob, stopJob, toast, showIn
 import { CommandBar } from "./layout.js";
 import { openMenu } from "./actions.js";
 import { Inspector, useWidth } from "./inspector.js";
-import { Viewer, PIECE_COLORS } from "../viewer.js";
+import { Viewer, PIECE_COLORS, THICKNESS_COLORS } from "../viewer.js";
 import { ConfigureTab } from "./configure.js";
 import { CleanTab, cleanId } from "./clean.js";
 
 const ENHANCE = { target_vertices: 1_000_000, method: "subdivide", smooth: true, source: "normal", strength: 1, height_range_mm: 1,
   green: "auto", detail_fraction: 0.0625, max_displacement_mm: 0, integration: "mesh", edge_keeping: 0, deblock: "off", edge_smoothing: 1,
-  upsample: "off", upsample_factor: 0, ai_model: "", deblock_model: "", edge_hints: false, albedo_detail_mm: 0, detail_normals: false, detail_strength: 1 };
+  upsample: "off", upsample_factor: 0, ai_model: "", deblock_model: "", edge_hints: false, albedo_detail_mm: 0, detail_normals: false, detail_strength: 1,
+  thin_parts: true, thin_room: 0.8 };
 const IMAGE_PATTERN = "Images (*.png;*.tga;*.tif;*.tiff;*.dds;*.jpg;*.jpeg;*.webp;*.bmp)";
 const EXPORT = { format: ".stl", units: "mm", textures: true, folder: "", paint: null };
 /** The painted 3MF's settings: the palette's size (chosen from the textures) or its colours (chosen by hand). */
@@ -59,7 +60,7 @@ function usePaint(m) {
   };
   return [paint, set];
 }
-const VIEW = { shading: "textured", edges: false };
+const VIEW = { shading: "textured", edges: false, print_height_mm: 0, min_wall_mm: 0.8 };
 /** A material's texture roles, as the Materials list names them. */
 const ROLES = [["albedo", "Colour"], ["normal", "Normals"], ["height", "Height"]];
 const JOINT = { kind: "pegs", clearance_mm: 0.2, count: 0, diameter_mm: 5, depth_mm: 6, magnet_diameter_mm: 6, magnet_height_mm: 3, flip: false, print_dowels: true };
@@ -83,7 +84,7 @@ const GROUP = { model: "Model", edit: "Edit", out: "Export" };
 const WHICH = { original: "Original", enhanced: "Enhanced", finished: "Finished", pieces: "Pieces" };
 /** The footer under the 3D view keeps every view button in one row from this width (about a 1440 px window with the
  *  game's tree folded); narrower, they fold into one menu so the footer stays one row. */
-const BAR_ROOM = 960;
+const BAR_ROOM = 1040;
 
 const msg = (e) => String(e?.message || e);
 const num = (n) => Math.round(n).toLocaleString();
@@ -502,7 +503,13 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
     });
     return out;
   }, [m.sid, paint, paint ? args.key : "", draped]);
-  const key = JSON.stringify([which, which === "enhanced" ? result?.id || result?.rev : which === "pieces" ? cutting.pieces?.id : which === "finished" ? finished?.id : args.key]);
+  const thick = view.shading === "thickness";
+  /** The Thickness shading's wall and scale: the print height over the model's own height (game size if none). */
+  const thickOpts = (header) => {
+    const tall = header ? header.max[2] - header.min[2] : 0;
+    return { wall: view.min_wall_mm > 0 ? view.min_wall_mm : 0.8, scale: view.print_height_mm > 0 && tall > 0 ? view.print_height_mm / tall : 1 };
+  };
+  const key = JSON.stringify([which, which === "enhanced" ? result?.id || result?.rev : which === "pieces" ? cutting.pieces?.id : which === "finished" ? finished?.id : args.key, thick]);
   useEffect(() => {
     let live = true;
     (async () => {
@@ -511,7 +518,7 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
       if (!built) {
         setState((s) => ({ ...s, loading: true, error: null }));
         onBusy?.(true);
-        const url = () => binUrl("model_mesh", { sid: m.sid, which, uv: 1, ...args.url });
+        const url = () => binUrl("model_mesh", { sid: m.sid, which, uv: 1, thickness: thick ? 1 : 0, ...args.url });
         // the engine let the model go (opened again), or doesn't know the clean-up list named in the address yet
         // (sent to it, then asked again)
         if (args.json.clean_id && !knownClean.has(args.json.clean_id)) { // named in the address: the engine gets it first
@@ -546,12 +553,13 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
       const before = viewer.current.shown?.header;
       const extent = (h) => Math.max(...h.max.map((x, i) => x - h.min[i]), 1e-6);
       const alike = !!before && extent(built.header) / extent(before) < 2 && extent(before) / extent(built.header) < 2;
-      const size = viewer.current.show(built, { textures: view.shading === "textured" && which !== "pieces" && which !== "finished" ? textures : null, wireframe: view.shading === "wire", keepView: shown.current && alike });
+      const size = viewer.current.show(built, { textures: view.shading === "textured" && which !== "pieces" && which !== "finished" ? textures : null, wireframe: view.shading === "wire", keepView: shown.current && alike,
+        thickness: thick ? thickOpts(built.header) : null });
       viewer.current.setEdges(view.edges);
       shown.current = true;
       if (which === "pieces") viewer.current.setExplode(cutting.explode);
       onBounds?.({ min: built.header.min, max: built.header.max, which, args: args.key });
-      setState({ loading: false, error: null, size, key });
+      setState({ loading: false, error: null, size, key, thin: viewer.current.thinShare, thinAt: view.print_height_mm });
       onBusy?.(false);
     })().catch((e) => { if (live) { setState({ loading: false, error: msg(e), size: null, key }); onBusy?.(false); } });
     return () => { live = false; };
@@ -572,6 +580,13 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
     v.setCuts(showCuts && which !== "pieces" ? cuts.map((c) => ({ ...c })) : [], cutSel);
   }, [cuts, cutSel, showCuts, which, state.key]);
   useEffect(() => { if (which === "pieces") viewer.current?.setExplode(explode); }, [explode]);
+  // the Thickness shading recoloured at once for another print height or wall
+  useEffect(() => {
+    const v = viewer.current;
+    if (!thick || !v?.shown?.thickness) return;
+    const thin = v.setThickness(thickOpts(v.shown.header));
+    setState((st) => ({ ...st, thin, thinAt: view.print_height_mm }));
+  }, [view.print_height_mm, view.min_wall_mm]);
   const setView = (patch) => setPref({ view: { ...view, ...patch } });
   const edges = (on) => { setView({ edges: on }); viewer.current?.setEdges(on); };
   const seg = (id, label, options, value, onChange) => html`<div class="seg" role="group" aria-label=${label} id=${id}>${options.map(([k, l, title, disabled]) =>
@@ -580,7 +595,8 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
   const game = stats?.clean?.game_size_mm;
   const scaled = Math.abs(printScale - 1) > 1e-6 && !!game?.length;
   const noTextures = !Object.keys(textures).length;
-  const shadings = [["textured", "Textured", noTextures ? "No colour textures were found for this model" : "With the game's colour textures"], ["clay", "Clay", "Plain grey, to see the shape"], ["wire", "Wireframe", "Every triangle's edges"]];
+  const shadings = [["textured", "Textured", noTextures ? "No colour textures were found for this model" : "With the game's colour textures"], ["clay", "Clay", "Plain grey, to see the shape"], ["wire", "Wireframe", "Every triangle's edges"],
+    ["thickness", "Thickness", "Colours the model by how thick it is behind each point: red is thinner than the thinnest wall your printer makes at the size you print it"]];
   const cameras = [["iso", "3/4", "Three-quarter view"], ["top", "Top", "Looking down"], ["front", "Front", "From the front"]];
   // the footer stays one row: without room for every button, the view settings fold into one menu
   const barBox = useRef(null);
@@ -599,6 +615,9 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
       <div class="stage-canvas" id="stage-canvas" data-loading=${state.loading || state.key !== key ? "1" : null} data-texture=${draped || null}>
         <canvas ref=${canvas} tabindex="0" aria-label="The model in 3D: drag to turn it, right-drag to move, wheel to zoom"></canvas>
         ${state.loading && !shown.current ? html`<div class="stage-note muted">Loading the model…</div>` : null}
+        ${state.loading && shown.current && thick ? html`<div class="stage-note muted" id="thickness-measuring">Measuring how thick the model is…</div>` : null}
+        ${thick ? html`<${ThicknessPanel} view=${view} setView=${setView} thin=${state.key === key ? state.thin : null} at=${state.thinAt}
+          cleaned=${Math.abs(printScale - 1) > 1e-6} />` : null}
         ${state.error ? html`<div class="stage-note"><p class="warn-note" role="alert" id="stage-error">${state.error}</p></div>` : null}
         ${!state.loading && !state.error && size && !size.triangles ? html`<div class="stage-note muted">${cleaned ? "Nothing left to show: no parts are switched on, or the Clean tab's steps took everything off." : "No parts are switched on (Clean tab)."}</div>` : null}
       </div>
@@ -618,6 +637,28 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
       </div>
     </div>
   </section>`;
+}
+
+/** The Thickness shading's small panel over the 3D view: the print height and thinnest wall it measures against,
+ *  what the colours mean, and how much of the model is too thin. */
+function ThicknessPanel({ view, setView, thin, at, cleaned }) {
+  const asIs = cleaned ? "the Clean tab's size" : "game size";
+  const num = (e) => { const v = parseFloat(e.target.value); return Number.isFinite(v) && v > 0 ? v : 0; };
+  const swatch = (c) => html`<span class="thick-swatch" style=${`background:${c}`}></span>`;
+  return html`<div class="thickness-panel" id="thickness-panel" role="group" aria-label="Thickness">
+    <label class="field-block" title=${`How tall you will print the model. Empty: ${cleaned ? "the size the Clean tab scaled it to" : "the size it is in the game, one game metre to 1000 mm"}.`}><span>Print height</span>
+      <span class="field-row"><input type="number" id="print-height" min="0" step="10" placeholder=${asIs} value=${view.print_height_mm || ""}
+        onChange=${(e) => setView({ print_height_mm: num(e) })} /><span class="muted unit">mm</span></span></label>
+    <label class="field-block" title="The thinnest wall your printer makes well at that size (0.8 mm suits most resin and fine filament printers)."><span>Thinnest wall</span>
+      <span class="field-row"><input type="number" id="min-wall" min="0.05" step="0.1" value=${view.min_wall_mm || 0.8}
+        onChange=${(e) => setView({ min_wall_mm: num(e) || 0.8 })} /><span class="muted unit">mm</span></span></label>
+    <ul class="thick-legend">
+      <li>${swatch(THICKNESS_COLORS.thin)} Thinner than that, or a single sheet with no thickness (a cape, a banner)</li>
+      <li>${swatch(THICKNESS_COLORS.near)} Up to twice as thick</li>
+      <li>${swatch(THICKNESS_COLORS.fair)} Up to four times</li>
+      <li>${swatch(THICKNESS_COLORS.thick)} Thick enough</li></ul>
+    ${thin != null ? html`<small class="muted" id="thin-share">${thin > 0 ? `${(thin * 100).toFixed(thin < 0.1 ? 1 : 0)} % of the model's points are too thin` : "Nothing is too thin"}${at ? ` at ${Math.round(at)} mm tall` : ` at ${asIs}`}.</small>` : null}
+  </div>`;
 }
 
 /** Model: its parts (left out or put back on the Clean tab), the importer's options, its size and its file. */
@@ -1080,6 +1121,11 @@ function DisplaceTab({ m, args, stats, s, set, run, setRun, call, sendSettings, 
           onChange=${(v) => set({ detail_strength: v })} />` : null}` : null}
         <${NumberField} id="clamp" label="Most displacement" value=${s.max_displacement_mm} step=${0.1} min=${0} max=${100} unit="mm (0: no limit)"
           title="No vertex moves further than this." onChange=${(v) => set({ max_displacement_mm: v })} />
+        <label class="check-row" title="Where a part is thin (a blade's edge, a claw's tip, a cape hanging close to the body), its relief is lowered smoothly so it can't push through the surface behind or beside it. Thick parts and open areas keep all their relief.">
+          <input type="checkbox" id="thin-parts" checked=${s.thin_parts} onChange=${(e) => set({ thin_parts: e.target.checked })} /><span>Keep thin parts from clipping</span></label>
+        ${s.thin_parts ? html`<${NumberField} id="thin-room" label="Room the relief may use" value=${Math.round((s.thin_room ?? 0.8) * 100)} step=${5} min=${10} max=${100} unit="% of the room"
+          title="How close relief may come to the surface behind or beside it. 80 % leaves a fifth of the gap or thickness free; lower keeps thin parts thicker, 100 lets relief come right up to it."
+          onChange=${(v) => set({ thin_room: Math.min(Math.max(v, 10), 100) / 100 })} />` : null}
         <p class="muted">Cleaning up and upsampling the normal maps is on the <a href="#" onClick=${(e) => { e.preventDefault(); ui.set({ inspectorAsk: { page: "model", tab: "textures" } }); }}>Textures tab</a>.</p>
       </details>` : null}
     </section>
@@ -1098,7 +1144,10 @@ function DisplaceTab({ m, args, stats, s, set, run, setRun, call, sendSettings, 
         <dt>Vertices</dt><dd>${num(result.stats.vertices)} <span class="muted">from ${num(result.stats.source_vertices)}</span></dd>
         <dt>Triangles</dt><dd>${num(result.stats.faces)}</dd>
         <dt>Size</dt><dd>${sizeText(result.size_mm)}${result.size_mm ? gameMm(result.size_mm[2], printScale) : null}</dd>
-        <dt>Relief</dt><dd id="relief">up to ${result.stats.max_displacement_mm.toFixed(2)} mm${gameMm(result.stats.max_displacement_mm, printScale)}</dd></dl>
+        <dt>Relief</dt><dd id="relief">up to ${result.stats.max_displacement_mm.toFixed(2)} mm${gameMm(result.stats.max_displacement_mm, printScale)}</dd>
+        ${result.stats.thin_capped != null ? html`<dt title="Relief lowered where a part is thin or close to another, so it doesn't push through it (More settings)">Thin parts</dt>
+          <dd id="thin-result">${result.stats.thin_capped ? html`${plural(result.stats.thin_capped, "vertex", "vertices")} lowered, by up to ${result.stats.thin_max_reduction_mm.toFixed(2)} mm
+            <span class="muted">(${Math.round(result.stats.thin_kept_percent)} % of the relief kept)</span>` : "nothing needed lowering"}</dd>` : null}</dl>
       ${result.fields.length ? html`<ul class="ls-list field-list">${result.fields.map((f, i) => html`<li key=${i}><span>${f.material}<small class="muted">${[f.texture, f.convention, ...(f.steps || [])].filter(Boolean).join(" · ")}</small></span>
         <span class="muted" title="One texture pixel covers this much of the model">${f.texel_mm.toFixed(2)} mm/px${gameMm(f.texel_mm, printScale)}</span></li>`)}</ul>` : null}
       ${result.warnings.map((w, i) => html`<p class="insp-note" key=${i}>${w}</p>`)}

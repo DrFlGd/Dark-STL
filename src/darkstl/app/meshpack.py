@@ -2,7 +2,10 @@
 
 Layout (little-endian): ``DSTLMESH``, a uint32 header length, the JSON header
 (padded to 4 bytes), then float32 positions (millimetres, Z up), float32
-normals, float32 UVs (when the header says ``uv``) and uint32 triangle indices.
+normals, float32 UVs (when the header says ``uv``), one float32 per vertex when
+the header names a ``scalar`` (``"thickness"``: millimetres behind each vertex,
+0 on single sheets, inf where thicker than was looked for) and uint32 triangle
+indices.
 Triangles are sorted by material and the header lists each material's range,
 so the page can give each one its texture. Where UVs are sent, vertices are
 split along UV seams so every corner keeps its own texture coordinate.
@@ -20,7 +23,9 @@ from ..geometry.mesh import TriMesh
 MAGIC = b"DSTLMESH"
 
 
-def pack_mesh(mesh: TriMesh, with_uv: bool = True, scale: float = 1000.0, extra: dict | None = None) -> bytes:
+def pack_mesh(mesh: TriMesh, with_uv: bool = True, scale: float = 1000.0, extra: dict | None = None,
+              scalar: tuple[str, np.ndarray] | None = None) -> bytes:
+    """``scalar``: (name, one value per vertex of ``mesh``) to send along, e.g. ("thickness", mm)."""
     order = np.argsort(mesh.face_material, kind="stable")
     faces = mesh.faces[order]
     materials = mesh.face_material[order]
@@ -35,8 +40,13 @@ def pack_mesh(mesh: TriMesh, with_uv: bool = True, scale: float = 1000.0, extra:
         positions, norms, uvs = mesh.vertices[src], normals[src], corner_uv[first]
         index = inverse.reshape(-1).astype(np.uint32)
     else:
+        src = None
         positions, norms, uvs = mesh.vertices, normals, None
         index = faces.reshape(-1).astype(np.uint32)
+    values = None
+    if scalar is not None:
+        values = np.asarray(scalar[1], np.float64)
+        values = values[src] if src is not None else values
     groups = []
     if len(materials):
         cuts = np.flatnonzero(np.diff(materials)) + 1
@@ -47,12 +57,16 @@ def pack_mesh(mesh: TriMesh, with_uv: bool = True, scale: float = 1000.0, extra:
     lo, hi = (mesh.vertices.min(0), mesh.vertices.max(0)) if mesh.n_vertices else (np.zeros(3), np.zeros(3))
     header = {"vertices": int(len(positions)), "triangles": int(mesh.n_faces), "uv": bool(uv), "groups": groups,
               "min": (lo * scale).round(4).tolist(), "max": (hi * scale).round(4).tolist(), **(extra or {})}
+    if values is not None:
+        header["scalar"] = scalar[0]
     head = json.dumps(header).encode("utf-8")
     head += b" " * (-len(head) % 4)
     parts = [MAGIC, struct.pack("<I", len(head)), head,
              (positions * scale).astype("<f4").tobytes(), norms.astype("<f4").tobytes()]
     if uv:
         parts.append(uvs.astype("<f4").tobytes())
+    if values is not None:
+        parts.append(values.astype("<f4").tobytes())
     parts.append(index.astype("<u4").tobytes())
     return b"".join(parts)
 
@@ -67,6 +81,7 @@ def unpack_mesh(data: bytes) -> tuple[dict, dict[str, np.ndarray]]:
     out = {}
     for name, count, dtype in (("positions", header["vertices"] * 3, "<f4"), ("normals", header["vertices"] * 3, "<f4"),
                                ("uvs", header["vertices"] * 2 if header["uv"] else 0, "<f4"),
+                               ("scalar", header["vertices"] if header.get("scalar") else 0, "<f4"),
                                ("index", header["triangles"] * 3, "<u4")):
         out[name] = np.frombuffer(data, dtype, count, at)
         at += count * 4
