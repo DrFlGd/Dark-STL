@@ -756,6 +756,51 @@ used, so the side stays straight instead of swelling into a bulge. This is on by
   mirrored UV seam and reports the error of each method. At 70k vertices integration on the
   mesh cuts the error against v0.1 by 14 to 59 % on every scene; edge keeping and the blur
   clean-up measured worse on these scenes, so they are off by default.
+- **Thin parts (0.46.0).** Relief is sized by the texture alone, so a claw tip a few
+  millimetres thick can be given more relief than it is thick, pushing its two sides through
+  each other, and a cape a few millimetres from the body can be pushed into it. Before the
+  vertices move, `geometry/room.py` measures every vertex's room on both sides: a ball
+  touching the surface at the vertex is grown inward and outward until it meets another part
+  of the surface (the shrinking-ball method of Ma et al. 2012 on the evenly spaced vertices,
+  with a KD-tree for nearest points). Inward room is half the thickness behind the vertex;
+  outward room is half the gap to whatever is in front of it. Each height *h* is then capped
+  softly by the room *R* on its side: *h' = uR tanh(h / uR)*, where *u* is "Room the relief
+  may use" (Displace › More settings, 80 % by default). Small heights stay as they were, large
+  ones bend away from the room and none reach it, and the cap fades out where nothing was met
+  within the distance looked, so open and thick areas keep all their relief. Each vertex only
+  looks 8 times as far as the largest relief two rings around it, so vertices that barely move
+  cost next to nothing; on dense meshes the room is measured at about 150,000 vertices and the
+  rest take the tightest of those near them. Where a part is thinner than the vertex spacing
+  (a blade's edge, the last millimetre of a point) the cap alone still leaves folds, so the
+  move directions of vertices using much of their room are blended with their neighbours',
+  and triangles still crossing are found (`geometry/intersect.py`) and the heights around them
+  damped, a few rounds. The Enhanced panel and the warnings say how many vertices were lowered
+  and by how much. The test bench's thin scenes (a 4 mm blade, three 60 mm claws, a cape 3 mm
+  behind a body; normal maps of 3-texel relief) count the triangle pairs that pass through
+  each other, at 70k vertices:
+
+  | Scene | Relief | Crossing before | Without | Cap and calmer directions | With (repaired) | Relief kept | Vertices lowered | Seconds (thin parts / whole step) |
+  |---|---|---|---|---|---|---|---|---|
+  | Blade | 2.57 mm | 0 | 6,145 | 450 | 0 | 87.1 % | 17,963 | 1.1 / 1.8 |
+  | Claws | 1.38 mm | 0 | 6,171 | 0 | 0 | 98.4 % | 1,452 | 1.0 / 1.6 |
+  | Cape | 4.45 mm | 0 | 245 | 0 | 0 | 94.1 % | 10,788 | 1.3 / 2.0 |
+
+  At 1M vertices (4 cores) keeping thin parts adds 6.7 to 9.0 s to a 10 to 12 s displacement
+  (claws 11.2 → 17.9 s, blade 11.9 → 21.4 s, cape 10.2 → 17.9 s), and every crossing found
+  (2,104, 9,384 and 88) is repaired; 88 to 99 % of the relief is kept. Displacement of the
+  relief bench's panels is unchanged (nothing on them is thin).
+- **Thickness shading (0.46.0).** The 3D view's *Thickness* shading colours the model by the
+  thickness behind each point, against the thinnest wall the printer makes (0.8 mm unless
+  changed) at the height it will be printed (typed in the small panel over the view; when empty,
+  the size shown: the game's, or the print height the Clean tab scaled it to): red under it, orange to yellow up to two and four times it, clay beyond. Single
+  sheets (capes, banners: no thickness of their own) are red. It is measured the same way as
+  the room above, inward only and against surfaces facing towards or away from the point (so a
+  box's corner doesn't make its walls look thin), on an evenly spaced stand-in of up to 300k
+  points for coarse game meshes. Game parts overlap, so a closed part counts as solid
+  throughout, a ball inside it ends only where it does (not against another part pushed into
+  it), and surfaces hidden inside another closed part are left out (shown as thick enough).
+  The engine sends the thickness with the mesh (`model_mesh` with `thickness=1`, one float per
+  vertex in the packed mesh); the page recolours at once when the height or the wall changes.
 - **Height / grayscale maps.** Used directly, with a chosen height range in millimetres.
 - **Green channel.** DirectX and OpenGL normal maps flip green. FromSoftware's games all use
   DirectX, so their models use that. For other models it is detected per texture (the
@@ -952,7 +997,8 @@ src/darkstl/
     loose.py    the loose pictures in a folder of other tools' models, listed for the texture picker
     package.py  model packages (see package.py), listed and opened like any game's models
   geometry/     TriMesh, subdivision, isotropic remesh, UV seam matching, closest-point queries,
-                displacement
+                displacement, room.py (room around thin parts, thickness, keeping thin parts from
+                clipping), intersect.py (triangles passing through each other)
   textures/     DDS decoding, normal map -> height, grayscale height, UV coverage, texel size
   library.py    the library: game folders scanned by every importer, by game, kind and group
   configs.py    configurable models: configuration lists, finding their files, assembling a choice
@@ -1030,7 +1076,10 @@ differs:
 - [x] Clean tab (0.45.0): parts in or out, parts and faces hidden inside others, thin sheets (open,
       two-sided, thin) listed and removed, faces picked in the 3D view, holes, duplicates, weld,
       flipped faces, print height and placement; a list of steps per model, done again on every build
-- [ ] Thin-part thickening for blades and capes
+- [x] Thin parts kept from being displaced through themselves or into close parts (room per
+      vertex, soft cap, calmer directions, crossing repair; bench thin scenes) (0.46.0)
+- [x] Thickness shading: what is too thin to print at a chosen height (0.46.0)
+- Thickening thin parts for printing is print finishing, which moved to Model Painter (0.43.0)
 - [x] Per-material strength and on/off in the material list
 - [x] Use detail normal maps as well as the main normal map (blend maps still to do)
 - [ ] Height-map preview painted on the model before running the full step
@@ -1172,6 +1221,11 @@ The plan is in Reading id Tech 6/7/8 files above.
   `.motfsm2` setups (rather than in the motlists themselves) are not used.
 - Output is not guaranteed watertight (pieces cut on the Cut tab are); most slicers repair it,
   but Phase 2 adds a proper fix.
+- Keeping thin parts measures room on the evenly spaced mesh, so parts thinner than about two
+  vertex spacings are handled by the repair step rather than the cap, and lose more of their
+  relief there. The Thickness shading counts an open part (most game parts have openings at
+  the neck or cuffs) as a single sheet where its inward ball ends against the front of another
+  part pushed into it; closed parts don't have this problem.
 - Clean tab steps record faces by part and place in the part: a model whose importer later builds it
   differently (or a configurable model with other parts chosen) may find other faces there; each
   step's row says what it removed, so such a step can be taken away and made again. Thin sheets

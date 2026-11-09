@@ -29,7 +29,29 @@ export function addTurn(deg, drag, flip = false) {
   return [e.x, e.y, e.z].map((a) => Math.round(THREE.MathUtils.radToDeg(a) * 100) / 100 + 0);
 }
 
-/** Read a packed mesh: { header, positions, normals, uvs, index }. */
+/** The Thickness shading's colours: thinner than the wall, up to twice it, up to four times, thick enough. */
+export const THICKNESS_COLORS = { thin: "#d6453d", near: "#e8913a", fair: "#e2c74e", thick: GRAY };
+const THICK_RGB = Object.fromEntries(Object.entries(THICKNESS_COLORS).map(([k, c]) => [k, new THREE.Color(c)]));
+
+/** Colour every vertex by its thickness (mm at game size, times `scale` for the print) against `wall` mm:
+ *  red under it (and on single sheets, which have none), orange to yellow up to twice it, fading to clay at four
+ *  times. Writes into `out` (r, g, b per vertex) and returns the share of vertices thinner than the wall. */
+export function thicknessColours(values, wall, scale, out) {
+  const { thin, near, fair, thick } = THICK_RGB;
+  const c = new THREE.Color();
+  let under = 0;
+  for (let i = 0; i < values.length; i++) {
+    const f = (values[i] * scale) / wall;
+    if (!(f >= 1)) { c.copy(thin); under++; }
+    else if (f < 2) c.copy(near).lerp(fair, f - 1);
+    else if (f < 4) c.copy(fair).lerp(thick, (f - 2) / 2);
+    else c.copy(thick);
+    out[i * 3] = c.r; out[i * 3 + 1] = c.g; out[i * 3 + 2] = c.b;
+  }
+  return values.length ? under / values.length : 0;
+}
+
+/** Read a packed mesh: { header, positions, normals, uvs, scalar, index }. */
 export function unpackMesh(buf) {
   const bytes = new Uint8Array(buf, 0, 8);
   if (String.fromCharCode(...bytes) !== MAGIC) throw new Error("Not a Dark STL mesh");
@@ -40,8 +62,9 @@ export function unpackMesh(buf) {
   const positions = take(Float32Array, header.vertices * 3);
   const normals = take(Float32Array, header.vertices * 3);
   const uvs = header.uv ? take(Float32Array, header.vertices * 2) : null;
+  const scalar = header.scalar ? take(Float32Array, header.vertices) : null;
   const index = take(Uint32Array, header.triangles * 3);
-  return { header, positions, normals, uvs, index };
+  return { header, positions, normals, uvs, scalar, index };
 }
 
 /** sRGB-to-linear decoding of the colour map in the fragment shader (three's own transfer function). */
@@ -179,11 +202,14 @@ export class Viewer {
   /** Make a packed mesh ready to show: its geometry, resting on the floor, centred. The page keeps
    *  what this returns to show it again at once, and frees it with its dispose(). */
   build(buf) {
-    const { header, positions, normals, uvs, index } = unpackMesh(buf);
+    const { header, positions, normals, uvs, scalar, index } = unpackMesh(buf);
     const geom = new THREE.BufferGeometry();
     geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     geom.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
     if (uvs) geom.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+    // the thickness behind each vertex (Thickness shading): coloured when shown, against the wall asked for
+    const thickness = header.scalar === "thickness" ? scalar : null;
+    if (thickness) geom.setAttribute("color", new THREE.BufferAttribute(new Float32Array(header.vertices * 3), 3));
     geom.setIndex(new THREE.BufferAttribute(index, 1));
     const [x0, y0, z0] = header.min, [x1, y1] = header.max;
     const offset = [-(x0 + x1) / 2, -(y0 + y1) / 2, -z0];
@@ -199,19 +225,33 @@ export class Viewer {
       const pg = new THREE.BufferGeometry();
       pg.setAttribute("position", geom.getAttribute("position"));
       pg.setAttribute("normal", geom.getAttribute("normal"));
+      if (thickness) pg.setAttribute("color", geom.getAttribute("color"));
       pg.setIndex(new THREE.BufferAttribute(index.subarray(g.start, g.start + g.count), 1));
       return { geom: pg, piece: g.material };
     }) : null;
-    return { header, geom, slots, offset, pieces, edges: null,
+    return { header, geom, slots, offset, pieces, thickness, edges: null,
       dispose() { geom.dispose(); this.edges?.dispose(); for (const p of this.pieces || []) p.geom.dispose(); } };
   }
 
   /** Show a mesh from build(). `textures`: { material index: image URL } (textured view), or null for clay.
+   *  `thickness`: { wall, scale } to colour it by its thickness (a mesh built with it), see setThickness.
    *  `keepView`: leave the camera where it is (the same model, drawn again). */
-  show(built, { textures = null, wireframe = false, keepView = false } = {}) {
+  show(built, { textures = null, wireframe = false, keepView = false, thickness = null } = {}) {
     const { header, geom, slots } = built;
     this.clear();
-    if (built.pieces) {
+    this.thinShare = null;
+    if (thickness && built.thickness) {
+      this.thinShare = thicknessColours(built.thickness, thickness.wall, thickness.scale, geom.getAttribute("color").array);
+      const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.0, side: THREE.DoubleSide, wireframe });
+      if (built.pieces) {
+        this.mesh = new THREE.Group();
+        for (const p of built.pieces) {
+          const piece = new THREE.Mesh(p.geom, m);
+          piece.userData.piece = p.piece;
+          this.mesh.add(piece);
+        }
+      } else this.mesh = new THREE.Mesh(geom, m);
+    } else if (built.pieces) {
       this.mesh = new THREE.Group();
       for (const p of built.pieces) {
         const m = new THREE.MeshStandardMaterial({ color: PIECE_COLORS[p.piece % PIECE_COLORS.length], roughness: 0.6, metalness: 0.02, side: THREE.DoubleSide, wireframe });
@@ -237,6 +277,18 @@ export class Viewer {
     this.redraw();
     const size = this.bbox.getSize(new THREE.Vector3());
     return { x: size.x, y: size.y, z: size.z, triangles: header.triangles, vertices: header.vertices, edges: header.triangles < EDGES_UP_TO };
+  }
+
+  /** Colour the mesh on show by its thickness again, against another wall or print size: { wall, scale }.
+   *  Returns the share of vertices thinner than the wall. */
+  setThickness({ wall, scale }) {
+    const b = this.shown;
+    if (!b?.thickness) return null;
+    const color = b.geom.getAttribute("color");
+    this.thinShare = thicknessColours(b.thickness, wall, scale, color.array);
+    color.needsUpdate = true;
+    this.redraw();
+    return this.thinShare;
   }
 
   _material(url, wireframe) {
@@ -267,7 +319,7 @@ export class Viewer {
     for (const o of [this.mesh, this.edges]) {
       if (o) {
         this.scene.remove(o);
-        const mats = o.isGroup ? o.children.map((c) => c.material) : [].concat(o.material);
+        const mats = new Set(o.isGroup ? o.children.map((c) => c.material) : [].concat(o.material));
         for (const m of mats) if (m !== this.edgeMaterial) m.dispose();
       }
     }

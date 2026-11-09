@@ -154,6 +154,18 @@ def test_add_a_folder_browse_open_enhance_export(page, app, weapon_dir, tmp_path
     page.wait_for_selector("text=Displaced:")
     assert "evened out first" not in page.text_content("#toast")
 
+    # thin parts are kept from clipping, at 80 % of their room, unless switched off; nothing is thin on a plate
+    assert page.is_checked("#thin-parts") and page.input_value("#thin-room") == "80"
+    assert page.text_content("#thin-result") == "nothing needed lowering"
+    page.uncheck("#thin-parts")
+    assert page.locator("#thin-room").count() == 0
+    page.click("#displace-run")
+    page.wait_for_selector("#thin-result", state="detached", timeout=60000)
+    page.check("#thin-parts")
+    page.fill("#thin-room", "60")
+    page.press("#thin-room", "Tab")
+    assert page.input_value("#thin-room") == "60"
+
     # the Textures tab: a chosen texture can be draped over the whole model (to compare the maps on it)
     page.click("#rail-textures")
     tiles = page.locator(".tex-tile")
@@ -504,6 +516,58 @@ def test_make_a_model_watertight_then_export_and_cut_it(page, app, tmp_path):
     page.click("#rail-cut")
     page.wait_for_selector("#cut-tab")
     assert page.get_attribute("#cut-working", "data-which") == "finished"
+
+
+THICK_RED = """() => {
+  const c = window.__viewer.mesh.geometry.getAttribute("color").array;
+  let red = 0;
+  for (let i = 0; i < c.length; i += 3) if (c[i] > 0.7 && c[i + 1] < 0.4) red++;
+  return red;
+}"""
+
+
+def test_the_thickness_view_shows_what_is_too_thin_to_print(page, app, tmp_path):
+    from test_cut import figure_obj
+
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    opened = app.service.call("model_open", {"path": str(figure_obj(tmp_path))})
+    page.goto(f"{app.url}#/model/{quote(opened['id'], safe='')}")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    meshes = []
+    page.on("request", lambda r: "model_mesh" in r.url and meshes.append(r.url))
+    shade(page, "thickness")
+    page.wait_for_selector("#thickness-panel")
+    page.wait_for_selector("#thin-share", timeout=60000)
+    assert meshes and "thickness=1" in meshes[-1]
+    assert page.evaluate("window.__viewer.mesh.material.vertexColors") is True
+    # at game size (66 mm tall) the 8 mm arms are thick enough for a 0.8 mm wall
+    assert page.get_attribute("#print-height", "placeholder") == "game size"
+    assert page.text_content("#thin-share") == "Nothing is too thin at game size."
+    assert page.evaluate(THICK_RED) == 0
+    # printed 5 mm tall, the arms are 0.6 mm: too thin, and coloured red at once, without fetching again
+    fetched = len(meshes)
+    page.fill("#print-height", "5")
+    page.press("#print-height", "Tab")
+    page.wait_for_function("document.querySelector('#thin-share').textContent.includes('at 5 mm tall')")
+    assert "% of the model's points are too thin at 5 mm tall" in page.text_content("#thin-share")
+    share = page.evaluate("window.__viewer.thinShare")
+    assert 0 < share < 1 and page.evaluate(THICK_RED) > 0
+    if shots:
+        page.screenshot(path=os.path.join(shots, "thickness.png"))
+    # a printer that makes thinner walls: less of it is too thin
+    page.fill("#min-wall", "0.3")
+    page.press("#min-wall", "Tab")
+    page.wait_for_function(f"window.__viewer.thinShare < {share}")
+    assert len(meshes) == fetched
+    # another shading: the panel goes, the plain mesh comes back; the print height is remembered
+    shade(page, "clay")
+    page.wait_for_selector("#thickness-panel", state="detached")
+    page.wait_for_selector("#stage-canvas:not([data-loading])")
+    assert page.evaluate("window.__viewer.mesh.material[0]?.vertexColors ?? window.__viewer.mesh.material.vertexColors") is False
+    shade(page, "thickness")
+    page.wait_for_selector("#thin-share")
+    assert page.input_value("#print-height") == "5" and page.input_value("#min-wall") == "0.3"
+    assert page.evaluate("window.__errors") == []
 
 
 MODEL_POINT = """([x, y, z]) => {

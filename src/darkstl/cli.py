@@ -413,6 +413,8 @@ def cmd_enhance(args) -> int:
         edge_hints=args.edge_hints,
         albedo_detail_mm=args.albedo_detail,
         detail_normals=args.detail_normals,
+        thin_parts=not args.no_thin_parts,
+        thin_room=min(max(args.thin_room, 5.0), 100.0) / 100.0,
     )
     t0 = time.time()
     result = enhance(model, settings, _progress)
@@ -435,6 +437,11 @@ def cmd_enhance(args) -> int:
     print(f"Wrote {path}: {st['vertices']:,} vertices, {st['faces']:,} triangles "
           f"(from {st['source_vertices']:,}); max displacement {st['max_displacement_mm']:.3f} mm "
           f"[{time.time() - t0:.1f}s]")
+    if result.thin is not None:
+        th = result.thin
+        print(f"  thin parts: {th['capped']:,} vertices lowered (by up to {th['max_reduction'] * 1000:.3f} mm), "
+              f"{th['kept'] * 100:.1f}% of the relief kept, {th['crossings_found']:,} crossings found, "
+              f"{th['crossings_left']:,} left [{th['seconds']:.1f}s]")
     for mat, f in result.fields.items():
         name = model.textures[f.texture].name
         print(f"  material {mat}: {name}, green={f.field.convention or 'n/a'}, texel={f.texel_size * 1000:.3f} mm"
@@ -575,6 +582,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--green", choices=["auto", "directx", "opengl"], default="auto")
     s.add_argument("--detail", type=float, default=1 / 16, help="high-pass radius as a fraction of texture size")
     s.add_argument("--max-mm", type=float, help="clamp displacement to this many mm")
+    s.add_argument("--no-thin-parts", action="store_true",
+                   help="don't lower relief where parts are thin or close together (it can then pass through them)")
+    s.add_argument("--thin-room", type=float, default=80.0,
+                   help="percent of the room inside thin parts and between close parts relief may use (default 80)")
     s.add_argument("--integration", choices=["mesh", "texture"], default="mesh",
                    help="integrate normal-map slopes on the model's surface (default) or per texture (v0.1)")
     s.add_argument("--edge-keeping", type=float, default=0.0, help="0..1, keep inconsistent slopes from smearing")
