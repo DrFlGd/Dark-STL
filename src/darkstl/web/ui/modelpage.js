@@ -5,10 +5,9 @@
 // attached to a bone), Clean (parts left out, hidden parts and faces,
 // thin sheets and faces picked in the 3D view removed, repairs, print height and placement: clean.js), Mesh (step 1: the vertices
 // evened out to a count), Displace (step 2: the vertices pushed by the textures'
-// detail), Finish (post-processing for printing: the whole model made watertight, the
-// surfaces inside it removed), Cut (planes placed in the 3D view split it into pieces with
-// joints between them, for printing) and Export tabs. A file holding several models (a weapon and its sheath)
-// gets a switch between them in the command bar. A configurable model (a weapon and the parts that
+// detail) and Export (a file, or a GLB handed to Model Painter, which makes it watertight, cuts it into pieces and
+// paints it for printing: Dark STL's own Finish and Cut tabs moved there in 0.55.0) tabs. A file holding several
+// models (a weapon and its sheath) gets a switch between them in the command bar. A configurable model (a weapon and the parts that
 // fit it) has a Configure tab first, to choose its parts (configure.js).
 import { html, useState, useEffect, useLayoutEffect, useRef, useMemo } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
@@ -21,7 +20,7 @@ import { api, binUrl, info, plural, bytesText, followJob, stopJob, toast, showIn
 import { CommandBar } from "./layout.js";
 import { openMenu } from "./actions.js";
 import { Inspector, useWidth } from "./inspector.js";
-import { Viewer, PIECE_COLORS, THICKNESS_COLORS, addTurn } from "../viewer.js";
+import { Viewer, THICKNESS_COLORS, addTurn } from "../viewer.js";
 import { ConfigureTab } from "./configure.js";
 import { CleanTab, cleanId } from "./clean.js";
 
@@ -30,52 +29,11 @@ const ENHANCE = { target_vertices: 1_000_000, method: "subdivide", smooth: true,
   upsample: "off", upsample_factor: 0, ai_model: "", deblock_model: "", edge_hints: false, albedo_detail_mm: 0, detail_normals: false, detail_strength: 1,
   thin_parts: true, thin_room: 0.8 };
 const IMAGE_PATTERN = "Images (*.png;*.tga;*.tif;*.tiff;*.dds;*.jpg;*.jpeg;*.webp;*.bmp)";
-const EXPORT = { format: ".stl", units: "mm", textures: true, folder: "", paint: null };
-/** The painted 3MF's settings: the palette's size (chosen from the textures) or its colours (chosen by hand). */
-const PAINT = { colours: 4, palette: null, print_height_mm: 150, feature_mm: 0.5, cleanup: "light", tolerance: 0, min_share: 0,
-  brightness: 0, contrast: 1, saturation: 1 };
-const CLEANUPS = [["none", "None"], ["light", "Light: specks under 4 texels"], ["strong", "Strong: specks under 24 texels"]];
-/** The paint settings as the engine takes them (without the page's own). */
-const paintArgs = (p) => ({ colours: p.colours, palette: p.palette, print_height_mm: p.print_height_mm, feature_mm: p.feature_mm, cleanup: p.cleanup,
-  tolerance: p.tolerance, min_share: p.min_share, brightness: p.brightness, contrast: p.contrast, saturation: p.saturation, sources: p.sources });
-/** The settings that change the suggested colours. */
-const paletteArgs = (p) => ({ colours: p.colours, tolerance: p.tolerance, min_share: p.min_share, brightness: p.brightness, contrast: p.contrast,
-  saturation: p.saturation, sources: p.sources });
-/** The painted 3MF's settings (Finish tab), and the texture each material of this model is painted from
- *  (kept per model: texture names are the model's own). Before 0.37 the Export tab kept them. */
-function usePaint(m) {
-  const own = useStore(ui, (s) => s.paintOpts);
-  const old = useStore(ui, (s) => s.exportOpts?.paint);
-  const all = useStore(ui, (s) => s.paintSources) || {};
-  const { preview: _p, sources: _s, ...base } = { ...PAINT, ...(own || old || {}) };
-  const sources = (m && all[m.id]) || {};
-  const paint = { ...base, sources };
-  const set = (patch) => {
-    const { sources: src, ...rest } = patch;
-    const next = {};
-    if (src !== undefined) {
-      const { [m.id]: _, ...others } = all;
-      next.paintSources = Object.keys(src).length ? { ...others, [m.id]: src } : others;
-    }
-    if (Object.keys(rest).length) next.paintOpts = { ...base, ...rest };
-    setPref(next);
-  };
-  return [paint, set];
-}
+const EXPORT = { format: ".stl", units: "mm", textures: true, folder: "" };
 const VIEW = { shading: "textured", edges: false, print_height_mm: 0, min_wall_mm: 0.8 };
 /** A material's texture roles, as the Materials list names them. */
 const ROLES = [["albedo", "Colour"], ["normal", "Normals"], ["height", "Height"]];
-const JOINT = { kind: "pegs", clearance_mm: 0.2, count: 0, diameter_mm: 5, depth_mm: 6, magnet_diameter_mm: 6, magnet_height_mm: 3, flip: false, print_dowels: true };
-const CUT = { from: "enhanced", sheet_mm: 1.2, wall_mm: 1.6, joint: JOINT, lay_flat: true };
-const FINISH = { from: "enhanced", sheet_mm: 1.2, fill_hollows: true, close_gaps: false, close_gaps_mm: 1, remove_loose: false, loose_percent: 1 };
-const JOINTS = [
-  ["flat", "Flat", "The cut faces as they are, to glue together."],
-  ["pegs", "Pegs", "Round pegs on one side and holes on the other, wider by the clearance."],
-  ["dowels", "Dowels", "Holes on both sides and separate dowels (printed, or bought pins or filament of that diameter)."],
-  ["magnets", "Magnets", "Round pockets on both sides for disc magnets, with the clearance around them."],
-  ["key", "Key", "A tongue in the shape of the cut face, inset from its edge, into a groove on the other side: the pieces only fit one way."],
-];
-const KEEP_PLANS = 20; // models whose cuts are remembered
+const KEEP_PLANS = 20; // models whose clean-up steps are remembered
 const KEEP_MESHES = 4; // built meshes a model page keeps (on the graphics card) to show again at once
 const UNITS = [["mm", "Millimetres (game metres × 1000)"], ["cm", "Centimetres"], ["m", "Metres (the game's own units)"], ["in", "Inches"]];
 /** The least room the 3D view gets beside the inspector, and the inspector's rail. */
@@ -83,7 +41,7 @@ const STAGE = 440, RAIL = 64;
 /** The inspector's groups, in the order the work happens: what the model is, what's done to it, what comes out. */
 const GROUP = { model: "Model", edit: "Edit", out: "Export" };
 /** The models the 3D view's Show picker chooses between, as the tabs name them. */
-const WHICH = { original: "Original", enhanced: "Enhanced", finished: "Finished", pieces: "Pieces" };
+const WHICH = { original: "Original", enhanced: "Enhanced" };
 /** The footer under the 3D view keeps every view button in one row from this width (about a 1440 px window with the
  *  game's tree folded); narrower, they fold into one menu so the footer stays one row. */
 const BAR_ROOM = 1040;
@@ -120,16 +78,6 @@ const sortedBones = (bones) => Object.fromEntries(Object.keys(bones).sort().map(
 const placeOf = (p = {}) => ({ bone: p.bone || null, socket: p.socket || null, offset_mm: (p.offset_mm || [0, 0, 0]).map(Number),
   rotate: (p.rotate || [0, 0, 0]).map(Number), scale: p.scale == null ? 1 : Number(p.scale) });
 const savedPlaces = (m) => Object.fromEntries((m.attachments || []).map((a) => [a.id, placeOf(a.place)]));
-/** A cut as kept: its normal made unit length and its point the model's centre moved onto the plane, so the
- *  plane drawn stays centred on the model however it is moved. `header`: the shown mesh's { min, max }. */
-function centred(normal, point, header) {
-  const len = Math.hypot(...normal) || 1;
-  const n = normal.map((x) => x / len);
-  const c = header ? header.min.map((lo, i) => (lo + header.max[i]) / 2) : point;
-  const s = n.reduce((a, x, i) => a + x * (point[i] - c[i]), 0);
-  return { normal: n, point: c.map((x, i) => x + n[i] * s) };
-}
-
 /** The pose as part of a file name: a000_003000_f12, a saved pose's name, _posed for bones turned. */
 const poseSuffix = (pose, posed) => (posed?.name ? `_${posed.name.replace(/[^\w\-]+/g, "_").replace(/^_+|_+$/g, "")}`
   : `${pose ? `_${pose.anim}_f${pose.frame}` : ""}${posed && Object.keys(posed.bones || {}).length ? "_posed" : ""}`);
@@ -198,15 +146,6 @@ function WorkingOn({ id, which, note }) {
     ${note ? html`<small class="muted">${note}</small>` : null}</p>`;
 }
 
-/** A tab's own choice of the model it works from, shown only while the 3D view shows one the tab can't take
- *  (Finish can't take Finished or Pieces; Cut can't take Pieces). `options`: [[which, available, why not]]. */
-function FromPicker({ id, label, value, options, onChange, shown }) {
-  return html`<div class="field-block from-pick"><span>${label}</span>
-    <div class="seg" role="group" aria-label=${label} id=${id}>${options.map(([k, ok, why]) => html`<button type="button" key=${k} data-value=${k}
-      aria-pressed=${value === k ? "true" : "false"} disabled=${!ok} title=${ok ? `The ${WHICH[k].toLowerCase()} model` : why} onClick=${() => onChange(k)}>${WHICH[k]}</button>`)}</div>
-    <small class="muted">The 3D view shows the ${WHICH[shown].toLowerCase()} model, which this tab can't work on: it works from the one chosen here.</small></div>`;
-}
-
 export function ModelPage({ route }) {
   const { id, variant } = modelOf(route);
   const [m, setM] = useState(null);
@@ -232,7 +171,7 @@ export function ModelPage({ route }) {
   const placeKey = entry ? JSON.stringify([entry.game, entry.category, entry.group]) : null;
   useEffect(() => {
     ui.set({ modelPlace: entry ? { game: entry.game, category: entry.category, group: entry.group } : null });
-    return () => ui.set({ modelPlace: null, paintShow: null, texturePreview: null });
+    return () => ui.set({ modelPlace: null, texturePreview: null });
   }, [placeKey]);
   const back = () => (history.length > 1 ? history.back() : (location.hash = entry ? routeHash(placeRoute(entry.game, entry.category)) : "#/"));
   const bar = { id: "mp-head", back: { id: "mp-back", run: back } };
@@ -284,7 +223,7 @@ function Workspace({ m, variant, switching }) {
   const [stats, setStats] = useState(m.stats);
   const [result, setResult] = useState(m.enhanced ? { ...m.enhanced, rev: 1 } : null);
   const [resultKey, setResultKey] = useState(null);
-  const [which, setWhich] = useState(m.cut?.pieces?.length ? "pieces" : m.finished ? "finished" : m.enhanced ? "enhanced" : "original");
+  const [which, setWhich] = useState(m.enhanced ? "enhanced" : "original");
   // the pose shown: an animation's frame ({ anim, frame } or null for the bind pose), the bones turned on top
   // ({ name: [x, y, z] degrees }) and the saved pose's name while it is shown unchanged. Kept for the model
   // while the app runs, so opening it again (a model attached to it) shows the same pose.
@@ -309,24 +248,7 @@ function Workspace({ m, variant, switching }) {
   const [strengths, setStrengthState] = useState({}); // material -> strength multiplier
   const strengthsNow = useRef({}); // the same, readable at once by a click that follows the change
   const setStrengths = (v) => { strengthsNow.current = v; setStrengthState(v); };
-  const [run, setRun] = useState(null); // this page's job: { kind: "mesh" | "displace" | "upscale" | "finish" | "cut", progress, message, job, stopping }
-  const [finished, setFinished] = useState(m.finished || null); // the model made watertight last (Finish tab)
-  // the Cut tab: its planes (kept per model), the one selected, whether the tab is open (the planes show in the
-  // 3D view), the pieces last cut and how far apart they're shown
-  const [cuts, setCutList] = useState(() => (ui.get().cutPlans || {})[m.id] || []);
-  const setCuts = (list) => {
-    setCutList(list);
-    const all = { ...(ui.get().cutPlans || {}) };
-    delete all[m.id];
-    if (list.length) all[m.id] = list;
-    const keys = Object.keys(all);
-    for (const k of keys.slice(0, Math.max(0, keys.length - KEEP_PLANS))) delete all[k];
-    setPref({ cutPlans: all });
-  };
-  const [cutSel, setCutSel] = useState(() => cuts[0]?.id ?? null);
-  const [cutOpen, setCutOpen] = useState(false);
-  const [pieces, setPieces] = useState(m.cut?.pieces?.length ? m.cut : null);
-  const [explode, setExplode] = useState(0.25);
+  const [run, setRun] = useState(null); // this page's job: { kind: "mesh" | "displace" | "upscale" | "clean" | "save", progress, message, job, stopping }
   const [bounds, setBounds] = useState(null); // { min, max } in millimetres of the model shown, which it is, its args' key
   const viewer = useRef(null);
   // the Clean tab's steps (kept per model), done on the model as built and posed before everything else
@@ -420,15 +342,6 @@ function Workspace({ m, variant, switching }) {
   /** The Textures tab's step: the normal maps cleaned up and upsampled as the texture settings ask. */
   const upscale = (keys) => follow("upscale", () => call("texture_upscale", { sid: m.sid, ...args.json, settings: sendSettings(), ...(keys ? { keys } : {}) }), `Upscaling ${name}'s textures`);
   const shared = { m, args, stats, s, set, run, setRun, call, sendSettings, printScale };
-  /** Cut the model along the Cut tab's planes; the pieces are shown at once. */
-  const cutModel = async (request) => {
-    const r = await follow("cut", () => call("cut", { sid: m.sid, ...args.json, ...request }), `Cutting ${name}`);
-    setPieces({ ...r, request: JSON.stringify(request) });
-    setWhich("pieces");
-    ranTab("cut");
-    return r;
-  };
-  const cutting = { cuts, setCuts, cutSel, setCutSel, pieces, explode, setExplode, bounds, viewer };
   // saved variations: enhanced models kept with the model under a name, and what they were made with
   const [vars, setVars] = useState(null); // { items, folder } or { why } when this model can't keep any
   useEffect(() => {
@@ -481,18 +394,10 @@ function Workspace({ m, variant, switching }) {
         setResult((x) => (x && x.variation === v.id ? { ...x, variation: null } : x));
       } } }),
   };
-  /** Make the model watertight (Finish tab); the result is shown at once. */
-  const finishModel = async (request) => {
-    const r = await follow("finish", () => call("finish", { sid: m.sid, ...args.json, ...request }), `Making ${name} watertight`);
-    setFinished({ ...r, request: JSON.stringify(request) });
-    setWhich("finished");
-    ranTab("finish");
-    return r;
-  };
   return html`<div class="model-workspace" ref=${box}>
     <section class="workspace-viewing-area">
-      <${Stage} m=${m} variant=${variant} which=${which} setWhich=${setWhich} args=${args} result=${result} finished=${finished} stats=${stats} posed=${posed} onBusy=${setBusy}
-        cutting=${cutting} showCuts=${cutOpen} onBounds=${setBounds} boneView=${boneView} onBonePick=${setBoneSel} onBoneTurn=${turnBone}
+      <${Stage} m=${m} variant=${variant} which=${which} setWhich=${setWhich} args=${args} result=${result} stats=${stats} posed=${posed} onBusy=${setBusy}
+        viewer=${viewer} onBounds=${setBounds} boneView=${boneView} onBonePick=${setBoneSel} onBoneTurn=${turnBone}
         cleaned=${clean.length > 0} printScale=${printScale} />
     </section>
     <${Inspector} page="model" crowded=${crowded} label="Panels" tabs=${[
@@ -508,9 +413,7 @@ function Workspace({ m, variant, switching }) {
       { id: "mesh", label: "Mesh", icon: "grid", group: GROUP.edit, body: html`<${MeshTab} ...${shared} result=${result} generate=${generate} />` },
       { id: "displace", label: "Displace", icon: "stack", group: GROUP.edit, body: html`<${DisplaceTab} ...${shared} result=${result} stale=${!!result && !!resultKey && resultKey !== args.key}
         over=${over} setOver=${setOver} strengths=${strengths} setStrengths=${setStrengths} generate=${generate} variation=${variation} />` },
-      { id: "finish", label: "Finish", icon: "drop", group: GROUP.edit, body: html`<${FinishTab} ...${shared} result=${result} finished=${finished} which=${which} setWhich=${setWhich} finishModel=${finishModel} />` },
-      { id: "cut", label: "Cut", icon: "scissors", group: GROUP.edit, body: html`<${CutTab} ...${shared} ...${cutting} result=${result} finished=${finished} which=${which} setWhich=${setWhich} setOpen=${setCutOpen} cutModel=${cutModel} />` },
-      { id: "export", label: "Export", icon: "download", group: GROUP.out, body: html`<${ExportTab} m=${m} args=${args} result=${result} finished=${finished} which=${which} pose=${pose} posed=${posed} call=${call} pieces=${pieces}
+      { id: "export", label: "Export", icon: "download", group: GROUP.out, body: html`<${ExportTab} m=${m} args=${args} result=${result} which=${which} pose=${pose} posed=${posed} call=${call}
         stats=${stats} printScale=${printScale} />` },
     ]} />
   </div>`;
@@ -529,10 +432,9 @@ function ConfigureLinks({ m }) {
 const knownClean = new Set();
 
 /** The 3D view: the model with its textures, clay or wireframe, its size, and the views. */
-function Stage({ m, variant, which, setWhich, args, result, finished, stats, posed, onBusy, cutting, showCuts, onBounds, boneView, onBonePick, onBoneTurn,
+function Stage({ m, variant, which, setWhich, args, result, stats, posed, onBusy, viewer, onBounds, boneView, onBonePick, onBoneTurn,
   cleaned, printScale = 1 }) {
   const canvas = useRef(null);
-  const viewer = cutting.viewer;
   // the meshes shown lately, built, the newest last: showing the original and the enhanced model in
   // turn (or parts switched off and on again) doesn't fetch or build them again
   const kept = useRef(new Map());
@@ -552,33 +454,26 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
       kept.current.clear();
     };
   }, []);
-  // each material's colour texture, for the textured view; in the paint colours when the Finish tab asks
-  const paintShow = useStore(ui, (s) => s.paintShow) === m.sid;
-  const [paintNow] = usePaint(m);
-  const paint = paintShow ? JSON.stringify(paintArgs(paintNow)) : "";
-  // the Textures tab's chosen texture draped over every part, to see it on the model
+  // each material's colour texture, for the textured view; or the Textures tab's chosen texture draped over every
+  // part, to see it on the model
   const texturePreview = useStore(ui, (s) => s.texturePreview);
   const draped = texturePreview?.sid === m.sid && m.textures.some((t) => t.key === texturePreview.key) ? texturePreview.key : "";
   const textures = useMemo(() => {
     const have = new Set(m.textures.map((t) => t.key));
     const out = {};
-    const sources = paint && !draped ? paintNow.sources : {};
     m.materials.forEach((mat, i) => {
-      if (sources[i] === "none") return; // not painted
-      const key = draped || sources[i] || mat.albedo;
-      if (!key || !have.has(key)) return;
-      out[i] = paint && !draped ? binUrl("paint_texture", { sid: m.sid, key, max: 2048, settings: paint, ...args.url })
-        : binUrl("texture", { sid: m.sid, key, max: 2048 });
+      const key = draped || mat.albedo;
+      if (key && have.has(key)) out[i] = binUrl("texture", { sid: m.sid, key, max: 2048 });
     });
     return out;
-  }, [m.sid, paint, paint ? args.key : "", draped]);
+  }, [m.sid, draped]);
   const thick = view.shading === "thickness";
   /** The Thickness shading's wall and scale: the print height over the model's own height (game size if none). */
   const thickOpts = (header) => {
     const tall = header ? header.max[2] - header.min[2] : 0;
     return { wall: view.min_wall_mm > 0 ? view.min_wall_mm : 0.8, scale: view.print_height_mm > 0 && tall > 0 ? view.print_height_mm / tall : 1 };
   };
-  const key = JSON.stringify([which, which === "enhanced" ? result?.id || result?.rev : which === "pieces" ? cutting.pieces?.id : which === "finished" ? finished?.id : args.key, thick]);
+  const key = JSON.stringify([which, which === "enhanced" ? result?.id || result?.rev : args.key, thick]);
   useEffect(() => {
     let live = true;
     (async () => {
@@ -622,33 +517,16 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
       const before = viewer.current.shown?.header;
       const extent = (h) => Math.max(...h.max.map((x, i) => x - h.min[i]), 1e-6);
       const alike = !!before && extent(built.header) / extent(before) < 2 && extent(before) / extent(built.header) < 2;
-      const size = viewer.current.show(built, { textures: view.shading === "textured" && which !== "pieces" && which !== "finished" ? textures : null, wireframe: view.shading === "wire", keepView: shown.current && alike,
+      const size = viewer.current.show(built, { textures: view.shading === "textured" ? textures : null, wireframe: view.shading === "wire", keepView: shown.current && alike,
         thickness: thick ? thickOpts(built.header) : null });
       viewer.current.setEdges(view.edges);
       shown.current = true;
-      if (which === "pieces") viewer.current.setExplode(cutting.explode);
       onBounds?.({ min: built.header.min, max: built.header.max, which, args: args.key });
       setState({ loading: false, error: null, size, key, thin: viewer.current.thinShare, thinAt: view.print_height_mm });
       onBusy?.(false);
     })().catch((e) => { if (live) { setState({ loading: false, error: msg(e), size: null, key }); onBusy?.(false); } });
     return () => { live = false; };
-  }, [key, view.shading, paint || draped ? JSON.stringify(textures) : ""]);
-  // the Cut tab's planes, shown while it is open (not over the pieces they made)
-  const { cuts, cutSel, setCuts, setCutSel, explode } = cutting;
-  const live = useRef(null);
-  live.current = { cuts, setCuts, setCutSel, header: viewer.current?.shown?.header };
-  useEffect(() => {
-    const v = viewer.current;
-    if (!v) return;
-    v.onCutSelect = (id) => live.current.setCutSel(id);
-    v.onCut = (id, now, done) => {
-      if (!done) return;
-      const { cuts, setCuts, header } = live.current;
-      setCuts(cuts.map((c) => (c.id === id ? { ...c, ...centred(now.normal, now.point, header) } : c)));
-    };
-    v.setCuts(showCuts && which !== "pieces" ? cuts.map((c) => ({ ...c })) : [], cutSel);
-  }, [cuts, cutSel, showCuts, which, state.key]);
-  useEffect(() => { if (which === "pieces") viewer.current?.setExplode(explode); }, [explode]);
+  }, [key, view.shading, draped ? JSON.stringify(textures) : ""]);
   // the Pose tab's bones, over the model as the game has it
   const bonesNow = useRef(null);
   bonesNow.current = { onBonePick, onBoneTurn };
@@ -703,9 +581,8 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
       <div class=${`stage-bar${roomy ? "" : " one-row"}`} id="stage-bar" ref=${barBox}>
         <span class="stage-what" id="stage-size" title=${`${size?.triangles ? `${sizeText([size.x, size.y, size.z])}, ${plural(size.triangles, "triangle")}` : sizeText(stats?.size_mm)}: width × depth × height, as exported in millimetres${scaled ? `; in the game ${sizeText(game)}` : ""}`}><span class="stage-dims">${size?.triangles ? sizeText([size.x, size.y, size.z]) : sizeText(stats?.size_mm)}</span>${scaled ? html`<span class="muted stage-game" id="stage-game" title="How tall it is in the game, before the Clean tab scaled it to print">\u00a0· game ${mm(game[2])} mm</span>` : null}${size?.triangles ? html`<span class="muted stage-tris" id="stage-tris">\u00a0· ${plural(size.triangles, "triangle")}</span>` : null}${poseLabel(posed) ? html`<span class="muted stage-pose" id="stage-pose" title="The pose shown (Pose tab)">\u00a0· ${poseLabel(posed)}</span>` : null}</span>
         <span class="stage-tools">
-          ${seg("show-which", "Show", [["original", "Original", cleaned ? "The model as the game has it, cleaned up (Clean tab)" : "The model as the game has it"], ["enhanced", "Enhanced", result ? "The enhanced model" : "Make it first (Mesh or Displace tab)", !result],
-            ["finished", "Finished", finished ? "The model made watertight, without its textures" : "Make it watertight first (Finish tab)", !finished],
-            ["pieces", "Pieces", cutting.pieces ? "The model cut into pieces" : "Cut it first (Cut tab)", !cutting.pieces]], which, setWhich)}
+          ${seg("show-which", "Show", [["original", "Original", cleaned ? "The model as the game has it, cleaned up (Clean tab)" : "The model as the game has it"],
+            ["enhanced", "Enhanced", result ? "The enhanced model (Mesh and Displace tabs)" : "Make it first (Mesh or Displace tab)", !result]], which, setWhich)}
           ${roomy ? html`${seg("shading", "Shading", shadings, view.shading, (v) => setView({ shading: v }))}
             <button type="button" class="ghost" id="edges-toggle" aria-pressed=${view.edges ? "true" : "false"} title="Show the triangles' sharp edges" onClick=${() => edges(!view.edges)}>Edges</button>
             ${seg("views", "View", cameras, null, (v) => viewer.current?.view(v))}`
@@ -1449,8 +1326,7 @@ function DisplaceTab({ m, args, stats, s, set, run, setRun, call, sendSettings, 
         <span class="muted" title="One texture pixel covers this much of the model">${f.texel_mm.toFixed(2)} mm/px${gameMm(f.texel_mm, printScale)}</span></li>`)}</ul>` : null}
       ${result.warnings.map((w, i) => html`<p class="insp-note" key=${i}>${w}</p>`)}
       ${result.displaced !== false ? html`<${NextStep} id="displace-next" steps=${[
-        { tab: "export", label: "Export", title: "Write the enhanced model to a file, or hand it to Model Painter" },
-        { tab: "finish", label: "Finish", title: "Make it watertight for printing" }]} />` : null}
+        { tab: "export", label: "Export", title: "Write the enhanced model to a file, or hand it to Model Painter to make it watertight, cut it or paint it" }]} />` : null}
     </section>` : null}
     <${Variations} m=${m} result=${result} run=${run} setRun=${setRun} variation=${variation} />
   </div>`;
@@ -1482,7 +1358,7 @@ function Variations({ m, result, run, setRun, variation }) {
   };
   return html`<section class="insp-section" id="variations"><h3>Saved variations</h3>
     <p class="muted">Keep the enhanced model under a name, with what it was made with, beside the model in its package folder:
-      show, export, finish or cut it again later, or start from its settings.</p>
+      show or export it again later, or start from its settings.</p>
     ${!result ? html`<p class="muted" id="variation-none">Generate the enhanced model first, then save it here.</p>`
       : savedAs ? html`<p class="insp-note" id="variation-shown">${Icon.check(14)} The enhanced model shown is saved as <b>${savedAs.name}</b>.</p>`
       : html`<div class="variation-save"><input id="variation-name" value=${name} disabled=${!!run} aria-label="Name for the variation"
@@ -1503,7 +1379,7 @@ function Variations({ m, result, run, setRun, variation }) {
             : html`<b class="variation-name" title=${v.name}>${v.name}</b>`}
           <small class="muted">${madeText(v.made)} · ${num(st.vertices || 0)} vertices${v.result?.displaced === false ? ", evened out only" : `, relief up to ${(st.max_displacement_mm || 0).toFixed(2)} mm`}</small>
           <span class="variation-actions">
-            <button type="button" class="ghost compact" data-act="show" disabled=${!!run || shown} title="Show it as the enhanced model, to look at, export, finish or cut"
+            <button type="button" class="ghost compact" data-act="show" disabled=${!!run || shown} title="Show it as the enhanced model, to look at or export"
               onClick=${() => act(variation.show(v))}>${shown ? "Shown" : "Show"}</button>
             <button type="button" class="ghost compact" data-act="settings" disabled=${!!run} title="Choose the settings, parts, options and pose it was made with again, to start from them"
               onClick=${() => variation.useSettings(v)}>Use its settings</button>
@@ -1519,228 +1395,6 @@ function Variations({ m, result, run, setRun, variation }) {
   </section>`;
 }
 
-/** Finish: post-processing for printing. Make watertight wraps the whole model into one solid: every part made
- *  solid and joined, the surfaces inside one another removed, hollows filled, and gaps and loose bits as asked. */
-function FinishTab({ m, args, stats, run, setRun, result, finished, which, setWhich, finishModel }) {
-  const saved = useStore(ui, (st) => st.finishOpts);
-  const o = { ...FINISH, ...(saved || {}) };
-  const setOpts = (patch) => setPref({ finishOpts: { ...o, ...patch } });
-  const [error, setError] = useState(null);
-  // the model shown, when it's one Finish can take (Original or Enhanced); else the one chosen here (kept)
-  const takes = which === "original" || which === "enhanced";
-  const from = takes ? which : o.from === "enhanced" && result ? "enhanced" : "original";
-  const request = { from, watertight: { sheet_mm: o.sheet_mm, fill_hollows: o.fill_hollows, close_gaps_mm: o.close_gaps ? o.close_gaps_mm : 0,
-    loose_percent: o.remove_loose ? o.loose_percent : 0 } };
-  const stale = finished?.request && finished.request !== JSON.stringify(request);
-  const go = async () => {
-    setError(null);
-    if (from !== o.from) setOpts({ from }); // so it's still chosen while the Finished model is shown
-    try {
-      const r = await finishModel(request);
-      toast(r.kept ? "Made watertight with these settings already: shown" : "Made watertight");
-    } catch (e) { if (e.stopped) toast("Stopped making it watertight"); else setError(msg(e)); }
-  };
-  const st = finished?.stats;
-  return html`<div class="tab-pad" id="finish-tab">
-    <section class="insp-section"><h3>Make watertight <${TipButton} tab="finish" /></h3>
-      <${Tip} tab="finish" summary="Wraps the whole model into one solid for printing.">Game models are built from parts that cross (arms pushed into sleeves,
-        armour over a body) and open surfaces (capes, cloth): every part is made solid and they are joined, so the surfaces inside one another
-        are removed and only the outside stays, exactly as it was.<//>
-      ${takes ? html`<${WorkingOn} id="finish-working" which=${which} />`
-        : html`<${FromPicker} id="finish-from" label="Make watertight from" value=${from} shown=${which} onChange=${(k) => setOpts({ from: k })}
-          options=${[["enhanced", !!result, "Make it first (Mesh or Displace tab)"], ["original", true]]} />`}
-      <label class="check-row"><input type="checkbox" id="finish-hollows" checked=${o.fill_hollows} onChange=${(e) => setOpts({ fill_hollows: e.target.checked })} />
-        <span>Fill hollows sealed inside<small class="muted">Space shut in by the parts (under a closed coat or helmet) is filled, so the model is solid all through.</small></span></label>
-      <label class="check-row"><input type="checkbox" id="finish-gaps" checked=${o.close_gaps} onChange=${(e) => setOpts({ close_gaps: e.target.checked })} />
-        <span>Close narrow gaps<small class="muted">Bridges slits between parts (a sleeve around an arm) and grooves up to this wide. Takes longer; the bridges sit just under the surface elsewhere.</small></span></label>
-      ${o.close_gaps ? html`<${NumberField} id="finish-gap-mm" label="Gaps up to" value=${o.close_gaps_mm} step=${0.25} min=${0.1} max=${20} unit="mm"
-        title="The widest gap closed. Fine grooves in the model narrower than this are filled too, so keep it small." onChange=${(v) => setOpts({ close_gaps_mm: v })} />` : null}
-      <label class="check-row"><input type="checkbox" id="finish-loose" checked=${o.remove_loose} onChange=${(e) => setOpts({ remove_loose: e.target.checked })} />
-        <span>Remove loose bits<small class="muted">Separate bits that don't touch the model (a floating buckle, specks) and are smaller than this share of it.</small></span></label>
-      ${o.remove_loose ? html`<${NumberField} id="finish-loose-pct" label="Smaller than" value=${o.loose_percent} step=${0.5} min=${0.1} max=${100} unit="% of the volume"
-        onChange=${(v) => setOpts({ loose_percent: v })} />` : null}
-      <details class="more-settings"><summary>More settings</summary>
-        <${NumberField} id="finish-sheet" label="Open surfaces" value=${o.sheet_mm} step=${0.2} min=${0.2} max=${20} unit="mm thick"
-          title="Open surfaces (capes, single-sided cloth) have no inside; they are thickened to this, inwards." onChange=${(v) => setOpts({ sheet_mm: v })} />
-      </details>
-      <div class="insp-actions enhance-go"><button type="button" class="primary" id="finish-run" disabled=${!!run || !stats.triangles} onClick=${go}>${Icon.drop(15)} ${run?.kind === "finish" ? "Making it watertight…" : "Make watertight"}</button></div>
-      <${JobProgress} run=${run?.kind === "finish" ? run : null} setRun=${setRun} id="finish-progress" />
-      ${error ? html`<p class="warn-note" role="alert" id="finish-error">${error}</p>` : null}
-    </section>
-    ${finished ? html`<section class="insp-section" id="finish-result"><h3>Watertight</h3>
-      ${stale ? html`<p class="insp-note" id="finish-stale">Made with other settings than these: make it again to see the change.</p>` : null}
-      <ul class="ls-list kv-list" id="finish-stats">
-        <li><span>Triangles</span><span>${num(st.triangles)}<small class="muted"> from ${num(st.source_triangles)}</small></span></li>
-        <li><span>Volume</span><span>${st.volume_cm3 >= 10 ? num(st.volume_cm3) : st.volume_cm3.toFixed(2)} cm³</span></li>
-        <li><span>Size</span><span>${sizeText(st.size_mm)}</span></li>
-        <li><span>Separate pieces</span><span>${st.shells}</span></li></ul>
-      ${finished.notes.map((n, i) => html`<p class="insp-note" key=${i}>${n}</p>`)}
-      ${which !== "finished" ? html`<div class="insp-actions"><button type="button" class="ghost compact" id="finish-show" onClick=${() => setWhich("finished")}>Show it</button></div>` : null}
-      <p class="muted">Export and Cut work on it while the 3D view shows it (Show › Finished). It has no textures; it is painted from the textured model for a painted 3MF (below).</p>
-      <${NextStep} id="finish-next" steps=${[
-        { tab: "cut", label: "Cut", title: "Split it into pieces that fit your printer", run: () => { setWhich("finished"); goTab("cut"); } },
-        { tab: "export", label: "Export", title: "Write it to a file", run: () => { setWhich("finished"); goTab("export"); } }]} />
-    </section>` : null}
-    <${PaintSection} m=${m} args=${args} which=${which} />
-  </div>`;
-}
-
-const deg = (r) => (r * 180) / Math.PI;
-const rad = (d) => (d * Math.PI) / 180;
-const AXES = [["x", "Across X", [1, 0, 0]], ["y", "Across Y", [0, 1, 0]], ["z", "Across Z", [0, 0, 1]]];
-const jointName = (kind) => (JOINTS.find(([k]) => k === kind) || JOINTS[0])[1];
-/** Which way a cut faces, in words: across an axis, or tilted. */
-function facing(n) {
-  for (const [k, label, a] of AXES) if (Math.abs(Math.abs(n[0] * a[0] + n[1] * a[1] + n[2] * a[2]) - 1) < 1e-4) return label.toLowerCase();
-  return "tilted";
-}
-
-/** Cut: planes placed in the 3D view (dragged to slide them, the round handle dragged to tilt them, or a point
- *  on the model clicked) split the model into watertight pieces, each cut with its own joint and clearance. */
-function CutTab({ m, args, stats, run, setRun, result, finished, which, setWhich, setOpen, cutModel, cuts, setCuts, cutSel, setCutSel, pieces, explode, setExplode, bounds, viewer }) {
-  useEffect(() => { setOpen(true); return () => setOpen(false); }, []);
-  const saved = useStore(ui, (st) => st.cutOpts);
-  const o = { ...CUT, ...(saved || {}), joint: { ...JOINT, ...(saved?.joint || {}) } };
-  const setOpts = (patch) => setPref({ cutOpts: { ...o, ...patch } });
-  const [error, setError] = useState(null);
-  const [placing, setPlacing] = useState(false);
-  // the model shown, unless it's the pieces (Cut can't take them): then the one chosen here (kept)
-  const takes = which !== "pieces";
-  const from = takes ? which : (o.from === "enhanced" && !result) || (o.from === "finished" && !finished) ? "original" : o.from;
-  const lo = bounds?.min || [0, 0, 0], hi = bounds?.max || [0, 0, 0];
-  const centre = lo.map((v, i) => (v + hi[i]) / 2);
-  const sel = cuts.find((c) => c.id === cutSel) || null;
-  const offsetOf = (c) => c.normal.reduce((a, x, i) => a + x * (c.point[i] - centre[i]), 0);
-  const halfOf = (n) => 0.5 * n.reduce((a, x, i) => a + Math.abs(x) * (hi[i] - lo[i]), 0);
-  const put = (n, off) => ({ normal: n, point: centre.map((v, i) => v + n[i] * off) });
-  const update = (id, patch) => setCuts(cuts.map((c) => (c.id === id ? { ...c, ...patch } : c)));
-  const add = (n) => {
-    const id = Math.max(0, ...cuts.map((c) => c.id)) + 1;
-    setCuts([...cuts, { id, ...put(n, 0), joint: { ...o.joint } }]);
-    setCutSel(id);
-  };
-  const facingMe = () => {
-    return viewer.current?.facingNormal() || [0, -1, 0];
-  };
-  const remove = (id) => {
-    const rest = cuts.filter((c) => c.id !== id);
-    setCuts(rest);
-    if (cutSel === id) setCutSel(rest[rest.length - 1]?.id ?? null);
-  };
-  const setJoint = (patch) => {
-    if (!sel) return;
-    const joint = { ...JOINT, ...sel.joint, ...patch };
-    update(sel.id, { joint });
-    setOpts({ joint }); // new cuts take the joint set last
-  };
-  const placeByClick = () => {
-    const v = viewer.current;
-    if (!v || !sel) return;
-    if (placing) { v.placing = null; setPlacing(false); return; }
-    setPlacing(true);
-    if (which === "pieces") setWhich(from);
-    v.placing = (point) => {
-      setPlacing(false);
-      const off = sel.normal.reduce((a, x, i) => a + x * (point[i] - centre[i]), 0);
-      update(sel.id, put(sel.normal, off));
-    };
-  };
-  useEffect(() => () => { if (viewer.current) viewer.current.placing = null; }, []);
-  const request = { from, cut: { cuts: cuts.map((c) => ({ normal: c.normal, point: c.point, joint: { ...JOINT, ...c.joint } })), sheet_mm: o.sheet_mm, wall_mm: o.wall_mm } };
-  const stale = pieces?.request && pieces.request !== JSON.stringify(request);
-  const go = async () => {
-    setError(null);
-    if (from !== o.from) setOpts({ from }); // so it's still chosen while the pieces are shown
-    try {
-      const r = await cutModel(request);
-      toast(r.kept ? "Cut with these planes already: shown" : `Cut into ${plural(r.pieces.length, "piece")}`);
-    } catch (e) { if (e.stopped) toast("Stopped cutting"); else setError(msg(e)); }
-  };
-  const j = sel ? { ...JOINT, ...sel.joint } : null;
-  const theta = sel ? deg(Math.acos(Math.max(-1, Math.min(1, sel.normal[2])))) : 0;
-  const phi = sel ? deg(Math.atan2(sel.normal[1], sel.normal[0])) : 0;
-  const turnTo = (t, p) => {
-    const n = [Math.sin(rad(t)) * Math.cos(rad(p)), Math.sin(rad(t)) * Math.sin(rad(p)), Math.cos(rad(t))];
-    update(sel.id, put(n, offsetOf(sel)));
-  };
-  const half = sel ? halfOf(sel.normal) : 0;
-  const slide = (v) => update(sel.id, put(sel.normal, Math.max(-half, Math.min(half, v))));
-  const stepOf = Math.max(0.1, Math.round(half / 100 * 10) / 10);
-  return html`<div class="tab-pad" id="cut-tab">
-    <section class="insp-section"><h3>Cut into pieces <${TipButton} tab="cut" /></h3>
-      <${Tip} tab="cut" summary="Split the model with planes so it prints in pieces that fit your printer.">Pieces are joined by pegs, dowels, magnets or a key.
-        Drag a plane in the 3D view to slide it, drag its round handle to tilt it, or click a point on the model to put it there. Each piece comes
-        out watertight.<//>
-      ${takes ? html`<${WorkingOn} id="cut-working" which=${which} />`
-        : html`<${FromPicker} id="cut-from" label="Cut from" value=${from} shown=${which} onChange=${(k) => setOpts({ from: k })}
-          options=${[["enhanced", !!result, "Make it first (Mesh or Displace tab)"], ["original", true], ["finished", !!finished, "Make it watertight first (Finish tab)"]]} />`}
-      <div class="field-block"><span>Add a cut</span><div class="field-row cut-add" id="cut-add">
-        ${AXES.map(([k, label, n]) => html`<button type="button" class="ghost compact" key=${k} data-axis=${k} title=${`A plane ${label.toLowerCase()}, through the middle of the model`} disabled=${!bounds} onClick=${() => add(n)}>${Icon.plus(13)} ${label}</button>`)}
-        <button type="button" class="ghost compact" data-axis="view" title="A plane facing you, as the 3D view is turned now" disabled=${!bounds} onClick=${() => add(facingMe())}>${Icon.plus(13)} Facing me</button></div></div>
-      ${cuts.length ? html`<ul class="ls-list cut-list" id="cut-list" role="listbox" aria-label="Cuts">${cuts.map((c, i) => html`<li key=${c.id} data-cut=${c.id} role="option" aria-selected=${c.id === cutSel ? "true" : "false"}
-          class=${c.id === cutSel ? "selected" : ""} onClick=${() => setCutSel(c.id)}>
-        <span>Cut ${i + 1}<small class="muted">${facing(c.normal)} · ${mm(offsetOf(c))} mm from the middle · ${jointName(c.joint?.kind)}${c.joint?.kind !== "flat" ? `, ${(c.joint?.clearance_mm ?? JOINT.clearance_mm).toFixed(2)} mm clearance` : ""}</small></span>
-        <button type="button" class="ghost compact" title="Remove this cut" aria-label=${`Remove cut ${i + 1}`} onClick=${(e) => { e.stopPropagation(); remove(c.id); }}>${Icon.trash(14)}</button></li>`)}</ul>`
-        : html`<p class="muted" id="cut-none">No cuts yet. Add one, then move it where the model should come apart.</p>`}
-    </section>
-    ${sel ? html`<section class="insp-section" id="cut-edit"><h3>Cut ${cuts.indexOf(sel) + 1}</h3>
-      <label class="field-block" title="Slide the plane along its direction (or drag it in the 3D view)"><span>Position</span>
-        <span class="field-row"><input type="range" id="cut-position" min=${-half} max=${half} step=${stepOf} value=${offsetOf(sel)} onInput=${(e) => slide(parseFloat(e.target.value))} />
-          <input type="number" id="cut-position-mm" class="compact-number" step=${stepOf} value=${Number(offsetOf(sel).toFixed(2))} onChange=${(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) slide(v); }} /><span class="muted unit">mm</span></span></label>
-      <div class="field-block"><span>Direction</span><div class="field-row">
-        ${AXES.map(([k, label, n]) => html`<button type="button" class="ghost compact" key=${k} data-dir=${k} aria-pressed=${facing(sel.normal) === label.toLowerCase() ? "true" : "false"} onClick=${() => update(sel.id, put(n, 0))}>${label.slice(-1)}</button>`)}
-        <button type="button" class="ghost compact" data-dir="view" title="Face the plane towards you, as the 3D view is turned now" onClick=${() => update(sel.id, put(facingMe(), 0))}>Facing me</button>
-        <button type="button" class="ghost compact" id="cut-place" aria-pressed=${placing ? "true" : "false"} title="Click a point on the model to move the plane through it" onClick=${placeByClick}>${placing ? "Click the model…" : "Pick a point"}</button></div></div>
-      <label class="field-block" title="How far the plane leans from lying flat (0°) to standing upright (90°); or drag its round handle in the 3D view"><span>Tilt</span>
-        <span class="field-row"><input type="range" id="cut-tilt" min="0" max="180" step="1" value=${theta} onInput=${(e) => turnTo(parseFloat(e.target.value), phi)} /><span class="muted unit">${Math.round(theta)}°</span></span></label>
-      <label class="field-block" title="Which way the plane faces around the vertical"><span>Turn</span>
-        <span class="field-row"><input type="range" id="cut-turn" min="-180" max="180" step="1" value=${phi} disabled=${theta < 0.5 || theta > 179.5} onInput=${(e) => turnTo(theta, parseFloat(e.target.value))} /><span class="muted unit">${Math.round(phi)}°</span></span></label>
-      <div class="field-block"><span>Joint</span><div class="seg joint-seg" role="group" aria-label="Joint" id="cut-joint">${JOINTS.map(([k, label, tip]) => html`<button type="button" key=${k} data-value=${k} title=${tip}
-        aria-pressed=${j.kind === k ? "true" : "false"} onClick=${() => setJoint({ kind: k })}>${label}</button>`)}</div>
-        <small class="muted" id="cut-joint-about">${(JOINTS.find(([k]) => k === j.kind) || JOINTS[0])[2]}</small></div>
-      ${j.kind !== "flat" ? html`<${NumberField} id="cut-clearance" label="Clearance" value=${j.clearance_mm} step=${0.05} min=${0} max=${2} unit="mm"
-          title="The gap left on each side between parts that fit together: 0.1 to 0.2 mm for a tight fit on a well-tuned printer, 0.3 mm or more for resin shrinkage or a loose fit." onChange=${(v) => setJoint({ clearance_mm: v })} />` : null}
-      ${j.kind === "pegs" || j.kind === "dowels" ? html`<${NumberField} id="cut-diameter" label=${j.kind === "pegs" ? "Peg diameter" : "Dowel diameter"} value=${j.diameter_mm} step=${0.5} min=${0.5} max=${50} unit="mm"
-          title=${j.kind === "dowels" ? "1.75 mm takes filament as dowels; 3 or 5 mm suits metal pins" : "The holes are this plus twice the clearance"} onChange=${(v) => setJoint({ diameter_mm: v })} />` : null}
-      ${j.kind === "magnets" ? html`<${NumberField} id="cut-magnet-d" label="Magnet diameter" value=${j.magnet_diameter_mm} step=${0.5} min=${0.5} max=${50} unit="mm" onChange=${(v) => setJoint({ magnet_diameter_mm: v })} />
-        <${NumberField} id="cut-magnet-h" label="Magnet thickness" value=${j.magnet_height_mm} step=${0.5} min=${0.2} max=${50} unit="mm" title="One magnet goes in each side" onChange=${(v) => setJoint({ magnet_height_mm: v })} />` : null}
-      ${j.kind === "pegs" || j.kind === "dowels" || j.kind === "key" ? html`<${NumberField} id="cut-depth" label=${j.kind === "key" ? "Key height" : "Depth into each piece"} value=${j.depth_mm} step=${0.5} min=${0.5} max=${100} unit="mm"
-          title="Made shorter where a piece is too thin for it" onChange=${(v) => setJoint({ depth_mm: v })} />` : null}
-      ${j.kind === "pegs" || j.kind === "dowels" || j.kind === "magnets" ? html`<label class="field-block" title="How many on each separate area of the cut face. Automatic puts two where they fit (so the pieces can't turn), else one."><span>How many</span>
-        <select id="cut-count" value=${String(j.count)} onChange=${(e) => setJoint({ count: Number(e.target.value) })}>
-          <option value="0">Automatic</option>${[1, 2, 3, 4].map((n) => html`<option key=${n} value=${String(n)}>${n}</option>`)}</select></label>` : null}
-      ${j.kind === "pegs" || j.kind === "key" ? html`<label class="check-row"><input type="checkbox" id="cut-flip" checked=${j.flip} onChange=${(e) => setJoint({ flip: e.target.checked })} />
-        <span>${j.kind === "pegs" ? "Pegs" : "The tongue"} on the other side<small class="muted">Normally on the side the round handle points to.</small></span></label>` : null}
-      ${j.kind === "dowels" ? html`<label class="check-row"><input type="checkbox" id="cut-print-dowels" checked=${j.print_dowels} onChange=${(e) => setJoint({ print_dowels: e.target.checked })} />
-        <span>Make the dowels as pieces too<small class="muted">Off: holes only, for bought pins or filament.</small></span></label>` : null}
-      ${cuts.length > 1 ? html`<div class="insp-actions"><button type="button" class="ghost compact" id="cut-joint-all" onClick=${() => setCuts(cuts.map((c) => ({ ...c, joint: { ...j } })))}>Use this joint for every cut</button></div>` : null}
-    </section>` : null}
-    <section class="insp-section">
-      <details class="more-settings"><summary>More settings</summary>
-        <${NumberField} id="cut-sheet" label="Open surfaces" value=${o.sheet_mm} step=${0.2} min=${0.2} max=${20} unit="mm thick"
-          title="Game models have open surfaces (capes, single-sided cloth) with no inside; they are thickened to this, inwards, before cutting." onChange=${(v) => setOpts({ sheet_mm: v })} />
-        <${NumberField} id="cut-wall" label="Wall around joints" value=${o.wall_mm} step=${0.2} min=${0.4} max=${20} unit="mm"
-          title="The least material kept between a peg, hole, pocket or key and the outside. Where there's no room for it the cut is left flat there." onChange=${(v) => setOpts({ wall_mm: v })} />
-      </details>
-      <div class="insp-actions enhance-go"><button type="button" class="primary" id="cut-run" disabled=${!!run || !cuts.length || !stats.triangles} onClick=${go}>${Icon.scissors(15)} ${run?.kind === "cut" ? "Cutting…" : cuts.length ? `Cut with ${plural(cuts.length, "plane")}` : "Cut"}</button></div>
-      <${JobProgress} run=${run?.kind === "cut" ? run : null} setRun=${setRun} id="cut-progress" />
-      ${error ? html`<p class="warn-note" role="alert" id="cut-error">${error}</p>` : null}
-    </section>
-    ${pieces ? html`<section class="insp-section" id="cut-result"><h3>${plural(pieces.pieces.length, "piece")}</h3>
-      ${stale ? html`<p class="insp-note" id="cut-stale">Cut with other planes or settings than these: cut again to see the change.</p>` : null}
-      <label class="field-block" title="Show the pieces apart in the 3D view (Show › Pieces); it doesn't change them"><span>Spread apart</span>
-        <input type="range" id="cut-explode" min="0" max="1" step="0.01" value=${explode} onInput=${(e) => { setExplode(parseFloat(e.target.value)); if (which !== "pieces") setWhich("pieces"); }} /></label>
-      <ul class="ls-list piece-list" id="piece-list">${pieces.pieces.map((p) => html`<li key=${p.index} data-piece=${p.index} data-kind=${p.kind}>
-        <span><i class="piece-swatch" style=${{ background: PIECE_COLORS[p.index % PIECE_COLORS.length] }}></i>${p.name}<small class="muted">${sizeText(p.size_mm)} · ${num(p.triangles)} triangles</small></span>
-        <span class="muted">${p.volume_cm3 >= 10 ? p.volume_cm3.toFixed(0) : p.volume_cm3.toFixed(1)} cm³</span></li>`)}</ul>
-      ${pieces.notes.map((n, i) => html`<p class="insp-note" key=${i}>${n}</p>`)}
-      <p class="muted">Export writes each piece to its own file, laid on a cut face for printing.</p>
-      <${NextStep} id="cut-next" steps=${[{ tab: "export", label: "Export", title: "Write each piece to its own file",
-        run: () => { setWhich("pieces"); goTab("export"); } }]} />
-    </section>` : null}
-  </div>`;
-}
-
 /** A folder's path as its last two parts ("…\Documents\Dark STL exports"), to show it short; the whole path goes in its tooltip. */
 export function shortPath(p) {
   if (!p) return "";
@@ -1749,13 +1403,14 @@ export function shortPath(p) {
   return parts.length > 2 ? `…${sep}${parts.slice(-2).join(sep)}` : p;
 }
 
-/** Export: the model the 3D view shows (its Show picker) as STL, OBJ, PLY, GLB or a painted 3MF, in a folder; or in one
- *  click as a GLB for Model Painter, which the app opens there when it knows where Model Painter is (Settings). */
-function ExportTab({ m, args, result, finished, which, pose, posed, call, pieces, stats, printScale = 1 }) {
+/** Export: the model the 3D view shows (its Show picker) in one click as a GLB for Model Painter, which the app opens
+ *  there when it knows where Model Painter is (Settings): Model Painter makes it watertight, cuts it into pieces and
+ *  paints it for a colour printer (Dark STL's Finish and Cut tabs and its painted 3MF moved there in 0.55.0). Or as
+ *  STL, OBJ, PLY or GLB, in a folder. */
+function ExportTab({ m, args, result, which, pose, posed, call, stats, printScale = 1 }) {
   const saved = useStore(ui, (s) => s.exportOpts);
   const o = { ...EXPORT, ...(saved || {}) };
   const set = (patch) => setPref({ exportOpts: { ...o, ...patch } });
-  const cutOpts = { ...CUT, ...(useStore(ui, (s) => s.cutOpts) || {}) };
   const [name, setName] = useState("");
   const [folder, setFolder] = useState(o.folder);
   const [editing, setEditing] = useState(false); // the folder box shows the whole path while it's being edited
@@ -1769,12 +1424,11 @@ function ExportTab({ m, args, result, finished, which, pose, posed, call, pieces
   }, []);
   const scaled = Math.abs(printScale - 1) > 1e-6 && !!stats?.clean?.game_size_mm?.length;
   const base = variantName(m.variant) || m.name;
-  const auto = `${base}${poseSuffix(pose, posed)}${which === "enhanced" ? "_enhanced" : which === "finished" ? "_watertight" : ""}`;
-  const many = which === "pieces";
+  const auto = `${base}${poseSuffix(pose, posed)}${which === "enhanced" ? "_enhanced" : ""}`;
   const formats = info().formats || [];
-  const textured = o.format === ".obj" || o.format === ".glb";
-  const painted = o.format === ".3mf";
-  const [paint] = usePaint(m);
+  // a format the app no longer writes (a painted 3MF chosen before 0.55.0): the first it does
+  const format = !formats.length || formats.some((f) => f.ext === o.format) ? o.format : formats[0].ext;
+  const textured = format === ".obj" || format === ".glb";
   const fallback = where.fallback;
   const browse = async () => { const p = await pickFolder("Export to", folder || fallback); if (p) { setFolder(p); set({ folder: p }); } };
   /** `preset`: "painter" for Model Painter's GLB (textures and materials, Y up, <model>_for_painter.glb), else the settings below. */
@@ -1782,11 +1436,10 @@ function ExportTab({ m, args, result, finished, which, pose, posed, call, pieces
     setBusy(preset || "file"); setError(null); setDone(null);
     const named = name.trim() || (preset ? `${base}${poseSuffix(pose, posed)}` : auto);
     try {
-      const { job } = await call("export", { sid: m.sid, which, ...args.json, folder: folder || null, name: named, lay_flat: cutOpts.lay_flat,
-        ...(preset ? { preset } : { format: o.format, units: o.units, textures: o.textures, paint: painted ? paintArgs(paint) : undefined }) });
-      const r = await followJob(job, many && !preset ? `Exporting ${plural(pieces.pieces.length, "piece")}` : `Exporting ${named}${preset ? "_for_painter.glb" : o.format}`);
+      const { job } = await call("export", { sid: m.sid, which, ...args.json, folder: folder || null, name: named,
+        ...(preset ? { preset } : { format, units: o.units, textures: o.textures }) });
+      const r = await followJob(job, `Exporting ${named}${preset ? "_for_painter.glb" : format}`);
       setDone({ ...r, preset: preset || null });
-      if (painted && !preset) ranTab("paint");
     } catch (e) { if (e.stopped) toast("Stopped exporting"); else setError({ text: msg(e), at: preset ? "painter" : "file" }); }
     setBusy(null);
   };
@@ -1801,42 +1454,34 @@ function ExportTab({ m, args, result, finished, which, pose, posed, call, pieces
   const painterHint = html`<small class="muted painter-hint" id="painter-hint">Model Painter isn't set up here, so the file is only saved.
     Install it from <a href="https://github.com/DrFlGd/Model-Painter/releases" target="_blank" rel="noreferrer">its releases</a>, or say where it is in <a href="#/settings">Settings › General › Model Painter</a>.</small>`;
   const errorNote = (at) => (error?.at === at ? html`<p class="warn-note" role="alert" id="export-error">${error.text}</p>` : null);
-  const doneBox = done ? html`<div class="export-done" id="export-done" role="status" data-preset=${done.preset}><p><b>Saved</b> ${done.files ? `${plural(done.files.length, "file")} in ${done.path.split(/[\\/]/).pop()}` : done.path.split(/[\\/]/).pop()} <span class="muted">· ${bytesText(done.bytes)}</span></p>
+  const fileName = done ? done.path.split(/[\\/]/).pop() : "";
+  // what comes next: Model Painter (the main step after its own GLB), and the file in its folder
+  const doneBox = done ? html`<div class="export-done" id="export-done" role="status" data-preset=${done.preset}><p><b>Saved</b> ${fileName} <span class="muted">· ${bytesText(done.bytes)}</span></p>
       <p class="note-path muted" title=${done.path}>${shortPath(done.path)}</p>
-      ${done.paint ? html`<div class="paint-done" id="export-paint-done"><div class="paint-swatches">${done.paint.colours.map((c, i) => html`<span key=${i} class="paint-swatch" style=${`background:${c}`} title=${`Filament ${i + 1}: ${c}, ${Math.round(done.paint.coverage[i] * 100)}% of the surface`}>${i + 1}</span>`)}</div>
-        <p class="muted">Filament slots 1 to ${done.paint.colours.length}, in this order (also in <b>${done.paint.palette_file.split(/[\\/]/).pop()}</b> beside it). ${plural(done.paint.split_faces, "triangle")} painted in more than one colour${done.paint.notes.length ? `. ${done.paint.notes.join(" ")}` : "."}</p></div>` : null}
-      <div class="insp-actions next-step" id="export-next">
-        <button type="button" class="ghost compact" id="export-show" onClick=${() => showInFolder(done.path)}>${Icon.folder(14)} Show in folder</button>
-        ${where.painter && !done.files ? html`<button type="button" class=${done.preset ? "primary compact" : "ghost compact"} id="painter-open" disabled=${opening}
-          title=${`Open ${done.path.split(/[\\/]/).pop()} in Model Painter (${where.painter}) to paint and finish it for printing`}
-          onClick=${openInPainter}>${Icon.external(14)} ${opening ? "Opening…" : "Open in Model Painter"}</button>` : null}</div>
-      ${!where.painter && !done.files && done.preset ? painterHint : null}</div>` : null;
+      <${NextStep} id="export-next" steps=${[
+        ...(where.painter ? [{ id: "painter-open", label: opening ? "Opening…" : "Open in Model Painter", icon: "external", ghost: !done.preset, disabled: opening,
+          title: `Open ${fileName} in Model Painter (${where.painter}) to make it watertight, cut it into pieces or paint it for printing`, run: openInPainter }] : []),
+        { id: "export-show", label: "Show in folder", icon: "folder", ghost: true, title: "Show the file in its folder", run: () => showInFolder(done.path) }]} />
+      ${!where.painter && done.preset ? painterHint : null}</div>` : null;
   return html`<div class="tab-pad" id="export-tab">
-    <${WorkingOn} id="export-working" which=${which} note=${which === "original" && !result ? "Make the enhanced model first (Mesh or Displace tab) to export the detailed version."
-      : which === "pieces" ? `${plural(pieces?.pieces.length || 0, "piece")}, each in its own file.` : null} />
+    <${WorkingOn} id="export-working" which=${which} note=${which === "original" && !result ? "Make the enhanced model first (Mesh or Displace tab) to export the detailed version." : null} />
     <section class="insp-section" id="export-painter"><h3>For Model Painter</h3>
-      <p class="muted">A GLB with the textures and materials, Y up, named <b>${name.trim() || `${base}${poseSuffix(pose, posed)}`}_for_painter.glb</b>: Model Painter paints it and finishes it for printing.</p>
-      ${which === "finished" ? html`<small class="muted">The Finished model has no textures of its own: Model Painter gets its shape only.</small>` : null}
-      <div class="insp-actions"><button type="button" class="primary" id="export-painter-run" disabled=${!!busy || many}
-        title=${many ? "Model Painter takes one model: show the Enhanced, Original or Finished model" : "Export the model shown as a GLB for Model Painter"}
-        onClick=${() => go("painter")}>${Icon.download(15)} ${busy === "painter" ? "Exporting…" : "Export for Model Painter"}</button></div>
+      <p id="painter-why">To make it watertight, cut it into pieces or paint it for a colour printer, export it for Model Painter.</p>
+      <p class="muted">A GLB with the textures and materials, Y up, named <b>${name.trim() || `${base}${poseSuffix(pose, posed)}`}_for_painter.glb</b>.</p>
+      <div class="insp-actions"><button type="button" class="primary" id="export-painter-run" disabled=${!!busy}
+        title="Export the model shown as a GLB for Model Painter" onClick=${() => go("painter")}>${Icon.download(15)} ${busy === "painter" ? "Exporting…" : "Export for Model Painter"}</button></div>
       ${!where.painter && !done?.preset ? painterHint : null}
       ${errorNote("painter")}
       ${done?.preset ? doneBox : null}
     </section>
     <section class="insp-section" id="export-file"><h3>Save a file</h3>
-    <label class="field-block"><span>Format</span><select id="export-format" value=${o.format} onChange=${(e) => set({ format: e.target.value })}>
+    <label class="field-block"><span>Format</span><select id="export-format" value=${format} onChange=${(e) => set({ format: e.target.value })}>
       ${formats.map((f) => html`<option key=${f.ext} value=${f.ext}>${f.label} (${f.ext})</option>`)}</select></label>
     <label class="field-block" title="The unit the file's numbers are in; slicers take STL in millimetres"><span>Units</span><select id="export-units" value=${o.units} onChange=${(e) => set({ units: e.target.value })}>
       ${UNITS.map(([k, l]) => html`<option key=${k} value=${k}>${scaled && k === "mm" ? "Millimetres (the print size set on the Clean tab)" : scaled && k === "m" ? "Metres (print size ÷ 1000)" : l}</option>`)}</select></label>
     ${scaled ? html`<small class="muted" id="export-scaled">The Clean tab scales the model to print: ${sizeText(stats.size_mm)}, ×${printScale.toPrecision(3)} the game's ${sizeText(stats.clean.game_size_mm)}.</small>` : null}
-    ${many ? html`<label class="check-row" title="Each piece turned so its biggest flat cut face (without pegs or a tongue on it) lies on the bed; dowels stand on end">
-      <input type="checkbox" id="export-lay-flat" checked=${cutOpts.lay_flat} onChange=${(e) => setPref({ cutOpts: { ...cutOpts, lay_flat: e.target.checked } })} />
-      <span>Lay each piece on a cut face<small class="muted">Off: the pieces keep their place in the model.</small></span></label>` : null}
-    ${painted ? html`<${PaintSummary} m=${m} args=${args} paint=${paint} which=${which} />`
-      : many ? null
-      : html`<label class="check-row"><input type="checkbox" id="export-textures" checked=${o.textures && textured && which !== "finished"} disabled=${!textured || which === "finished"} onChange=${(e) => set({ textures: e.target.checked })} />
-      <span>Include the colour textures${textured ? "" : " (OBJ and GLB only)"}</span></label>`}
+    <label class="check-row" title="The colour textures beside the file (OBJ) or in it (GLB)"><input type="checkbox" id="export-textures" checked=${o.textures && textured} disabled=${!textured} onChange=${(e) => set({ textures: e.target.checked })} />
+      <span>Include the colour textures${textured ? "" : " (OBJ and GLB only)"}</span></label>
     <label class="field-block"><span>Name</span><input type="text" id="export-name" value=${name} placeholder=${auto} onInput=${(e) => setName(e.target.value)} /></label>
     <div class="field-block"><span>Folder</span><div class="field-row">
       <input type="text" id="export-folder" value=${editing ? folder : shortPath(folder)} placeholder=${shortPath(fallback)} title=${folder || fallback}
@@ -1848,38 +1493,13 @@ function ExportTab({ m, args, result, finished, which, pose, posed, call, pieces
     <div class="insp-actions"><button type="button" class="primary" id="export-run" disabled=${!!busy} onClick=${() => go(null)}>${Icon.download(15)} ${busy === "file" ? "Exporting…" : "Export"}</button></div>
     ${errorNote("file")}
     ${done && !done.preset ? doneBox : null}
-    <p class="muted export-note">${painted ? "The painted 3MF opens in Bambu Studio, OrcaSlicer and PrusaSlicer with the colours on it: set each filament slot to the palette's colour. " : "STL and PLY are written Z-up, as slicers expect; OBJ and GLB Y-up. "}Game models often aren't watertight: ${painted ? "check the model in your slicer, or paint the Finished model or the pieces" : "export the Finished model (Finish tab) or the pieces to print, or check them in your slicer"}.</p>
+    <p class="muted export-note">STL and PLY are written Z-up, as slicers expect; OBJ and GLB Y-up. Game models often aren't watertight:
+      Model Painter makes them so (above), or check them in your slicer.</p>
     </section>
   </div>`;
 }
 
-
-/** The colours suggested for the paint settings (kept by the engine): { suggested, error, busy }. */
-function usePalette(m, args, paint) {
-  const [state, setState] = useState({ suggested: null, error: null, busy: true });
-  const want = JSON.stringify(paletteArgs(paint));
-  useEffect(() => {
-    let live = true;
-    setState((st) => ({ ...st, error: null, busy: true }));
-    api("paint_palette", { sid: m.sid, ...args.json, settings: JSON.parse(want) })
-      .then((r) => { if (live) setState({ suggested: r, error: null, busy: false }); },
-        (e) => { if (live) setState({ suggested: null, error: msg(e), busy: false }); });
-    return () => { live = false; };
-  }, [m.sid, args.key, want]);
-  return state;
-}
-
-/** The filament slots' colours as swatches; each one can be changed by hand when `change` is given. */
-function Swatches({ id, colours, coverage, change }) {
-  return html`<div class="paint-swatches" id=${id}>${colours.map((c, i) => {
-    const title = `Filament ${i + 1}: ${c}${coverage?.[i] != null ? `, ${Math.round(coverage[i] * 100)}% of the surface` : ""}${change ? ". Click to change it." : ""}`;
-    return change ? html`<label key=${i} class="paint-swatch" style=${`background:${c}`} title=${title}>
-        <span>${i + 1}</span><input type="color" value=${c} onChange=${(e) => change(i, e.target.value)} /></label>`
-      : html`<span key=${i} class="paint-swatch" style=${`background:${c}`} title=${title}><span>${i + 1}</span></span>`;
-  })}</div>`;
-}
-
-/** A range slider whose value is sent when let go (each change chooses the colours again), shown as it moves. */
+/** A range slider whose value is sent when let go (each change works the result out again), shown as it moves. */
 export function Slider({ id, label, value, min, max, step, text, hint, onChange }) {
   const [moving, setMoving] = useState(null);
   const shown = moving ?? value;
@@ -1887,93 +1507,4 @@ export function Slider({ id, label, value, min, max, step, text, hint, onChange 
     <input type="range" id=${id} min=${min} max=${max} step=${step} value=${shown} onInput=${(e) => setMoving(Number(e.target.value))}
       onChange=${(e) => { setMoving(null); onChange(Number(e.target.value)); }} />
     ${hint ? html`<small class="muted">${hint}</small>` : null}</label>`;
-}
-
-const signed = (v) => (v > 0 ? `+${Math.round(v * 100)}` : `${Math.round(v * 100)}`);
-const times = (v) => `${Math.round(v * 100)}%`;
-
-/** Finish tab: the painted 3MF's colours. How many (chosen from the textures, colours closer than the tolerance
- *  merged, the rarest dropped) or which (each swatch can be changed), the texture each material is painted from,
- *  the textures' brightness, contrast and saturation, how fine the paint goes at the print size, and the clean-up
- *  of specks; shown on the model when asked. The Export tab writes the 3MF with these. */
-function PaintSection({ m, args, which }) {
-  const [paint, setPaint] = usePaint(m);
-  const { suggested, error, busy } = usePalette(m, args, paint);
-  const showing = useStore(ui, (s) => s.paintShow) === m.sid;
-  const canPreview = which !== "finished" && which !== "pieces";
-  const shown = paint.palette || suggested?.colours || [];
-  const change = (i, colour) => { const next = shown.slice(); next[i] = colour.toUpperCase(); setPaint({ palette: next }); };
-  const count = (n) => { n = Math.min(12, Math.max(2, Math.round(Number(n) || 4))); setPaint({ colours: n, palette: null }); };
-  const fewer = !paint.palette && (paint.tolerance > 0 || paint.min_share > 0);
-  const adjusted = paint.brightness !== 0 || paint.contrast !== 1 || paint.saturation !== 1;
-  const nameOf = (k) => m.textures.find((t) => t.key === k)?.name || k;
-  const setSource = (i, key) => {
-    const next = { ...paint.sources };
-    if (key) next[i] = key; else delete next[i];
-    setPaint({ sources: next });
-  };
-  const anyTexture = m.textures.length > 0;
-  return html`<section class="insp-section" id="paint-section"><h3>Paint for colour printing <${TipButton} tab="paint" /></h3>
-    <${Tip} tab="paint" summary="The colours of a painted 3MF (Export tab, 3MF format).">The textures are reduced to a few filament colours and painted on the model,
-      finer than its triangles. The Finished model and cut pieces are painted from the textured model they were made from.<//>
-    ${anyTexture ? null : html`<p class="warn-note">This model has no textures to paint from.</p>`}
-    <div class="paint-options" id="paint-options">
-    <label class="field-block"><span>${fewer ? "Colours at most" : "Colours"}</span><div class="field-row">
-      <input type="range" id="paint-colours" min="2" max="12" step="1" value=${paint.colours} onInput=${(e) => count(e.target.value)} />
-      <input type="number" id="paint-colours-n" class="num-short" min="2" max="12" step="1" value=${paint.colours} onChange=${(e) => count(e.target.value)} /></div>
-      <small class="muted">Filaments the print uses: the textures' colours are reduced to this many${fewer ? ", fewer when colours are merged or dropped below" : ""}.</small></label>
-    <${Slider} id="paint-tolerance" label="Colour tolerance" value=${paint.tolerance} min=${0} max=${30} step=${1} text=${(v) => (v ? String(v) : "off")}
-      hint="Colours closer than this are merged into one: raise it when two filaments come out nearly the same shade (two greys, two reds). 5 is a just-visible difference, 20 merges light and dark shades of one colour."
-      onChange=${(v) => setPaint({ tolerance: v, palette: null })} />
-    <${Slider} id="paint-min-share" label="Smallest colour" value=${paint.min_share} min=${0} max=${10} step=${0.5} text=${(v) => (v ? `${v}% of the surface` : "off")}
-      hint="A colour covering less of the surface than this is dropped and painted in the nearest colour left. Small details (eyes, gems) are often under 1%."
-      onChange=${(v) => setPaint({ min_share: v, palette: null })} />
-    <div class="field-block"><span>Palette ${paint.palette ? html`<small class="muted">(changed by hand)</small>` : suggested ? html`<small class="muted" id="paint-count">${plural(shown.length, "colour")}</small>` : null}</span>
-      <${Swatches} id="paint-swatches" colours=${shown} coverage=${paint.palette ? null : suggested?.coverage} change=${change} />
-      ${busy && !shown.length ? html`<span class="muted">Choosing the colours…</span>` : null}
-      ${error ? html`<small class="warn-note" role="alert" id="paint-error">${error}</small>` : null}
-      <div class="insp-actions"><button type="button" class="ghost compact" id="paint-suggest" disabled=${!paint.palette} onClick=${() => setPaint({ palette: null })}>Back to the suggested colours</button></div></div>
-    <label class="check-row"><input type="checkbox" id="paint-preview" checked=${showing} onChange=${(e) => { ui.set({ paintShow: e.target.checked ? m.sid : null }); if (e.target.checked) ranTab("paint"); }} />
-      <span>Show the colours on the model<small class="muted">${canPreview ? "The 3D view's textured shading in these colours, as the print will be." : "Shown on the Enhanced or Original model: the Finished model and the pieces have no textures of their own."}</small></span></label>
-    ${m.materials.length ? html`<div class="field-block" id="paint-sources"><span>Texture each material is painted from</span>
-      ${m.materials.map((mat, i) => html`<label class="mat-row paint-src" key=${i} title=${mat.details.join("\n")}><span class="mat-name">${mat.name}</span>
-        <select data-paint-material=${i} value=${paint.sources[i] || ""} onChange=${(e) => setSource(i, e.target.value)}>
-          <option value="">${mat.albedo ? `Its colour texture (${nameOf(mat.albedo)})` : "Its colour texture (it has none)"}</option>
-          ${m.textures.filter((t) => t.key !== mat.albedo).map((t) => html`<option key=${t.key} value=${t.key}>${t.name}</option>`)}
-          <option value="none">Not painted (filament 1)</option></select></label>`)}
-      <small class="muted">A material without a colour texture, or set to not painted, takes filament 1.</small></div>` : null}
-    <div class="field-row">
-      <label class="field-block"><span>Print height (mm)</span><input type="number" id="paint-height" min="1" step="1" value=${paint.print_height_mm} onChange=${(e) => setPaint({ print_height_mm: Math.max(1, Number(e.target.value) || 150) })} /></label>
-      <label class="field-block"><span>Smallest feature (mm)</span><input type="number" id="paint-feature" min="0.05" step="0.05" value=${paint.feature_mm} onChange=${(e) => setPaint({ feature_mm: Math.max(0.05, Number(e.target.value) || 0.5) })} /></label></div>
-    <small class="muted">Triangles are split where colours meet, down to the smallest feature at that print height: the colour borders don't follow the mesh's triangles. Finer takes longer and makes a bigger file.</small>
-    <label class="field-block"><span>Clean-up</span><select id="paint-cleanup" value=${paint.cleanup} onChange=${(e) => setPaint({ cleanup: e.target.value })}>
-      ${CLEANUPS.map(([k, l]) => html`<option key=${k} value=${k}>${l}</option>`)}</select>
-      <small class="muted">Specks in the reduced textures that would be single dots of filament are given the colour around them.</small></label>
-    <details class="more-settings" id="paint-adjust" open=${adjusted}><summary>Adjust the texture colours${adjusted ? " (changed)" : ""}</summary>
-      <p class="muted">Changes the textures' colours before they are reduced: game textures are often dark or dull, as the game's lighting brightens them.</p>
-      <${Slider} id="paint-brightness" label="Brightness" value=${paint.brightness} min=${-0.5} max=${0.5} step=${0.02} text=${signed}
-        onChange=${(v) => setPaint({ brightness: v, palette: null })} />
-      <${Slider} id="paint-contrast" label="Contrast" value=${paint.contrast} min=${0.5} max=${2} step=${0.05} text=${times}
-        onChange=${(v) => setPaint({ contrast: v, palette: null })} />
-      <${Slider} id="paint-saturation" label="Saturation" value=${paint.saturation} min=${0} max=${2} step=${0.05} text=${times}
-        onChange=${(v) => setPaint({ saturation: v, palette: null })} />
-      <div class="insp-actions"><button type="button" class="ghost compact" id="paint-adjust-reset" disabled=${!adjusted}
-        onClick=${() => setPaint({ brightness: 0, contrast: 1, saturation: 1, palette: null })}>Reset</button></div>
-    </details>
-    </div>
-  </section>`;
-}
-
-/** Export tab, 3MF format: the colours it will be painted with (set in the Finish tab). */
-function PaintSummary({ m, args, paint, which }) {
-  const { suggested, error, busy } = usePalette(m, args, paint);
-  const shown = paint.palette || suggested?.colours || [];
-  return html`<div class="paint-options" id="paint-summary"><div class="field-block"><span>Paint</span>
-    <${Swatches} id="export-swatches" colours=${shown} coverage=${paint.palette ? null : suggested?.coverage} />
-    ${busy && !shown.length ? html`<span class="muted">Choosing the colours…</span>` : null}
-    ${error ? html`<small class="warn-note" role="alert" id="paint-error">${error}</small>` : null}
-    <small class="muted">${plural(shown.length, "filament colour")}, painted down to ${paint.feature_mm} mm on a ${paint.print_height_mm} mm print. The colours, the textures they come from and the tolerance are set in the Finish tab.</small>
-    <div class="insp-actions"><button type="button" class="ghost compact" id="paint-settings" onClick=${() => ui.set({ inspectorAsk: { page: "model", tab: "finish", focus: "paint-colours-n" } })}>${Icon.drop(14)} Paint settings</button></div></div>
-    ${which === "finished" || which === "pieces" ? html`<small class="muted" id="paint-from-note">${which === "pieces" ? "The pieces have" : "The Finished model has"} no textures of its own, so ${which === "pieces" ? "they are" : "it is"} painted from the textured model ${which === "pieces" ? "they were" : "it was"} made from: each part of the surface takes the colour of the textured surface at that place. Cut faces, joints and filled gaps take filament 1.</small>` : null}
-  </div>`;
 }

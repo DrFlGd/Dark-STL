@@ -7,8 +7,8 @@ explore and organise them across games, and the tools to extract, manipulate and
 before printing (configure, pose, clean, enhance). Print post-processing (making a model
 watertight, cutting it into pieces, painting it for a multi-colour printer) belongs to the
 companion app [Model Painter](https://github.com/DrFlGd/Model-Painter), which Export hands models
-to; Dark STL's own Finish and Cut tabs are being retired (Phase 8 of the roadmap). Stands and bases
-are out of scope.
+to; Dark STL's own Finish and Cut tabs and its painted 3MF moved there in 0.55.0 (Phase 8 of the
+roadmap). Stands and bases are out of scope.
 
 Enhancing a model takes three steps:
 
@@ -114,8 +114,10 @@ shown under a name, beside the model's package (`<path in the game>.darkpkg/vari
 before the game is imported too, and kept when it is): `variation.json` (the name, the settings,
 parts, options and pose it was made with, recorded with each Generate result, and what was shown of
 it), `mesh.npz` (the mesh, positions as 32-bit floats) and `thumb.png`. Shown again it is the
-model's enhanced model, so it is exported, made watertight or cut like a fresh one; "Use its
-settings" chooses what it was made with again.
+model's enhanced model, so it is shown and exported like a fresh one; "Use its settings" chooses
+what it was made with again. Records written before 0.55.0 can hold the Finish, Cut and paint
+settings of then: `retired.py` leaves them out when a record is read and when it's written again
+(as it does for the settings file and the bulk Enhance preset).
 
 Models combined into one (Combine with other models…: a character's face, body and hair) are
 configurations of the user's own (`configs.py`) whose base is the model and whose parts are the
@@ -267,18 +269,21 @@ the tests call directly.
   (Configure, Model: parts (a read-only list since 0.45.0, with a link to Clean, where parts are left
   out), importer options, size, file; Textures; Pose: an animation and a frame, with a slider,
   stepping and playback, bones turned on top, saved poses and attached models, for models with a
-  skeleton, sockets or models attached), **Edit** (Clean, Mesh, Displace, Finish, Cut; see
-  "Cleaning" below) and **Export**. Since 0.43.0:
+  skeleton, sockets or models attached), **Edit** (Clean, Mesh, Displace; see "Cleaning" below)
+  and **Export**. Since 0.43.0:
   - *One place chooses the model worked on*: the Show buttons under the 3D view (Original,
-    Enhanced, Finished, Pieces). Finish, Cut and Export say "Working on: Enhanced · change" (the
-    link puts the keyboard on those buttons and makes them flash). Finish and Cut show a choice
-    of their own only while the view shows a model they can't take (Finish: Finished or Pieces;
-    Cut: Pieces), kept as they last used it.
-  - *Explanations fold away*: each tab's opening paragraph (Mesh, Displace, Finish, Cut, Paint)
-    shows its first sentence, with the rest open until that tab's job has run once (the
-    `tipsOpen` preference); ⓘ beside the heading opens it again.
-  - *A Next strip* under each result opens the next tab: Mesh → Displace; Displace → Export or
-    Finish; Finish → Cut or Export; Cut → Export; Export → Open in Model Painter.
+    Enhanced). Export says "Working on: Enhanced · change" (the link puts the keyboard on those
+    buttons and makes them flash).
+  - *Explanations fold away*: each tab's opening paragraph (Mesh, Displace) shows its first
+    sentence, with the rest open until that tab's job has run once (the `tipsOpen` preference);
+    ⓘ beside the heading opens it again.
+  - *A Next strip* under each result opens the next tab: Mesh → Displace; Displace → Export;
+    Export → Open in Model Painter.
+  - *The Export tab leads with For Model Painter* (0.55.0): "To make it watertight, cut it into
+    pieces or paint it for a colour printer, export it for Model Painter.", then Save a file.
+  - Preferences saved before 0.55.0 still load: a page left on Finish or Cut opens on Export, a
+    painted 3MF chosen as the format goes back to STL, and the retired tabs' own settings are left
+    out of the next save (`web/ui/state.js` and `retired.prefs` in the engine).
   - Toasts show at the top right of the 3D view, never over the buttons under it. The footer
     stays one row: without room for every view button, shading, edges and the view's turns fold
     into one *View* menu. Under a 1440 px window the game's tree beside the menu folds as a model
@@ -409,7 +414,7 @@ bone (`SourceModel.adjusts_bones`).
   `attach` list of the model, by the attached model's path in the game). The model opened is then a
   wrapper: the base's parts, materials and textures followed by each attached model's (named
   "Label / part"), its bind-pose mesh weighted whole to the holding bone, posed with the rest, so it
-  follows every frame and turn and goes through Clean, Mesh, Displace, Finish, Cut and Export like
+  follows every frame and turn and goes through Clean, Mesh, Displace and Export like
   the model's own parts. What is attached is part of what the page opens (the overlay's signature for
   the file); where each one sits is in `MeshOptions.attach`, so moving it only builds the mesh again.
   A socket holds it where the socket is in the bind pose. Up to 16 per model.
@@ -1007,38 +1012,23 @@ model's print size. Since 0.45.0.
   `clean_ids` (the 3D view's triangles as stable ids). Addresses of meshes name the list by the page's
   hash of it, which the engine learns from the JSON sent first (the last 64 kept).
 
-### Making it watertight (Finish tab, before cutting or export)
+### Making it watertight, cutting into pieces, painting: in Model Painter
 
-Print post-processing, moving to Model Painter (its 0.2.0 ported this); the tab stays until it is
-retired (Phase 8).
-
-Post-processing for printing lives on the **Finish** tab (`finish.py`). *Make watertight* wraps the
-whole model (enhanced or original) into one solid with nothing left inside:
-
-- **Parts made solid and joined**, as for cutting (below): where parts cross, the union removes the
-  triangles inside the other part, and the outside surface stays exactly as it was. Parts are
-  connected through shared edges only, so two closed parts that touch at a vertex (a plate's corner
-  on a body) are each kept as they are; a part still tangled is tried again split into the game's
-  own sub-meshes before falling back to voxels.
-- **Hollows filled** (default on): the union's surface is split into its closed shells; shells
-  facing inwards (negative volume) bound space sealed inside, so only the outward shells are kept
-  and united again.
-- **Gaps closed** (optional, up to a width): the solid is marked in a voxel grid (a quarter of the
-  width, at most about 6 M voxels), closed morphologically with a ball of half the width, eroded
-  two voxels so the bridges sit under the real surface, and turned into a surface (manifold's level
-  set) that is united with the exact solid. Only where it bridges a gap does it show.
-- **Loose bits removed** (optional): separate solids under a share of the biggest one's volume.
-
-The result is kept per model, source and settings (last 2), shown as *Finished*, exported as
-`<name>_watertight`, and can be cut (*Cut › Finished*); it has no UVs or textures.
+Dark STL had a Finish tab (*Make watertight*, 0.17.0), a Cut tab (pieces with pegs, dowels,
+magnets or a key, 0.9.0) and a painted 3MF export (0.22.0). Model Painter
+([github.com/DrFlGd/Model-Painter](https://github.com/DrFlGd/Model-Painter)) ported all three (its
+0.1.0 to 0.3.0), and they moved there in 0.55.0: Export › *Export for Model Painter*, then *Open in
+Model Painter*. Their settings in a settings file, a saved variation or the bulk preset written
+before then are ignored when read and left out when written again (`retired.py`); `-o model.3mf`
+on the command line says to export a `.glb` for Model Painter and stops.
 
 ### Configurable models: a base and parts chosen per slot
 
 Weapons in Cyberpunk 2077, the RE Engine games and Borderlands are kept as a body and separate
 part models (magazines, sights, barrels, stocks, muzzles). A *configuration* (`configs.py`) names
 the base model and, per slot, the parts that fit it and where each goes; choosing a part per slot
-(or a preset that chooses them all) gives one assembled `SourceModel`, so the Mesh, Displace, Cut
-and Export steps need nothing new. The library lists each configuration as a model of its own
+(or a preset that chooses them all) gives one assembled `SourceModel`, so the Mesh, Displace and
+Export steps need nothing new. The library lists each configuration as a model of its own
 (*Configurable: N slots, M parts*), and its page opens on a **Configure** tab.
 
 Relationships come per game from lists, the later winning when two share an id: what an
@@ -1053,52 +1043,6 @@ and the user's own list, which *Edit…* and *Make configurable…* write. The l
 the base or of another chosen part (`SourceModel.sockets`, which importers fill), and/or by a
 matrix, offset, turn and scale.
 
-### Cutting into pieces (before export)
-
-Print post-processing, moving to Model Painter (its 0.3.0 ported this); the tab stays until it is
-retired (Phase 8).
-
-A model too big for the printer, or with parts that print better apart, is cut on the **Cut** tab
-(`cut.py`, on [manifold3d](https://github.com/elalish/manifold), whose booleans are exact and always
-give closed meshes).
-
-- **Made solid first.** A plane through an open shell has no inside to close, and game meshes are
-  open shells with overlapping parts. So the model (the enhanced one, or the original) is welded,
-  duplicate triangles are dropped (two-sided cloth is often one side and its mirror), and each
-  connected part is taken in turn: already closed, it is used as it is; with small openings (fill
-  area under 30 % of the part's), each opening is closed with a fan; an open surface (a cape) is
-  thickened inwards by *Open surfaces* (1.2 mm); anything still broken (edges shared by three
-  faces) is rebuilt from voxels as a last resort. The parts are then united into one solid. The
-  solid is kept, so moving a cut only cuts again.
-- **Cuts.** Each cut is a plane (a normal and a point, in model millimetres) split exactly through
-  every piece it crosses. In the 3D view a plane is a translucent square through the model's middle;
-  dragging it slides it along its normal (the closest point between the pointer's ray and the
-  normal's line), dragging its round handle tilts it (the handle follows the pointer over a plane
-  facing the camera), and *Pick a point* moves it through a clicked point. The tab has the same as
-  a position slider, tilt and turn angles, and X / Y / Z / *Facing me* presets.
-- **Joints**, per cut, each with its own **clearance** (the gap on each side between parts that
-  fit together):
-
-  | Joint | What it makes |
-  | --- | --- |
-  | Flat | The faces as they are, to glue |
-  | Pegs | Pegs on the side the normal points to (or the other), holes wider by 2 × clearance and deeper by the clearance on the other |
-  | Dowels | Holes on both sides, and dowel pieces of the exact diameter (or none, for bought pins or filament) |
-  | Magnets | Round pockets on both sides for disc magnets, wider and deeper by the clearance |
-  | Key | A tongue shaped like the cut face inset by the wall, into a groove inset by the wall less the clearance: the pieces only fit one way |
-
-  The cut face is sliced (the solid turned into the plane's frame) and each island of it (a leg, a
-  sleeve) gets its own features: round ones go where a grid of candidates inside the face, inset by
-  the radius and the *Wall around joints* (1.6 mm), is deepest, or (two or more) as far apart as
-  they can be. A feature that would break through the far side of a piece (tested by intersecting a
-  slightly fatter probe with the piece) is shortened, tried in the middle alone, or left out, and the
-  tab says how many places were left flat.
-- **Results.** The pieces (top down, then dowels) are kept like generated models (the last three
-  sets) and shown in colour under *Show › Pieces*, spread apart with a slider. Export writes each
-  to its own file in a `<name>_pieces` folder, laid on its biggest flat cut face without pegs or a
-  tongue on it, centred on the bed. On the command line, `--cut AXIS=MM[:JOINT]` (or `AXIS=50%`)
-  and `--clearance` do the same for `export` and `enhance`.
-
 ### Step 3: export
 
 | Format | Content |
@@ -1107,7 +1051,6 @@ give closed meshes).
 | OBJ + MTL + PNG | Geometry, UVs, one material per game material with its albedo map, Y up |
 | PLY (binary) | Geometry and normals |
 | GLB | Geometry, UVs and embedded albedo textures, Y up, in metres (glTF's unit), with the skeleton in the pose shown (0.47.0); *For Model Painter* is this, named `<model>_for_painter.glb` |
-| 3MF, painted | Geometry with paint stored per triangle the way Bambu Studio, OrcaSlicer and PrusaSlicer store their brush paint, from the colour textures reduced to a palette (`paint.py`, 0.22.0; settings on the Finish tab since 0.37.0). Moving to Model Painter, which ported it |
 
 Units can be mm, cm, m or inches; the game's own scale is metres.
 
@@ -1187,9 +1130,8 @@ src/darkstl/
   review.py     Export model files: a model's files and a report of what was made of them, in a zip
   bench.py      the displacement test bench (known relief in, error numbers out)
   clean.py      the Clean tab's steps: hidden parts and faces, thin sheets, picked faces, repairs, transform
-  finish.py     Make watertight (the Finish tab), moving to Model Painter
-  cut.py        the model made solid and cut into pieces with joints (manifold3d), moving to Model Painter
-  paint.py      painted 3MF from the colour textures, moving to Model Painter
+  retired.py    what the Finish and Cut tabs and the painted 3MF (in Model Painter since 0.55.0) left
+                in saved settings, variations, presets and page preferences, ignored and dropped
   export.py     STL, OBJ, PLY, GLB writers
   cli.py        command line
   app/          the desktop app: service.py (the page's commands), engine.py (the engine the
@@ -1221,11 +1163,12 @@ Each release's notes are in [releases/](releases/).
 | 0.36 to 0.42 | Unreal 3, 4 and 5 models posed with the games' animations; Export model files for review; Redraw previews; Returnal fixes from Jerred's own files |
 | 0.43 to 0.49 | The build-out after the November 2026 review: the model page in work order and the Model Painter handoff, in-game names and one search across games, the Clean tab, thin parts kept safe and the Thickness view, posing freedom, Library II, game profiles, any Unreal 4/5 game, FBX |
 | 0.50 to 0.54 | Grand Theft Auto III, Vice City, San Andreas, IV and V; DOOM Eternal and DOOM: The Dark Ages |
+| 0.55 | Finish, Cut and the painted 3MF moved to Model Painter (Phase 8) |
 
 ### Where things stand (2026-11-09)
 
-- **Next:** retiring the Finish and Cut tabs and the painted 3MF in favour of Model Painter's
-  (Phase 8); in-game names for the RE Engine games.
+- **Done:** Finish, Cut and the painted 3MF moved to Model Painter in 0.55.0 (Phase 8).
+- **Next:** in-game names for the RE Engine games.
 - **Waiting on Jerred:** DOOM (2016) and DOOM VFR need sample files from the game; the mobile and
   console versions of GTA wait for his go-ahead; the checks on his own installs in Phase 1 (Cyberpunk
   2077, Returnal's first-person models, Grand Theft Auto, the DOOM games, the RE Engine games) and
@@ -1280,7 +1223,8 @@ differs:
 ### Phase 2: print-ready output
 
 Since the November 2026 review, Dark STL's side of this is cleaning and enhancing the model; making
-it watertight, cutting and painting move to Model Painter (Phase 8).
+it watertight, cutting and painting moved to Model Painter in 0.55.0 (Phase 8). The three ticked
+below were Dark STL's until then.
 
 - [x] Make watertight (0.17.0, Finish tab): the parts made solid and united, hollows filled, gaps
       optionally bridged and loose bits removed. Cut pieces are watertight since 0.9.0
@@ -1414,8 +1358,9 @@ manipulating and cleaning them; print post-processing lives in Model Painter.
 - [x] Export for Model Painter (a GLB with textures and materials) and Open in Model Painter (0.43.0)
 - [x] Model Painter paints (its 0.1.0), makes watertight (0.2.0) and cuts into pieces with the same
       joints (0.3.0), ported from Dark STL's `paint.py`, `finish.py` and `cut.py`
-- [ ] Retire Dark STL's Finish and Cut tabs and the painted 3MF export (and their command-line
-      options), leaving Export for Model Painter as the way across
+- [x] Retire Dark STL's Finish and Cut tabs and the painted 3MF export (and their command-line
+      options), leaving Export for Model Painter as the way across (0.55.0; manifold3d no longer
+      needed; old settings, variations and presets still load)
 
 ### Backlog
 
@@ -1475,8 +1420,8 @@ it was built as Phase 5.
   MPLY stage meshes and blend shapes are not read. Posing RE models has only been tried on
   synthetic motions; motion trees, additive layers and animations kept in `.motbank` /
   `.motfsm2` setups (rather than in the motlists themselves) are not used.
-- Exports are watertight only when made so (the Finish tab's *Make watertight*, cut pieces, or
-  Model Painter); most slicers repair the rest.
+- Exports are as watertight as the game's model: Model Painter makes them so (Export for Model
+  Painter); most slicers repair the rest.
 - Keeping thin parts measures room on the evenly spaced mesh, so parts thinner than about two
   vertex spacings are handled by the repair step rather than the cap, and lose more of their
   relief there. The Thickness shading counts an open part (most game parts have openings at

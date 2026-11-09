@@ -12,9 +12,6 @@ const STEP = 10; // mm
 export const GRAY = "#a3a9ae";
 const MAGIC = "DSTLMESH";
 const EDGES_UP_TO = 400000; // triangles: more would take long to work out, and be a solid mass of lines
-/** Colours of the pieces of a cut model, in turn. */
-export const PIECE_COLORS = ["#d08c4a", "#5b9bd5", "#7cb46b", "#c96f9b", "#d9c35a", "#8a7fd1", "#4fb3b0", "#c9644f", "#9aa25a", "#6f8fb0"];
-const CUT_COLOR = 0xe0913a, CUT_IDLE = 0x7d8fa3;
 const BONE_COLOR = 0x4fb3e8, BONE_TURNED = 0xe0913a, BONE_CHOSEN = 0xffd166, BONE_LINE = 0x8fb8d6;
 
 /** A bone's turn (x, y, z degrees about its own axes, three's "XYZ" order) followed by `drag`, a turn in the
@@ -116,17 +113,9 @@ export class Viewer {
     this.dark = false;
     this._buildGrid(new THREE.Box3(new THREE.Vector3(-30, -30, 0), new THREE.Vector3(30, 30, 0)));
     this.offset = new THREE.Vector3(); // model millimetres -> scene: the shown mesh is centred and set on the floor
-    this.cutGroup = new THREE.Group();
-    this.scene.add(this.cutGroup);
-    this.cuts = []; // [{ id, normal, point }] in model millimetres
-    this.cutSelected = null;
-    this.onCut = null; // (id, { normal, point }, done) while a cut plane is dragged
-    this.onCutSelect = null; // (id) when a plane is clicked
-    this.placing = null; // (point, normal) for the next click on the model
     this.picking = null; // (triangle, { add, take }) for each click on the model (the Clean tab's selection)
     this.marks = new Map(); // name -> { mesh, count }: triangles of the model drawn over in a colour (Clean tab)
     this._click = null;
-    this.explode = 0;
     // the Pose tab's bones: [{ name, parent, pos (mm), quat, flip, turned }], the one chosen, and what a click
     // on a ball (onBonePick) or a turn of the gizmo (onBoneTurn(name, quaternion)) does
     this.boneGroup = new THREE.Group();
@@ -139,12 +128,9 @@ export class Viewer {
     this.scene.add(this.boneHandle);
     this.gizmo = null;
     this._raycaster = new THREE.Raycaster();
-    this._drag = null;
     this._onDown = (e) => this._pointerDown(e);
-    this._onMove = (e) => this._pointerMove(e);
     this._onUp = (e) => this._pointerUp(e);
     canvas.addEventListener("pointerdown", this._onDown, { capture: true });
-    canvas.addEventListener("pointermove", this._onMove);
     canvas.addEventListener("pointerup", this._onUp);
     canvas.addEventListener("pointercancel", this._onUp);
 
@@ -220,17 +206,8 @@ export class Viewer {
       if (!slots.includes(g.material)) slots.push(g.material);
       geom.addGroup(g.start, g.count, slots.indexOf(g.material));
     }
-    // a cut model: each piece its own geometry (sharing the vertex buffers), so the pieces can be spread apart
-    const pieces = header.pieces ? header.groups.map((g) => {
-      const pg = new THREE.BufferGeometry();
-      pg.setAttribute("position", geom.getAttribute("position"));
-      pg.setAttribute("normal", geom.getAttribute("normal"));
-      if (thickness) pg.setAttribute("color", geom.getAttribute("color"));
-      pg.setIndex(new THREE.BufferAttribute(index.subarray(g.start, g.start + g.count), 1));
-      return { geom: pg, piece: g.material };
-    }) : null;
-    return { header, geom, slots, offset, pieces, thickness, edges: null,
-      dispose() { geom.dispose(); this.edges?.dispose(); for (const p of this.pieces || []) p.geom.dispose(); } };
+    return { header, geom, slots, offset, thickness, edges: null,
+      dispose() { geom.dispose(); this.edges?.dispose(); } };
   }
 
   /** Show a mesh from build(). `textures`: { material index: image URL } (textured view), or null for clay.
@@ -243,22 +220,7 @@ export class Viewer {
     if (thickness && built.thickness) {
       this.thinShare = thicknessColours(built.thickness, thickness.wall, thickness.scale, geom.getAttribute("color").array);
       const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.0, side: THREE.DoubleSide, wireframe });
-      if (built.pieces) {
-        this.mesh = new THREE.Group();
-        for (const p of built.pieces) {
-          const piece = new THREE.Mesh(p.geom, m);
-          piece.userData.piece = p.piece;
-          this.mesh.add(piece);
-        }
-      } else this.mesh = new THREE.Mesh(geom, m);
-    } else if (built.pieces) {
-      this.mesh = new THREE.Group();
-      for (const p of built.pieces) {
-        const m = new THREE.MeshStandardMaterial({ color: PIECE_COLORS[p.piece % PIECE_COLORS.length], roughness: 0.6, metalness: 0.02, side: THREE.DoubleSide, wireframe });
-        const piece = new THREE.Mesh(p.geom, m);
-        piece.userData.piece = p.piece;
-        this.mesh.add(piece);
-      }
+      this.mesh = new THREE.Mesh(geom, m);
     } else {
       const materials = slots.map((mat) => this._material(textures?.[mat], wireframe));
       if (!materials.length) materials.push(this._material(null, wireframe));
@@ -270,8 +232,7 @@ export class Viewer {
     this._addEdges();
     this.bbox = geom.boundingBox.clone();
     this._buildGrid(this.bbox);
-    this._applyExplode();
-    this._drawCuts();
+    this.gridGroup.visible = true;
     if (this.bones.length) this._drawBones();
     if (!keepView) this.view("iso");
     this.redraw();
@@ -319,7 +280,7 @@ export class Viewer {
     for (const o of [this.mesh, this.edges]) {
       if (o) {
         this.scene.remove(o);
-        const mats = new Set(o.isGroup ? o.children.map((c) => c.material) : [].concat(o.material));
+        const mats = new Set([].concat(o.material));
         for (const m of mats) if (m !== this.edgeMaterial) m.dispose();
       }
     }
@@ -333,7 +294,7 @@ export class Viewer {
     this.gridGroup.visible = false;
     this.renderer.render(this.scene, this.camera);
     const url = this.canvas.toDataURL("image/png");
-    this._applyExplode();
+    this.gridGroup.visible = true;
     this.redraw();
     return url;
   }
@@ -341,10 +302,8 @@ export class Viewer {
   dispose() {
     cancelAnimationFrame(this._raf);
     this.canvas.removeEventListener("pointerdown", this._onDown, { capture: true });
-    this.canvas.removeEventListener("pointermove", this._onMove);
     this.canvas.removeEventListener("pointerup", this._onUp);
     this.canvas.removeEventListener("pointercancel", this._onUp);
-    this._clearCuts();
     this._observer.disconnect();
     window.removeEventListener("resize", this._onWindowResize);
     this.clear();
@@ -449,7 +408,7 @@ export class Viewer {
     const old = this.marks.get(name);
     if (old) { this.scene.remove(old.mesh); old.mesh.geometry.dispose(); old.mesh.material.dispose(); this.marks.delete(name); }
     const b = this.shown;
-    if (!b || b.pieces || !triangles?.length) { this.redraw(); return; }
+    if (!b || !triangles?.length) { this.redraw(); return; }
     const src = b.geom.index.array;
     const n = b.header.triangles;
     const index = new Uint32Array(triangles.length * 3);
@@ -478,91 +437,6 @@ export class Viewer {
     this.marks.clear();
   }
 
-  // ---------------------------------------------------------------- cut planes
-
-  /** Show cut planes ([{ id, normal, point }] in model millimetres), the selected one highlighted with a handle
-   *  to tilt it. Dragging a plane slides it along its normal; dragging the handle turns it. */
-  setCuts(cuts, selected) {
-    this.cuts = cuts || [];
-    this.cutSelected = selected;
-    this._drawCuts();
-    this.redraw();
-  }
-
-  /** A cut's normal facing the camera as it is turned now. */
-  facingNormal() {
-    const d = this.camera.getWorldDirection(new THREE.Vector3());
-    return [-d.x, -d.y, -d.z].map((x) => Math.round(x * 1e4) / 1e4);
-  }
-
-  /** Spread the pieces of a cut model apart: 0 together, 1 well apart. */
-  setExplode(f) {
-    this.explode = f;
-    this._applyExplode();
-    this.redraw();
-  }
-
-  _applyExplode() {
-    const b = this.shown;
-    this.gridGroup.visible = true;
-    if (!b?.pieces || !this.mesh?.isGroup) return;
-    const centres = b.header.pieces.map((p) => new THREE.Vector3(...p.center));
-    const mid = centres.reduce((a, c) => a.add(c), new THREE.Vector3()).multiplyScalar(1 / Math.max(centres.length, 1));
-    const size = this.bbox ? this.bbox.getSize(new THREE.Vector3()).length() : 100;
-    for (const child of this.mesh.children) {
-      const c = centres[child.userData.piece] || mid;
-      const dir = c.clone().sub(mid);
-      const len = dir.length();
-      if (len > 1e-6) dir.multiplyScalar(1 / len);
-      child.position.copy(dir.multiplyScalar(this.explode * size * 0.35 + this.explode * len * 0.6));
-    }
-    // spread apart, the lower pieces go below the floor, so the floor steps aside meanwhile
-    this.gridGroup.visible = this.explode < 0.01;
-  }
-
-  _clearCuts() {
-    for (const c of [...this.cutGroup.children]) {
-      this.cutGroup.remove(c);
-      c.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); });
-    }
-  }
-
-  _cutSize() {
-    const bb = this.bbox;
-    return bb ? Math.max(bb.getSize(new THREE.Vector3()).length() * 0.8, 20) : 100;
-  }
-
-  _drawCuts() {
-    this._clearCuts();
-    const size = this._cutSize();
-    for (const cut of this.cuts) {
-      const on = cut.id === this.cutSelected;
-      const color = on ? CUT_COLOR : CUT_IDLE;
-      const g = new THREE.Group();
-      g.userData.cut = cut.id;
-      const sheet = new THREE.Mesh(new THREE.PlaneGeometry(size, size),
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: on ? 0.28 : 0.16, side: THREE.DoubleSide, depthWrite: false }));
-      sheet.userData = { cut: cut.id, part: "sheet" };
-      const h = size / 2;
-      const rim = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-h, -h, 0), new THREE.Vector3(h, -h, 0), new THREE.Vector3(h, h, 0), new THREE.Vector3(-h, h, 0)]),
-        new THREE.LineBasicMaterial({ color, transparent: true, opacity: on ? 0.95 : 0.6 }));
-      g.add(sheet, rim);
-      if (on) {
-        const reach = size * 0.28;
-        const stem = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, reach)]),
-          new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true }));
-        const knob = new THREE.Mesh(new THREE.SphereGeometry(size * 0.03, 20, 12), new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true }));
-        knob.position.z = reach;
-        knob.userData = { cut: cut.id, part: "knob" };
-        stem.renderOrder = knob.renderOrder = 10;
-        g.add(stem, knob);
-      }
-      g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...cut.normal).normalize());
-      g.position.set(...cut.point).add(this.offset);
-      this.cutGroup.add(g);
-    }
-  }
-
   _ray(e) {
     const r = this.canvas.getBoundingClientRect();
     const p = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
@@ -574,7 +448,7 @@ export class Viewer {
     if (e.button !== 0) return;
     // a click (not a drag, which turns the view) on the model while picking: see _pointerUp
     this._click = this.picking ? { x: e.clientX, y: e.clientY, at: performance.now() } : null;
-    const ray = this._ray(e);
+    this._ray(e);
     if (this.bones.length && this.boneGroup.children.length && !(this.gizmo?.axis)) {
       const hit = this._raycaster.intersectObjects(this.boneGroup.children, false).find((h) => h.object.userData.bone);
       if (hit) {
@@ -582,87 +456,18 @@ export class Viewer {
         e.preventDefault();
         this._click = null; // a bone chosen, not a face
         this.onBonePick?.(hit.object.userData.bone);
-        return;
       }
     }
-    if (this.placing && this.mesh) {
-      const hit = this._raycaster.intersectObject(this.mesh, true)[0];
-      if (hit) {
-        e.stopImmediatePropagation();
-        e.preventDefault();
-        const done = this.placing;
-        this.placing = null;
-        const n = hit.face ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld) : new THREE.Vector3(0, 0, 1);
-        done(hit.point.clone().sub(this.offset).toArray(), n.toArray());
-        return;
-      }
-    }
-    if (!this.cuts.length) return;
-    const hits = this._raycaster.intersectObjects(this.cutGroup.children, true).filter((h) => h.object.userData.part);
-    // the handle wins over a sheet in front of it; a sheet only when nothing of the model is nearer
-    const knob = hits.find((h) => h.object.userData.part === "knob");
-    let hit = knob;
-    if (!hit && hits.length) {
-      const model = this.mesh ? this._raycaster.intersectObject(this.mesh, true)[0] : null;
-      const sheet = hits.find((h) => h.object.userData.part === "sheet");
-      if (sheet && (!model || sheet.distance <= model.distance + 1e-3)) hit = sheet;
-    }
-    if (!hit) return;
-    const cut = this.cuts.find((c) => c.id === hit.object.userData.cut);
-    if (!cut) return;
-    e.stopImmediatePropagation();
-    e.preventDefault();
-    this.canvas.setPointerCapture?.(e.pointerId);
-    if (cut.id !== this.cutSelected) this.onCutSelect?.(cut.id);
-    const normal = new THREE.Vector3(...cut.normal).normalize();
-    const point = new THREE.Vector3(...cut.point).add(this.offset);
-    this._drag = { id: cut.id, part: hit.object.userData.part, normal, point, start: this._alongNormal(ray, point, normal), now: { normal: cut.normal, point: cut.point } };
-  }
-
-  /** How far along the line through `point` in `normal`'s direction the ray passes closest. */
-  _alongNormal(ray, point, normal) {
-    const w0 = ray.origin.clone().sub(point);
-    const b = ray.direction.dot(normal), d = ray.direction.dot(w0), e = normal.dot(w0);
-    const den = 1 - b * b;
-    return den < 1e-6 ? 0 : (e - b * d) / den;
-  }
-
-  _pointerMove(e) {
-    const d = this._drag;
-    if (!d) return;
-    const ray = this._ray(e);
-    let normal = d.normal, point = d.point;
-    if (d.part === "knob") {
-      // the handle follows the pointer over a plane facing the camera through the cut's centre
-      const facing = new THREE.Plane().setFromNormalAndCoplanarPoint(this.camera.getWorldDirection(new THREE.Vector3()).negate(), d.point);
-      const at = ray.intersectPlane(facing, new THREE.Vector3());
-      if (!at) return;
-      const dir = at.sub(d.point);
-      if (dir.lengthSq() < 1e-6) return;
-      normal = dir.normalize();
-    } else {
-      const t = this._alongNormal(ray, d.point, d.normal);
-      point = d.point.clone().addScaledVector(d.normal, t - d.start);
-    }
-    d.now = { normal: normal.toArray(), point: point.clone().sub(this.offset).toArray() };
-    const cut = this.cuts.find((c) => c.id === d.id);
-    if (cut) { Object.assign(cut, d.now); this._drawCuts(); this.redraw(); }
-    this.onCut?.(d.id, d.now, false);
   }
 
   _pointerUp(e) {
     const c = this._click;
     this._click = null;
-    if (c && e.type === "pointerup" && this.picking && this.mesh && !this.mesh.isGroup && Math.hypot(e.clientX - c.x, e.clientY - c.y) < 5 && performance.now() - c.at < 800) {
+    if (c && e.type === "pointerup" && this.picking && this.mesh && Math.hypot(e.clientX - c.x, e.clientY - c.y) < 5 && performance.now() - c.at < 800) {
       this._ray(e);
       const hit = this._raycaster.intersectObject(this.mesh, false)[0];
       if (hit && hit.faceIndex != null) this.picking(hit.faceIndex, { add: e.shiftKey, take: e.altKey || e.ctrlKey || e.metaKey });
     }
-    const d = this._drag;
-    if (!d) return;
-    this._drag = null;
-    this.canvas.releasePointerCapture?.(e.pointerId);
-    this.onCut?.(d.id, d.now, true);
   }
 
   _buildGrid(bb) {

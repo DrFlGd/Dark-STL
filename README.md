@@ -27,8 +27,7 @@ surface detail their textures describe into real geometry.
 Print finishing belongs to the companion app [Model Painter](https://github.com/DrFlGd/Model-Painter):
 making a model watertight, cutting it into pieces with joints, and painting it from its textures for
 a multi-colour printer. *Export for Model Painter* on the Export tab hands a model over in one click.
-Dark STL's own Finish and Cut tabs, and its painted 3MF export, still work and are being retired in
-favour of Model Painter's.
+Dark STL's own Finish and Cut tabs and its painted 3MF export moved there in 0.55.0.
 
 See [docs/PLAN.md](docs/PLAN.md) for how each step works, the file formats, and the roadmap.
 
@@ -340,18 +339,17 @@ the buttons under its result take you on to the next.
   Show *Original* or *Enhanced* under the view to compare, and *Save as variation* keeps an
   enhanced model, with the settings it was made with, beside the model to show, export or start
   from again. Click **Stop** in the status bar to stop a job.
-- **Finish** (make watertight, and the colour painting settings) and **Cut** (cut into pieces with
-  pegs, dowels, magnets or a key) are still here, but are moving to Model Painter, which now does
-  both.
+
+To make a model watertight, cut it into pieces with joints or paint it for a colour printer, export
+it for Model Painter (below): those moved there in 0.55.0.
 
 **Export**
 
-- **Export** writes STL, OBJ, PLY or GLB, in millimetres by default, of the original, enhanced,
-  finished model or its cut pieces. A GLB keeps the skeleton in the pose you made, so Blender opens
-  it posed and rigged. **Export for Model Painter** writes a GLB with its textures and materials, and
-  **Open in Model Painter** opens it there (Dark STL finds Model Painter where its installer put it,
-  or set it in *Settings › General*). The painted 3MF export, for a multi-colour printer, is still
-  here too until Model Painter takes it over.
+- **Export for Model Painter**, at the top of the tab, writes a GLB with its textures and materials,
+  and **Open in Model Painter** opens it there, to make it watertight, cut it or paint it (Dark STL
+  finds Model Painter where its installer put it, or set it in *Settings › General*).
+- **Export** writes STL, OBJ, PLY or GLB, in millimetres by default, of the original or enhanced
+  model. A GLB keeps the skeleton in the pose you made, so Blender opens it posed and rigged.
 
 ## Command line
 
@@ -360,7 +358,7 @@ darkstl scan "D:/Games/DARK SOULS III/Game"              # list models by game a
 darkstl info parts/wp_a_0210.partsbnd.dcx                # models, parts, materials, textures
 darkstl textures parts/wp_a_0210.partsbnd.dcx -o tex/    # save every texture as PNG
 darkstl export parts/wp_a_0210.partsbnd.dcx -o grip.obj  # original model with textures
-darkstl export chr/c2010.chrbnd.dcx -o c2010.3mf --colours 6 --print-height 200 --feature 0.5  # painted 3MF
+darkstl export chr/c2010.chrbnd.dcx -o c2010.glb       # with its textures, for Model Painter
 darkstl enhance parts/wp_a_0210.partsbnd.dcx -o grip.stl -n 2000000
 darkstl enhance chr/c2010.chrbnd.dcx -o c2010.stl -n 4000000 --strength 1.5 --save-heights heights/
 darkstl export chr/c2010.chrbnd.dcx -o c2010.stl --clean hidden-parts --clean sheets:0.5 --clean height:150
@@ -374,14 +372,10 @@ Useful `enhance` options: `--method isotropic` for an exact count of uniform tri
 opengl|directx` if the relief comes out inverted, `--max-mm` to clamp displacement, and
 `--parts 0,2` to keep only some parts, `--clean` steps done first (repeatable: `hidden-parts`,
 `hidden-faces:2`, `sheets:0.5`, `holes:5`, `duplicates`, `weld:0.01`, `normals`, `height:150` or `scale:0.1`,
-`rotate:0,0,90`, `mirror:x`, `floor`), `--cut z=40:pegs` (repeatable; `z=50%`, joints `flat`,
-`pegs`, `dowels`, `magnets`, `key`, and `--clearance 0.2`) to write the model as pieces,
-`--watertight` to wrap it into one watertight solid first (with `--close-gaps 1` to bridge gaps up
-to 1 mm, `--drop-loose 1` to remove loose bits under 1% of it, `--keep-hollows`), and `--variant WP_A_0402_1.flver` to pick a model in a
-file that holds several (see `info`). A `.3mf` output is painted from the colour textures: `--colours 6` or
-`--palette "#1a1a1a,#c8b89a,..."`, `--print-height` and `--feature` (mm) for how fine the paint goes, `--cleanup
-none|light|strong`, `--tolerance 10` to merge near colours, `--min-share 1` to drop colours under 1% of the surface,
-`--brightness`/`--contrast`/`--saturation`, and `--paint-texture 2=WP_A_0300_m` to paint material 2 from another texture. Run `darkstl <command> -h` for all.
+`rotate:0,0,90`, `mirror:x`, `floor`), and `--variant WP_A_0402_1.flver` to pick a model in a
+file that holds several (see `info`). Run `darkstl <command> -h` for all. Making a model watertight,
+cutting it into pieces and painting a 3MF are done in Model Painter: export a `.glb` and open it
+there (`-o model.3mf` says so and stops).
 
 ## Development
 

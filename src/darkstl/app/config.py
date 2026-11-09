@@ -15,6 +15,8 @@ import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .. import retired
+
 
 def config_dir() -> Path:
     if os.environ.get("DARKSTL_HOME"):
@@ -77,7 +79,10 @@ class Config:
         cfg = cls(**known)
         cfg.game_folders = [f for f in cfg.game_folders if isinstance(f, dict) and f.get("path")]
         cfg.posed_previews = bool(cfg.posed_previews)
-        cfg.last_enhance = cfg.last_enhance if isinstance(cfg.last_enhance, dict) else {}
+        # what Finish, Cut and the painted 3MF kept (moved to Model Painter in 0.55.0): ignored, and gone once saved
+        cfg.prefs = retired.prefs(cfg.prefs)
+        last = cfg.last_enhance if isinstance(cfg.last_enhance, dict) else {}
+        cfg.last_enhance = {str(game): retired.settings(s) for game, s in last.items() if isinstance(s, dict)}
         cfg.path = path
         return cfg
 

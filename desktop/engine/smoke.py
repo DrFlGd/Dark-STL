@@ -1,6 +1,7 @@
 """Smoke test of the built engine (build/engine): the command line reads a model and enhances it
-both ways, the remesher included, cuts it into pieces (manifold3d), upscales its normal map with the included AI model (engine/models,
-from desktop/models/bundle.py), and "darkstl engine" answers the app's requests on its pipe.
+both ways, the remesher included, exports it as a GLB for Model Painter (and refuses a painted 3MF, which moved
+there), upscales its normal map with the included AI model (engine/models, from desktop/models/bundle.py), and
+"darkstl engine" answers the app's requests on its pipe.
 
     python desktop/engine/smoke.py build/engine --models
 
@@ -136,12 +137,15 @@ def main() -> int:
             assert size > 84 + 50 * 2000, f"the STL is too small ({size} bytes)"
             assert "needs the 'pyacvd' package" not in log, "the remesher is missing"
             print(f"enhance --method {method}: {size} bytes of STL", flush=True)
-        # cutting (manifold3d): the 1 m plane is an open surface, thickened, then cut in two with pegs
-        out = tmp / "cut.stl"
-        log = run([str(cli), "export", str(model), "--cut", "x=50%:pegs", "-o", str(out)], env)
-        pieces = sorted(p.name for p in tmp.glob("cut_piece*.stl"))
-        assert pieces == ["cut_piece1.stl", "cut_piece2.stl"], f"cutting made {pieces}"
-        print("export --cut: 2 pieces", flush=True)
+        # a GLB with its textures, as Model Painter takes it; a painted 3MF is made there now, so it's refused
+        out = tmp / "for_painter.glb"
+        run([str(cli), "export", str(model), "-o", str(out)], env)
+        assert out.read_bytes()[:4] == b"glTF", "the GLB wasn't written"
+        refused = subprocess.run([str(cli), "export", str(model), "-o", str(tmp / "painted.3mf")], env=env,
+                                 capture_output=True, text=True, timeout=600, check=False)
+        assert refused.returncode != 0 and "moved to Model Painter" in refused.stderr, refused.stderr
+        assert not (tmp / "painted.3mf").exists()
+        print("export: GLB written, painted 3MF sent to Model Painter", flush=True)
         if (args.folder / "models" / "models.json").is_file():
             # the included upscalers, found beside the engine and picked without being named
             out = tmp / "ai.stl"

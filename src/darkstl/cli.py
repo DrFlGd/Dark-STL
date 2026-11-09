@@ -233,29 +233,6 @@ def _export_options(args, model, mesh):
     opts = ExportOptions(scale=args.scale, ascii_stl=getattr(args, "ascii", False))
     opts.material_names = [m.name for m in model.materials] if model is not None else []
     ext = Path(args.output).suffix.lower()
-    if ext == ".3mf":
-        from .paint import PaintSettings
-
-        palette = [c.strip() for c in (args.palette or "").split(",") if c.strip()] or None
-        sources = {}
-        for item in args.paint_texture or []:
-            mat, sep, key = item.partition("=")
-            if not sep or not mat.strip().isdigit():
-                raise SystemExit(f"--paint-texture takes MATERIAL=TEXTURE (material number), not '{item}'")
-            sources[str(int(mat))] = key.strip() or "none"
-        opts.paint = PaintSettings(colours=args.colours, palette=palette, print_height_mm=args.print_height,
-                                   feature_mm=args.feature, cleanup=args.cleanup, tolerance=args.tolerance,
-                                   min_share=args.min_share, brightness=args.brightness, contrast=args.contrast,
-                                   saturation=args.saturation, sources=sources or None)
-        opts.progress = _progress
-        if model is not None:
-            from .paint import colour_textures
-
-            try:
-                opts.textures = colour_textures(model, mesh, opts.paint)
-            except ValueError as exc:
-                raise SystemExit(f"error: {exc}") from None
-            return opts
     if ext in (".obj", ".glb") and model is not None:
         for m in np.unique(mesh.face_material):
             m = int(m)
@@ -268,93 +245,23 @@ def _export_options(args, model, mesh):
     return opts
 
 
-def _paint_from(args, model, textured):
-    """For a painted 3MF of a model made from ``textured`` (--watertight, --cut), which has no textures of its
-    own: the colours of the textured model's surface to paint it from (paint.surface_colours)."""
-    if Path(args.output).suffix.lower() != ".3mf":
-        return None
-    from .paint import surface_colours
+def _moved(args) -> bool:
+    """A painted 3MF asked for: it moved to Model Painter in 0.55.0 (with making models watertight and cutting
+    them into pieces), so it's refused with what to do instead."""
+    from . import retired
+    from .export import PAINTED_3MF_MOVED
 
-    opts = _export_options(args, model, textured)
-    return surface_colours(textured, opts.textures, opts.paint, _progress)
-
-
-def _report_paint(opts) -> None:
-    """What a painted 3MF was painted with: the filament slots' colours and how much they cover."""
-    p = opts.painting
-    if p is None:
-        return
-    sys.stderr.write("\n")
-    st = p.stats()
-    slots = ", ".join(f"{i + 1}: {c} ({cov * 100:.0f}%)" for i, (c, cov) in enumerate(zip(st["colours"], st["coverage"])))
-    print(f"Painted with {len(st['colours'])} filaments: {slots}; {st['split_faces']:,} triangles in more than one colour")
-    for note in st["notes"]:
-        print(f"note: {note}")
-
-
-def _write_pieces(args, mesh, colours=None) -> int:
-    """With --cut: the model cut into pieces, each written beside the output as <name>_pieceN.<ext>; for a
-    painted 3MF each piece is painted from ``colours`` (see _paint_from), with one palette for all."""
-    from . import cut
-    from .export import ExportOptions, export_mesh, write_palette_png
-
-    try:
-        settings = cut.CutSettings([cut.parse_cut(c, mesh) for c in args.cut], sheet_mm=args.sheet)
-        for c in settings.cuts:
-            c.joint.clearance_mm = args.clearance
-        result = cut.cut_mesh(mesh, settings, _progress)
-    except (ValueError, RuntimeError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
-    sys.stderr.write("\n")
-    for n in result.notes:
-        print(f"note: {n}", file=sys.stderr)
-    out = Path(args.output)
-    paint = None
-    if colours is not None:
-        paint = _export_options(args, None, mesh).paint
-        out.parent.mkdir(parents=True, exist_ok=True)
-        write_palette_png(colours.palette, colours.coverage, out.with_name(f"{out.stem}_palette.png"))
-        slots = ", ".join(f"{i + 1}: #{int(r):02X}{int(g):02X}{int(b):02X}" for i, (r, g, b) in enumerate(colours.palette))
-        print(f"Painting the pieces with {len(colours.palette)} filaments: {slots}")
-    for piece in result.pieces:
-        slug = piece.name.lower().replace(" ", "")
-        opts = ExportOptions(scale=args.scale, ascii_stl=getattr(args, "ascii", False), paint=paint, paint_from=colours,
-                             palette_png=False)
-        path = export_mesh(cut.print_pose(piece), out.with_name(f"{out.stem}_{slug}{out.suffix}"), opts)
-        print(f"Wrote {path} ({piece.mesh.n_faces:,} triangles, {piece.volume_mm3 / 1000:.2f} cm3)")
-        for note in opts.painting.notes if opts.painting is not None else []:
-            print(f"note: {note}")
-    return 0
-
-
-def _watertight(args, mesh):
-    """With --watertight: the model as one watertight solid, the surfaces inside it removed (finish.py)."""
-    from . import finish
-
-    settings = finish.WatertightSettings(sheet_mm=args.sheet, fill_hollows=not args.keep_hollows,
-                                         close_gaps_mm=args.close_gaps, loose_percent=args.drop_loose)
-    result = finish.make_watertight(mesh, settings, _progress)
-    sys.stderr.write("\n")
-    for n in result.notes:
-        print(f"note: {n}", file=sys.stderr)
-    return result.mesh
-
-
-def _finish(args, mesh):
-    """The post-processing asked for on the command line, or None with an error printed."""
-    if not getattr(args, "watertight", False):
-        return mesh
-    try:
-        return _watertight(args, mesh)
-    except (ValueError, RuntimeError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return None
+    if Path(args.output).suffix.lower() in retired.FORMATS:
+        print(f"error: {PAINTED_3MF_MOVED}", file=sys.stderr)
+        return True
+    return False
 
 
 def cmd_export(args) -> int:
     from .export import export_mesh
 
+    if _moved(args):
+        return 1
     model = _open(args)
     options = _mesh_options(args)
     if options.clean:
@@ -369,18 +276,8 @@ def cmd_export(args) -> int:
     if mesh.n_faces == 0:
         print(f"error: {model.name} has no triangles to export", file=sys.stderr)
         return 1
-    textured = mesh
-    mesh = _finish(args, mesh)
-    if mesh is None:
-        return 1
-    colours = _paint_from(args, model, textured) if mesh is not textured or args.cut else None
-    if args.cut:
-        return _write_pieces(args, mesh, colours)
-    opts = _export_options(args, model, mesh)
-    opts.paint_from = colours
-    path = export_mesh(mesh, args.output, opts)
+    path = export_mesh(mesh, args.output, _export_options(args, model, mesh))
     print(f"Wrote {path} ({mesh.n_vertices:,} vertices, {mesh.n_faces:,} triangles)")
-    _report_paint(opts)
     return 0
 
 
@@ -389,6 +286,8 @@ def cmd_enhance(args) -> int:
     from .app.config import models_dir
     from .pipeline import EnhanceSettings, enhance
 
+    if _moved(args):
+        return 1
     model = _open(args)
     settings = EnhanceSettings(
         target_vertices=args.vertices,
@@ -421,19 +320,8 @@ def cmd_enhance(args) -> int:
     sys.stderr.write("\n")
     for w in result.warnings:
         print(f"warning: {w}", file=sys.stderr)
-    out_mesh = _finish(args, result.displaced)
-    if out_mesh is None:
-        return 1
-    colours = _paint_from(args, model, result.displaced) if out_mesh is not result.displaced or args.cut else None
-    if args.cut:
-        return _write_pieces(args, out_mesh, colours)
-    opts = _export_options(args, model, out_mesh)
-    opts.paint_from = colours
-    path = export_mesh(out_mesh, args.output, opts)
-    _report_paint(opts)
+    path = export_mesh(result.displaced, args.output, _export_options(args, model, result.displaced))
     st = result.stats()
-    if out_mesh is not result.displaced:
-        st = {**st, "vertices": out_mesh.n_vertices, "faces": out_mesh.n_faces}
     print(f"Wrote {path}: {st['vertices']:,} vertices, {st['faces']:,} triangles "
           f"(from {st['source_vertices']:,}); max displacement {st['max_displacement_mm']:.3f} mm "
           f"[{time.time() - t0:.1f}s]")
@@ -502,7 +390,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     def model_args(sp):
         sp.add_argument("file", help="model file: .partsbnd/.chrbnd/... archive, .flver or .obj")
-        sp.add_argument("-o", "--output", required=True, help="output file (.stl .obj .ply .glb, or .3mf painted)")
+        sp.add_argument("-o", "--output", required=True,
+                        help="output file (.stl .obj .ply .glb); for a painted 3MF, export a .glb for Model Painter")
         sp.add_argument("--variant", "--inner", dest="variant",
                         help="which model to use from a file that holds several (see 'info')")
         sp.add_argument("--parts", "--meshes", dest="parts", help="comma-separated part indices to include (see 'info')")
@@ -522,42 +411,6 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--scale", type=float, default=1000.0, help="unit scale (default 1000: metres -> mm)")
         sp.add_argument("--ascii", action="store_true", help="ASCII STL")
         sp.add_argument("--textures", action="append", help="extra folder to search for textures")
-        sp.add_argument("--colours", "--colors", dest="colours", type=int, default=4,
-                        help="painted 3MF: filament colours the textures are reduced to, 2-16 (default 4)")
-        sp.add_argument("--palette", metavar="#RRGGBB,...",
-                        help="painted 3MF: the filament colours themselves, in slot order (instead of --colours)")
-        sp.add_argument("--print-height", type=float, default=150.0, metavar="MM",
-                        help="painted 3MF: the model's height when printed, for --feature (default 150)")
-        sp.add_argument("--feature", type=float, default=0.5, metavar="MM",
-                        help="painted 3MF: smallest colour feature kept at that print height (default 0.5)")
-        sp.add_argument("--cleanup", choices=["none", "light", "strong"], default="light",
-                        help="painted 3MF: specks removed from the reduced textures (default light)")
-        sp.add_argument("--tolerance", type=float, default=0.0, metavar="N",
-                        help="painted 3MF: suggested colours closer than this (0-50, Oklab distance x 100) are "
-                             "merged, so there can be fewer than --colours (default 0)")
-        sp.add_argument("--min-share", type=float, default=0.0, metavar="PCT",
-                        help="painted 3MF: suggested colours covering less than this %% of the surface are dropped")
-        sp.add_argument("--brightness", type=float, default=0.0, help="painted 3MF: -1..1 added to the texture colours")
-        sp.add_argument("--contrast", type=float, default=1.0, help="painted 3MF: texture contrast, 0-3 (default 1)")
-        sp.add_argument("--saturation", type=float, default=1.0, help="painted 3MF: texture saturation, 0-3 (default 1)")
-        sp.add_argument("--paint-texture", action="append", metavar="MAT=TEXTURE",
-                        help="painted 3MF: paint material number MAT from this texture instead of its colour "
-                             "texture (MAT= alone: not painted); repeat for more")
-        sp.add_argument("--cut", action="append", metavar="AXIS=MM[:JOINT]",
-                        help="cut into pieces across an axis at that many mm (or AXIS=50%%), with a joint: flat, pegs, "
-                             "dowels, magnets or key (default pegs); repeat for more cuts. Each piece is written as "
-                             "<output>_pieceN, laid on a cut face")
-        sp.add_argument("--clearance", type=float, default=0.2, help="gap in mm between parts of a joint (with --cut)")
-        sp.add_argument("--watertight", action="store_true",
-                        help="wrap the model into one watertight solid: parts joined, the surfaces inside one another "
-                             "removed, hollows sealed inside filled (before --cut, if given)")
-        sp.add_argument("--close-gaps", type=float, default=0.0, metavar="MM",
-                        help="with --watertight: also close gaps between parts up to this wide")
-        sp.add_argument("--drop-loose", type=float, default=0.0, metavar="PERCENT",
-                        help="with --watertight: remove loose bits smaller than this %% of the model's volume")
-        sp.add_argument("--keep-hollows", action="store_true", help="with --watertight: leave hollows sealed inside open")
-        sp.add_argument("--sheet", type=float, default=1.2, metavar="MM",
-                        help="with --watertight or --cut: thickness given to open surfaces (default 1.2)")
 
     s = sub.add_parser("textures", help="save a model's textures as PNG")
     s.add_argument("file")

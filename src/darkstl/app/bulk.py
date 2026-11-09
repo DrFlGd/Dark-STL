@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from .. import retired
+
 KEEP_FINISHED = 30  # finished items still listed
 
 ACTIONS = {
@@ -250,8 +252,9 @@ class QueueCommands:
                     self.sessions.pop(sid, None)
 
     def _last_settings(self, game: str) -> dict:
-        """The settings the Mesh and Displace tabs last generated a model of ``game`` with (else the defaults)."""
-        return dict((self.config.last_enhance or {}).get(game) or {})
+        """The settings the Mesh and Displace tabs last generated a model of ``game`` with (else the defaults),
+        without what Finish, Cut or the painted 3MF kept in them before 0.55.0."""
+        return retired.settings((self.config.last_enhance or {}).get(game) or {})
 
 
 __all__ = ["ACTIONS", "QueueCommands", "QueueItem"]

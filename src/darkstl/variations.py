@@ -10,8 +10,9 @@ imported as one yet::
         thumb.png        a picture of it
 
 The package's own files are never touched, and a package written again (the game imported again) keeps them.
-A variation opens in the app as the model's enhanced model: shown, exported, made watertight or cut like a
-fresh one, or its settings taken up again as the starting point for new ones.
+A variation opens in the app as the model's enhanced model: shown or exported like a fresh one, or its
+settings taken up again as the starting point for new ones. One saved before 0.55.0 may still name Finish or
+Cut settings: they're ignored, and left out when it's written again (see :mod:`darkstl.retired`).
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import retired
 from .errors import FormatError
 from .geometry.mesh import TriMesh
 
@@ -96,7 +98,7 @@ def save(folder: Path, name: str, mesh: TriMesh, info: dict, thumb_png: bytes | 
         write_mesh(here / MESH, mesh)
         if thumb_png:
             (here / THUMB).write_bytes(thumb_png)
-        data = {**info, "format": FORMAT, "version": VERSION, "id": vid, "name": name.strip() or vid,
+        data = {**retired.variation(info), "format": FORMAT, "version": VERSION, "id": vid, "name": name.strip() or vid,
                 "made": time.strftime("%Y-%m-%dT%H:%M:%S"), "app": __version__}
         (here / INFO).write_text(json.dumps(data, indent=1, default=_plain), "utf-8")
     except BaseException:
@@ -133,7 +135,7 @@ def read(folder: Path, vid: str) -> dict:
         raise FormatError("That isn't a Dark STL variation.")
     if int(data.get("version", VERSION)) > VERSION:
         raise FormatError("That variation was saved by a newer Dark STL.")
-    return _row(here, data)
+    return _row(here, retired.variation(data))
 
 
 def listed(folder: Path, variant: str | None = None) -> list[dict]:
@@ -167,7 +169,7 @@ def thumb_of(folder: Path, vid: str) -> bytes | None:
 
 def rename(folder: Path, vid: str, name: str) -> dict:
     here = Path(folder) / _check_id(vid)
-    data = json.loads((here / INFO).read_text("utf-8"))
+    data = retired.variation(json.loads((here / INFO).read_text("utf-8")))
     data["name"] = name.strip() or data.get("name") or vid
     tmp = here / (INFO + ".part")
     tmp.write_text(json.dumps(data, indent=1), "utf-8")
