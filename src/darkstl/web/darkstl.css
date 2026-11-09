@@ -454,6 +454,8 @@ a.card-tag:hover { border-color: var(--graphite); color: var(--ink); }
 .home-collections { margin-bottom: 12px; }
 .home-card-head #home-new-collection { margin-left: auto; }
 .collection-tiles { --card: 190px; margin: 8px 0 0; }
+.home-card a.collection-tile { color: var(--ink); }
+#home-problems { margin-bottom: 12px; }
 
 /* the queue */
 .queue-page { max-width: 860px; }

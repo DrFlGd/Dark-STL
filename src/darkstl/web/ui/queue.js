@@ -62,8 +62,7 @@ export function QueuePage() {
       primary=${finished ? html`<button type="button" class="ghost" id="queue-clear" title="Take the finished ones off the list" onClick=${clear}>Clear finished</button>` : null} />
     <div class="pages"><div class="queue-page">
       <p class="muted">What you asked to be done to several models at once runs here, one job after another, while you go on working. Choose models in a game,
-        a search or a collection (Ctrl+click, Shift+click or Ctrl+A), then right-click them: <i>Collect into the app</i>, <i>Export as GLB</i>, <i>Export packages</i>
-        or <i>Enhance with the current settings</i>.</p>
+        a search or a collection (Ctrl+click, Shift+click or Ctrl+A), then right-click them: <i>Collect into the app</i>, <i>Export as GLB</i>, <i>Export packages</i> or <i>Enhance with the current settings</i>.</p>
       ${items.length ? html`<ul class="queue-list" id="queue-list">${items.map((it) => html`<${Item} key=${it.id} it=${it} />`)}</ul>`
         : html`<div class="empty" id="queue-empty">${q ? "Nothing queued." : "…"}</div>`}
     </div></div>`;

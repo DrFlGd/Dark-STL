@@ -98,8 +98,7 @@ export function CollectionPage({ route }) {
         : pick.picked ? html`<${ModelSummary} key=${pick.picked.id} m=${pick.picked} />`
         : html`<div class="place-summary" id="place-summary"><section class="insp-section"><h3>${name}</h3>
           <p>${result ? plural(result.total, "model") : "…"}${c?.games?.length ? ` from ${c.games.join(", ")}` : ""}.</p>
-          <p class="muted">${starred ? "The models you starred, in every game." : "A list of your own: its models stay where they are in the library."}
-            Click a model to see it here; double-click (or Enter) opens it. Ctrl+click or Shift+click chooses several, to do something to them all.</p>
+          <p class="muted">${starred ? "The models you starred, in every game." : "A list of your own: its models stay where they are in the library."}${" "}Click a model to see it here; double-click (or Enter) opens it. Ctrl+click or Shift+click chooses several, to do something to them all.</p>
           ${starred && items.length ? html`<div class="insp-actions"><button type="button" class="ghost" id="unstar-all" title="Take the star off every model here" onClick=${() => starModels(items, false)}>${Icon.star(14)} Take every star off</button></div>` : null}
           </section></div>` },
     ]} />

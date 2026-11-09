@@ -173,7 +173,7 @@ export function useModelSelection(items, extra = []) {
       openMenu(e, modelMenu(m));
     },
     /** The command bar's selection, while several are chosen. */
-    bar: multi ? { count: `${plural(chosen.length, "model")} chosen`, onClear: () => one(null), items: bulkItems(chosen, extra), buttons: 2 } : null,
+    bar: multi ? { count: `${plural(chosen.length, "model")} chosen`, onClear: () => one(null), items: bulkItems(chosen, extra), buttons: 1 } : null,
     /** The keys the page passes on: Ctrl+A and Esc (true when it was one of them). */
     key: (e) => {
       if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "a") { e.preventDefault(); setSel(new Set(ids)); return true; }
