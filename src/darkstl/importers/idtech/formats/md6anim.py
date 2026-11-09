@@ -4,12 +4,17 @@ A header (the skeleton's name, bounds), a data block (frame count and rate, fram
 are), joint lists (run-length coded), constant rotations / scales / translations for joints that don't move, and
 frame sets: each animated joint's first value, a bit per frame saying where it has a key, and the keys. Rotations
 are 48-bit "smallest three" quaternions.
+
+DOOM: The Dark Ages (:func:`read_darkages_anim`) adds attachments, a longer data block (how the frame sets are
+streamed), joint lists that may hold 16-bit joints, and keeps the frame sets of most animations in the StreamDB;
+its key bits run from the last byte of a joint's row, and its quaternions are scaled by 1/32768.
 """
 
 from __future__ import annotations
 
 import math
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -68,12 +73,15 @@ def _interpolate(t: Track, frame: float, slerp: bool) -> np.ndarray:
     return q / max(np.linalg.norm(q), 1e-12)
 
 
-def decode_quats(raw: bytes, offset: int, count: int) -> np.ndarray:
-    v = np.frombuffer(raw, "<u2", count * 3, offset).reshape(count, 3).astype(np.int64)
+def decode_quats(raw: bytes, offset: int, count: int, step: int = 0x7FFF) -> np.ndarray:
+    """``count`` 48-bit quaternions; DOOM Eternal divides by ``0x7FFF``, The Dark Ages by ``0x8000``."""
     if not count:
         return np.zeros((0, 4))
+    if offset < 0 or offset + count * 6 > len(raw):
+        raise FormatError("the animation's rotations are cut short")
+    v = np.frombuffer(raw, "<u2", count * 3, offset).reshape(count, 3).astype(np.int64)
     s2 = math.sqrt(2.0)
-    abc = (v & 0x7FFF) * (s2 / 0x7FFF) - math.sqrt(0.5)
+    abc = (v & 0x7FFF) * (s2 / step) - math.sqrt(0.5)
     d = np.sqrt(np.clip(1.0 - (abc ** 2).sum(axis=1), 0.0, 1.0))
     index = ((v[:, 1] >> 15) & 1) << 1 | ((v[:, 0] >> 15) & 1)
     a, b, c = abc[:, 0], abc[:, 1], abc[:, 2]
@@ -135,43 +143,212 @@ def read_md6_anim(data: bytes) -> Md6Anim:
     set_offsets = struct.unpack_from(f"<{n_sets + 1}i", data, start + set_off_tbl)
     keys: dict[tuple[int, int], tuple[list[int], list[np.ndarray]]] = {}
     for s in range(n_sets):
-        fs = start + set_offsets[s] * 16
-        h = struct.unpack_from("<19h", data, fs)
-        first_off, range_off, bits_off = h[0:3], h[4:7], h[8:11]
-        frame_start, frame_range = h[17], h[18]
-        per_joint = (frame_range + 7) >> 3
-        for kind, joints in enumerate((a_r, a_s, a_t)):
-            if not joints:
-                continue
-            rot = kind == 0
-            n = len(joints)
-            first = (decode_quats(data, fs + first_off[kind], n) if rot
-                     else np.frombuffer(data, "<f4", n * 3, fs + first_off[kind]).reshape(n, 3).astype(np.float64))
-            bits = np.unpackbits(np.frombuffer(data, np.uint8, per_joint * n, fs + bits_off[kind])).reshape(n, -1)
-            bits = bits[:, :frame_range].astype(bool)
-            total = int(bits.sum())
-            rng = (decode_quats(data, fs + range_off[kind], total) if rot
-                   else np.frombuffer(data, "<f4", total * 3, fs + range_off[kind]).reshape(-1, 3).astype(np.float64))
-            vi = 0
-            for i, j in enumerate(joints):
-                frames, values = keys.setdefault((kind, j), ([], []))
-                frames.append(frame_start)
-                values.append(first[i])
-                for f in np.nonzero(bits[i])[0]:
-                    frames.append(frame_start + int(f))
-                    values.append(rng[vi])
-                    vi += 1
+        _read_frame_set(data, start + set_offsets[s] * 16, (a_r, a_s, a_t), keys, False)
+    _add_tracks(anim, keys)
+    return anim
+
+
+def _vectors(raw: bytes, offset: int, count: int) -> np.ndarray:
+    if offset < 0 or offset + count * 12 > len(raw):
+        raise FormatError("the animation's values are cut short")
+    return np.frombuffer(raw, "<f4", count * 3, offset).reshape(count, 3).astype(np.float64)
+
+
+def _read_frame_set(data: bytes, fs: int, animated: tuple[list[int], list[int], list[int]],
+                    keys: dict[tuple[int, int], tuple[list[int], list[np.ndarray]]], darkages: bool) -> None:
+    """One frame set's keys, added to ``keys`` ((kind, joint) -> frames, values)."""
+    if fs < 0 or fs + 38 > len(data):
+        raise FormatError("the animation's frame set is cut short")
+    h = struct.unpack_from("<19H", data, fs)
+    first_off, range_off, bits_off = h[0:3], h[4:7], h[8:11]
+    frame_start, frame_range = h[17], h[18]
+    per_joint = (frame_range + 7) >> 3
+    step = 0x8000 if darkages else 0x7FFF
+    for kind, joints in enumerate(animated):
+        if not joints:
+            continue
+        rot = kind == 0
+        n = len(joints)
+        first = decode_quats(data, fs + first_off[kind], n, step) if rot else _vectors(data, fs + first_off[kind], n)
+        at = fs + bits_off[kind]
+        if at + per_joint * n > len(data):
+            raise FormatError("the animation's key bits are cut short")
+        rows = np.frombuffer(data, np.uint8, per_joint * n, at).reshape(n, per_joint)
+        if darkages:  # the first frames are in each row's last byte
+            rows = rows[:, ::-1]
+        bits = np.unpackbits(np.ascontiguousarray(rows), axis=1)[:, :frame_range].astype(bool)
+        total = int(bits.sum())
+        rng = (decode_quats(data, fs + range_off[kind], total, step) if rot
+               else _vectors(data, fs + range_off[kind], total))
+        vi = 0
+        for i, j in enumerate(joints):
+            frames, values = keys.setdefault((kind, j), ([], []))
+            frames.append(frame_start)
+            values.append(first[i])
+            for f in np.nonzero(bits[i])[0]:
+                frames.append(frame_start + int(f))
+                values.append(rng[vi])
+                vi += 1
+
+
+def _add_tracks(anim: Md6Anim, keys: dict[tuple[int, int], tuple[list[int], list[np.ndarray]]],
+                skip: int | None = _NONE) -> None:
     for (kind, j), (frames, values) in keys.items():
-        if j == _NONE:
+        if j == skip:
             continue
         fr = np.asarray(frames)
         order = np.argsort(fr, kind="stable")
         fr, vals = fr[order], np.asarray(values)[order]
         keep = np.append(fr[1:] != fr[:-1], True)  # a later key on the same frame wins
         (anim.rotations, anim.scales, anim.translations)[kind].append(Track(j, fr[keep], vals[keep]))
-    return anim
 
 
 def read_anim_skeleton(data: bytes) -> str:
     """Only the name of the skeleton an animation is for."""
     return Reader(data).string()
+
+
+# -- DOOM: The Dark Ages ---------------------------------------------------------------------------------------------
+
+UNSTREAMED, UNSTREAMED_FIRST_FRAMESET, STREAMED, LODS_STREAMED = 0, 1, 2, 3
+_DA_DATA = struct.Struct("<i4h2i11hBBf24f")  # the data block, up to the joint map
+
+
+@dataclass
+class DarkAgesHeader:
+    skeleton: str
+    start: int  # where the data block starts
+    size: int  # the header's size (where the stream info is, from start)
+    frames: int
+    fps: float
+    sets: int
+    set_offsets_at: int
+    const: tuple[int, int, int]
+    method: int
+    map_at: int
+
+
+def decode_rle16(raw: bytes, pos: int) -> list[int]:
+    """A Dark Ages joint list: a 16-bit size (top bit: the joints are 16-bit), then runs of (count, first joint)."""
+    if pos < 0 or pos + 2 > len(raw):
+        raise FormatError("the animation's joint list is cut short")
+    (size,) = struct.unpack_from("<h", raw, pos)
+    wide = size < 0
+    size &= 0x7FFF
+    pos += 2
+    out: list[int] = []
+    while len(out) < size:
+        if pos >= len(raw):
+            raise FormatError("the animation's joint list is cut short")
+        count = raw[pos]
+        if count & 0x80 or count == 0:
+            raise FormatError("the animation's joint list isn't one Dark STL reads")
+        if wide:
+            (value,) = struct.unpack_from("<H", raw, pos + 1)
+            pos += 3
+        else:
+            value = raw[pos + 1]
+            pos += 2
+        out += range(value, value + count)
+    return out[:size]
+
+
+def read_darkages_header(data: bytes) -> DarkAgesHeader:
+    r = Reader(data)
+    skeleton = r.string()
+    if r.i32() != 0:
+        raise FormatError("animations with attachments aren't read yet")
+    r.vec(12)  # bounds
+    size = r.i32()
+    start = r.pos
+    if start + _DA_DATA.size + 17 > len(data):
+        raise FormatError("not a DOOM: The Dark Ages animation (too short)")
+    d = _DA_DATA.unpack_from(data, start)
+    (_total, _size, _flags, n_frames, rate, _src, _base, n_sets, _tbl0, _tbl1, set_off_tbl, const_r, const_s,
+     const_t, _const_u, _next, _weights, _n_streamed, method, _pad) = d[:20]
+    if method not in (UNSTREAMED, STREAMED, LODS_STREAMED):
+        raise FormatError("this animation's frame sets are stored a way Dark STL doesn't read yet")
+    return DarkAgesHeader(skeleton, start, size, max(1, n_frames), float(rate) or 30.0, n_sets,
+                          start + (set_off_tbl & 0xFFFF), (const_r & 0xFFFF, const_s & 0xFFFF, const_t & 0xFFFF),
+                          method, start + _DA_DATA.size)
+
+
+@dataclass
+class StreamLayout:
+    size: int  # decompressed
+    stored: int
+    sets: int
+
+
+def darkages_stream_info(data: bytes, head: DarkAgesHeader) -> tuple[list[StreamLayout], list[int], list[int]]:
+    """(layouts, each streamed frame set's offset in its piece, each one's layout)."""
+    at = head.start + head.size
+    if at + 2 > len(data):
+        return [], [], []
+    (n_layouts,) = struct.unpack_from("<h", data, at)
+    if n_layouts <= 0:
+        return [], [], []
+    (n_offsets,) = struct.unpack_from("<h", data, at + 2)
+    at += 4
+    layouts = []
+    for _ in range(n_layouts):
+        size, stored, _offset, sets, _comp = struct.unpack_from("<3I2h", data, at)
+        layouts.append(StreamLayout(size, stored, sets))
+        at += 16
+    offsets = list(struct.unpack_from(f"<{n_offsets}H", data, at))
+    which = list(struct.unpack_from(f"<{n_offsets}h", data, at + 2 * n_offsets))
+    return layouts, offsets, which
+
+
+def darkages_pieces(data: bytes) -> list[tuple[int, int]]:
+    """The StreamDB pieces a Dark Ages animation's frame sets are in: (layout index, decompressed size)."""
+    head = read_darkages_header(data)
+    if head.method == UNSTREAMED:
+        return []
+    layouts, _offsets, which = darkages_stream_info(data, head)
+    return [(i, layouts[i].size) for i in sorted(set(which)) if 0 <= i < len(layouts)]
+
+
+def read_darkages_anim(data: bytes, fetch: Callable[[int, int], bytes | None] | None = None) -> Md6Anim:
+    """A DOOM: The Dark Ages animation. ``fetch(layout, size)`` gives a streamed piece of its frame sets
+    (see :func:`darkages_pieces`), or None."""
+    head = read_darkages_header(data)
+    if data[head.map_at] != 0:
+        raise FormatError("not a DOOM: The Dark Ages animation (joint map)")
+    offs = struct.unpack_from("<8H", data, head.map_at + 1)
+    c_r, c_s, c_t, _c_u, a_r, a_s, a_t, _a_u = [decode_rle16(data, head.map_at + o) for o in offs]
+    anim = Md6Anim(head.skeleton, head.frames, head.fps)
+    const_r, const_s, const_t = head.const
+    for joints, vals, target in (
+            (c_r, decode_quats(data, head.start + const_r, len(c_r), 0x8000), anim.rotations),
+            (c_s, _vectors(data, head.start + const_s, len(c_s)), anim.scales),
+            (c_t, _vectors(data, head.start + const_t, len(c_t)), anim.translations)):
+        for j, v in zip(joints, vals):
+            target.append(Track(j, np.array([0]), v[None, :]))
+    sets: list[tuple[bytes, int]] = []
+    if head.method == UNSTREAMED:
+        if head.set_offsets_at + 4 * (head.sets + 1) > len(data):
+            raise FormatError("the animation's frame set table is cut short")
+        offsets = struct.unpack_from(f"<{head.sets + 1}i", data, head.set_offsets_at)
+        sets = [(data, head.start + o * 16) for o in offsets[:head.sets]]
+    else:
+        layouts, offsets, which = darkages_stream_info(data, head)
+        pieces: dict[int, bytes] = {}
+        for off, li in zip(offsets, which):
+            if not 0 <= li < len(layouts):
+                raise FormatError("the animation names a stream it doesn't have")
+            if li not in pieces:
+                got = fetch(li, layouts[li].size) if fetch is not None else None
+                if got is None:
+                    raise FormatError("the animation's frames are in the game's StreamDB files, which don't have them")
+                pieces[li] = got
+            sets.append((pieces[li], off))
+        if head.method == LODS_STREAMED and sets:  # one set of frame sets per level of detail: the finest
+            lod = [buf[at + 38] if at + 39 <= len(buf) else 0 for buf, at in sets]
+            best = min(lod)
+            sets = [s for s, lo in zip(sets, lod) if lo == best]
+    keys: dict[tuple[int, int], tuple[list[int], list[np.ndarray]]] = {}
+    for buf, at in sets:
+        _read_frame_set(buf, at, (a_r, a_s, a_t), keys, True)
+    _add_tracks(anim, keys, None)
+    return anim

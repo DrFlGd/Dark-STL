@@ -200,9 +200,10 @@ that engine:
   `reengine.lists` names bundled pak file lists (`RE4_STM_Release`).
 * `redengine` (Cyberpunk 2077): `recognise.files` and `recognise.folder_pattern` add to the ways its folder is
   recognised.
-* `idtech` (DOOM Eternal): a profile with the game's `name` changes what isn't confirmed on the real game yet:
-  `idtech.unit` (metres per id unit, 0.0254 as shipped: inches), `textures.normal_green` (`directx` or
-  `opengl`), and `recognise.files` (executables beside `base`, added to `DOOMEternalx64vk.exe`). For example
+* `idtech` (DOOM Eternal, DOOM: The Dark Ages): a profile with the game's `name` changes what isn't confirmed on
+  the real game yet: `idtech.unit` (metres per id unit, 0.0254 as shipped: inches), `textures.normal_green`
+  (`directx` or `opengl`), and `recognise.files` (executables beside `base`, added to `DOOMEternalx64vk.exe` or
+  `DOOMTheDarkAges.exe`). For example
   `{"format": 1, "name": "DOOM Eternal", "engine": "idtech", "idtech": {"unit": 0.01}}`.
 
 ### `renderware`: Grand Theft Auto III, Vice City, San Andreas

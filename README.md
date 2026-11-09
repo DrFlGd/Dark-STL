@@ -33,7 +33,7 @@ Importing is modular: each game family has its own importer, and everything afte
 Dark Souls III, Sekiro, Elden Ring), Cyberpunk 2077 files, Capcom RE Engine files (Resident Evil
 2, 3, 4, 7 and Village, Devil May Cry 5), Borderlands (Borderlands, Borderlands 2, The
 Pre-Sequel, Borderlands 3, Tiny Tina's Wonderlands, Borderlands 4), Returnal, Grand Theft Auto III,
-Vice City, San Andreas, IV and V, DOOM Eternal, and Wavefront OBJ are supported today.
+Vice City, San Andreas, IV and V, DOOM Eternal, DOOM: The Dark Ages, and Wavefront OBJ are supported today.
 
 ## Install
 
@@ -181,6 +181,15 @@ neither.
   files decompressed, so the collected copy needs neither the game nor Oodle. Checked only on
   synthetic files built to Valen's description of the formats so far: the size (id units taken as
   inches) and the normal maps' green direction are still to be confirmed on the real game.
+
+- **DOOM: The Dark Ages (id Tech 8):** add the game's install folder as it is; it's read like DOOM
+  Eternal (its models, skeletons and animations have their own layouts, and longer animations are
+  kept in the `.streamdb` files, which Collect copies too). The game doesn't ship the Oodle library
+  (it's built into `DOOMTheDarkAges.exe`): Dark STL uses DOOM Eternal's `oo2core_8_win64.dll` by
+  itself when Eternal is installed beside it in the same Steam library; otherwise point *Settings ›
+  Game tools › Oodle* at an `oo2core_9_win64.dll` or Eternal's. Skinned models with six or eight
+  joints per vertex keep the four heaviest. Vegetation and strand-hair models aren't read. Checked
+  only on synthetic files so far.
 
 - **Posing Unreal 4/5 models** (Returnal, Borderlands 3, Wonderlands, Borderlands 4): a skeletal
   mesh can be posed on the Pose tab with every `AnimSequence` made for its `Skeleton` asset. The
@@ -355,7 +364,7 @@ archive format as BinderTool (Atvaark), UXM (TKGP) and
 [UXM Selective Unpacker](https://github.com/Nordgaren/UXM-Selective-Unpack) (Nordgaren)
 read it; the archive keys and the bundled file lists are copied from
 [Smithbox](https://github.com/vawser/Smithbox) (MIT, see
-`src/darkstl/importers/fromsoft/filelists/LICENSE.txt`). The id Tech 7 formats (DOOM Eternal) follow
+`src/darkstl/importers/fromsoft/filelists/LICENSE.txt`). The id Tech 7 and 8 formats (DOOM Eternal, DOOM: The Dark Ages) follow
 [Valen](https://github.com/jandk/valen) by jandk (MIT) and
 [EntityAtlan](https://github.com/FlavorfulGecko5/EntityAtlan) by FlavorfulGecko5 (MIT). Dark STL is an independent
 reimplementation and contains no code or data from the games; you need your own copies.

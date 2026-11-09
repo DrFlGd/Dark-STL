@@ -1,5 +1,6 @@
-"""Builders for synthetic id Tech 7 (DOOM Eternal) files: containers, StreamDB, images, models, skeletons,
-animations and decls, written to the layouts the readers follow (docs/PLAN.md, "Reading id Tech 6/7/8 files")."""
+"""Builders for synthetic id Tech 7 and 8 (DOOM Eternal, DOOM: The Dark Ages) files: containers, StreamDB,
+images, models, skeletons, animations and decls, written to the layouts the readers follow (docs/PLAN.md, "Reading
+id Tech 6/7/8 files")."""
 
 from __future__ import annotations
 
@@ -428,3 +429,306 @@ def eternal_install(root: Path, with_mask: bool = True) -> dict:
             "maps": [{"name": "common"}], "mapFileRefs": [{"file": i, "map": 0} for i in range(4)]}
     (base / "packagemapspec.json").write_text(json.dumps(spec))
     return {"root": root, "fingerprints": (fp_game, fp_patch)}
+
+
+# ---------------------------------------------------------------------------
+# DOOM: The Dark Ages
+
+
+def vertex_streams_darkages(positions, normals, uvs, joints=None, weights=None, influence: int = 6
+                            ) -> dict[int, bytes]:
+    """The Dark Ages's streams: as DOOM Eternal's, but joints in a skinning stream (``influence`` per vertex) with the
+    middle weights after them and the last three packed into the normal and tangent."""
+    out = vertex_streams(positions, normals, uvs)
+    if joints is None:
+        return out
+    n = len(positions)
+    joints = np.asarray(joints, np.uint8).reshape(n, influence)
+    weights = np.asarray(weights, np.float64).reshape(n, influence)
+    mode = {4: G.SKINNING_4, 6: G.SKINNING_6, 8: G.SKINNING_8}[influence]
+    extra = G._extra_weights(influence)
+    skin = np.zeros((n, G.SIZES[mode]), np.uint8)
+    skin[:, :influence] = joints
+    skin[:, influence:influence + extra] = np.round(weights[:, 1:1 + extra] * 255).astype(np.uint8)
+    s1, s2 = G._PACKED[influence]
+    nt = np.frombuffer(out[G.NORMAL_TANGENT], np.uint8).reshape(n, 8).copy()
+    y = np.round(weights[:, 1 + extra] * 254).astype(int)
+    z = np.round(weights[:, 2 + extra] * s1).astype(int)
+    w = np.round(weights[:, 3 + extra] * s2).astype(int)
+    nt[:, 7] = (nt[:, 7] & 0x80) | (y & 0x7F)
+    nt[:, 3] = ((z & 0x0F) << 4) | (w & 0x0F)
+    out[G.NORMAL_TANGENT] = nt.tobytes()
+    out[mode] = skin.tobytes()
+    return out
+
+
+def sequential_piece(surfaces: list[dict]) -> bytes:
+    """One level of detail's piece as The Dark Ages writes it: per surface its streams (mask order, each aligned to
+    its record size), its indices, then padding to 8 bytes."""
+    blob = b""
+    for s in surfaces:
+        body = b""
+        for m in G.split_mask(s["mask"]):
+            size = G.SIZES[m]
+            if size:
+                body += b"\xee" * ((size - len(body) % size) % size)
+                body += s["streams"][m]
+        body += np.asarray(s["triangles"], "<u2").tobytes()
+        blob += body + b"\xee" * (-len(body) % 8)
+    return blob
+
+
+def _mask_of(streams: dict[int, bytes]) -> int:
+    combined = 0
+    for m in streams:
+        combined |= m
+    return combined
+
+
+def lod_record_static_darkages(n_vertices: int, n_tris: int, mask: int, positions, uvs) -> bytes:
+    lo, scale, uv_lo, uv_scale = lod_quant(positions, uvs)
+    return (struct.pack("<i6I", -5, n_vertices, n_tris * 3, 0, 0, 0, mask)
+            + struct.pack("<6f", *positions.min(0), *positions.max(0)) + struct.pack("<3ff", *lo, scale)
+            + struct.pack("<2ff", *uv_lo, uv_scale) + struct.pack("<Iff", 0, 0, 0) + struct.pack("<I", 0x724C4D42))
+
+
+def static_model_darkages(surfaces: list[dict], streamable: bool) -> tuple[bytes, bytes | None]:
+    out = struct.pack("<3fII", 0, 0, 0, 1, len(surfaces)) + struct.pack("<f", 0) + struct.pack("<I", int(streamable))
+    for s in surfaces:
+        s["streams"] = vertex_streams(s["positions"], s["normals"], s["uvs"])
+        s["mask"] = _mask_of(s["streams"])
+        out += s32(s["material"]) + struct.pack("<III", 0, 0, 0)
+        out += struct.pack("<I", 0) + lod_record_static_darkages(len(s["positions"]), len(s["triangles"]),
+                                                                  s["mask"], s["positions"], s["uvs"])
+        out += struct.pack("<I", 1) * 4
+    out += struct.pack("<fIII", 0, 0, 0, 0)
+    out += struct.pack("<I", 1) + bytes(48) + s32("") + struct.pack("<I", 0)  # one decal projection
+    out += bytes(len(surfaces) * 5)
+    piece = None
+    if streamable:
+        piece = sequential_piece(surfaces)
+        out += struct.pack("<IIII", 0, len(piece), len(piece), 0) + struct.pack("<IIII", 0, 0, 0, 0) * 4
+    else:
+        for s in surfaces:
+            n = len(s["positions"])
+            order = [m for m in G.INTERLEAVED if m in s["streams"]]
+            parts = [np.frombuffer(s["streams"][m], np.uint8).reshape(n, G.SIZES[m]) for m in order]
+            out += np.concatenate(parts, axis=1).tobytes() + np.asarray(s["triangles"], "<u2").tobytes()
+    return out, piece
+
+
+def lod_record_md6_darkages(n_vertices: int, n_tris: int, influence: int, mask: int, positions, uvs,
+                            joint_offset: int) -> bytes:
+    lo, scale, uv_lo, uv_scale = lod_quant(positions, uvs)
+    return (struct.pack("<IIB", n_vertices, n_tris, influence) + struct.pack("<6f", *positions.min(0),
+            *positions.max(0)) + struct.pack("<3ff", *lo, scale) + struct.pack("<2ff", *uv_lo, uv_scale)
+            + struct.pack("<Iffh", mask, 0, 0, joint_offset))
+
+
+def md6_model_darkages(skeleton: str, joints: int, skinned: list[int], extra: list[int], meshes: list[dict]
+                       ) -> tuple[bytes, bytes]:
+    """A Dark Ages skinned model for a skeleton of ``joints`` joints, and its LOD 0 piece. Each mesh: name, material,
+    joint_offset, influence, positions, normals, uvs, triangles, joints and weights (``influence`` per vertex)."""
+    n8 = (joints + 7) & ~7
+    out = s32(skeleton) + struct.pack("<6f", 0, 0, 0, 0, 0, 0) + b"\1" + s32("")
+    out += struct.pack(f"<H{len(skinned)}h", len(skinned), *skinned)
+    out += struct.pack(f"<H{len(extra)}H", len(extra), *extra)
+    out += struct.pack("<6f", -1, -1, -1, 1, 1, 1) + struct.pack("<i5f", 5, 0, 0, 0, 0, 0)
+    out += struct.pack("<I", 0) + struct.pack("<9f", *([0.0] * 9)) + struct.pack(f"<{n8}f", *([1.0] * n8))
+    out += struct.pack("<I", len(meshes))
+    for m in meshes:
+        inf = m.get("influence", 6)
+        m["streams"] = vertex_streams_darkages(m["positions"], m["normals"], m["uvs"], m["joints"], m["weights"], inf)
+        m["mask"] = _mask_of(m["streams"])
+        out += s32(m["name"]) + s32(m["material"]) + struct.pack("<iih", 0, 0, 0)
+        out += struct.pack("<I", 0) + lod_record_md6_darkages(len(m["positions"]), len(m["triangles"]), inf,
+                                                               m["mask"], m["positions"], m["uvs"],
+                                                               m.get("joint_offset", 0))
+        out += struct.pack("<I", 1) * 4 + b"\0" + struct.pack("<I", 0)
+    out += struct.pack("<I", 0)  # surface infos
+    out += struct.pack("<iii", 0, 0, 0)  # wounds
+    out += s32("") + struct.pack("<I", 0)  # decals
+    piece = sequential_piece(meshes)
+    out += struct.pack("<I", 5) + bytes(12 * 5)
+    out += struct.pack("<IIII", 0, len(piece), len(piece), 0) + struct.pack("<IIII", 0, 0, 0, 0) * 4
+    return out, piece
+
+
+def skeleton_darkages(names: list[str], parents: list[int], translations: list[tuple]) -> bytes:
+    n = len(names)
+    n8 = (n + 7) & ~7
+    header_size = 48
+    rot = np.zeros((n8, 4), "<f4")
+    rot[:, 3] = 1
+    scl = np.ones((n8, 3), "<f4")
+    trn = np.zeros((n8, 3), "<f4")
+    trn[:n] = translations
+    pose = rot.tobytes() + scl.tobytes() + trn.tobytes()
+    pose_off = header_size
+    parent_off = pose_off + len(pose)
+    par = np.full(n8, -1, "<i2")
+    par[:n] = parents
+    inv_off = parent_off + n8 * 2
+    inv = np.zeros((n8, 3, 4), "<f4")
+    inv[:, :, :3] = np.eye(3)
+    size = inv_off + n8 * 48
+    head = struct.pack("<6i10hf", size, size, pose_off, inv_off, 0, 0, n, n, parent_off, 0, 0, 0, 0, 0, 0, 0, 1.0)
+    assert len(head) == header_size
+    body = head + pose + par.tobytes() + inv.tobytes()
+    return struct.pack("<I", len(body)) + body + b"".join(s32(x) for x in names + [""] * (n8 - n))
+
+
+def quat48_darkages(q) -> bytes:
+    x, y, z, w = q
+    if w < 0:
+        x, y, z, w = -x, -y, -z, -w
+    vals = [max(0, min(0x7FFF, round((c + math.sqrt(0.5)) * 0x8000 / math.sqrt(2)))) for c in (x, y, z)]
+    return struct.pack("<3H", *vals)
+
+
+def rle16(joints: list[int], wide: bool = False) -> bytes:
+    out = struct.pack("<h", len(joints) | (-0x8000 if wide else 0))
+    i = 0
+    while i < len(joints):
+        j = i
+        while j + 1 < len(joints) and joints[j + 1] == joints[j] + 1 and j - i < 126:
+            j += 1
+        out += bytes([j - i + 1]) + (struct.pack("<H", joints[i]) if wide else bytes([joints[i]]))
+        i = j + 1
+    return out
+
+
+def frame_set_darkages(frames: int, quats: list[tuple], lod: int = 0) -> bytes:
+    """One frame set turning one joint: its first rotation, a key on every later frame (bits from the row's end)."""
+    hdr = 48
+    first_r = quat48_darkages(quats[0])
+    per = (frames + 7) >> 3
+    bits = np.zeros(per * 8, np.uint8)
+    bits[1:frames] = 1
+    bits_r = np.packbits(bits).tobytes()[::-1]  # one joint: its row, last byte first
+    rng = b"".join(quat48_darkages(q) for q in quats[1:])
+    first_off, bits_off = hdr, hdr + len(first_r)
+    range_off = bits_off + len(bits_r)
+    total = range_off + len(rng)
+    fs = struct.pack("<19H", first_off, 0, 0, 0, range_off, 0, 0, 0, bits_off, 0, 0, 0, 0, 0, 0, 0, total, 0, frames)
+    fs += bytes([lod]) + bytes(9)
+    return fs + first_r + bits_r + rng
+
+
+def anim_darkages(skeleton_name: str, frames: int, fps: int, rot_joint: int, angles: list[float],
+                  const_t: dict[int, tuple] | None = None, streamed: bool = False, wide: bool = False
+                  ) -> tuple[bytes, bytes | None]:
+    """A Dark Ages animation turning one joint about Z; with ``streamed`` its frame set (and a coarser level of
+    detail's, which the reader skips) is in a StreamDB piece, returned beside it."""
+    const_t = const_t or {}
+    head = s32(skeleton_name) + struct.pack("<i", 0) + struct.pack("<12f", *([0.0] * 12))
+    data_size = 144
+    lists = [[], [], sorted(const_t), [], [rot_joint], [], [], []]
+    blobs = [rle16(x, wide) for x in lists]
+    offs, at = [], 1 + 16
+    for b in blobs:
+        offs.append(at)
+        at += len(b)
+    maps = b"\0" + struct.pack("<8H", *offs) + b"".join(blobs)
+    maps += b"\0" * (-(data_size + len(maps)) % 16)
+    const_t_off = data_size + len(maps)
+    const_block = b"".join(struct.pack("<3f", *const_t[j]) for j in sorted(const_t))
+    const_block += b"\0" * (-len(const_block) % 16)
+    set_off_tbl_off = const_t_off + len(const_block)
+    quats = [(0.0, 0.0, math.sin(a / 2), math.cos(a / 2)) for a in angles]
+    fs = frame_set_darkages(frames, quats)
+    piece = None
+    if streamed:
+        coarse = frame_set_darkages(frames, [(0.0, 0.0, 0.0, 1.0)] * frames, lod=1)
+        piece = fs + b"\0" * (-len(fs) % 16) + coarse
+        set_offsets = b"\0" * 16
+        body_end = set_off_tbl_off + len(set_offsets)
+        info = struct.pack("<hh", 1, 2) + struct.pack("<3I2h", len(piece), len(piece), 0, 2, 0)
+        info += struct.pack("<2H", 0, len(fs) + (-len(fs) % 16)) + struct.pack("<2h", 0, 0)
+        tail = b""
+        method, n_sets = 3, 2
+    else:
+        fs_start = set_off_tbl_off + 16
+        set_offsets = struct.pack("<2i", fs_start // 16, (fs_start + len(fs) + 15) // 16) + bytes(8)
+        body_end = fs_start + len(fs)
+        body_end += -body_end % 16
+        info = struct.pack("<h", 0)
+        tail = fs + b"\0" * (-len(fs) % 16)
+        method, n_sets = 0, 1
+    data = struct.pack("<i4h2i11hBBf24f", 0, data_size, 0, frames, fps, 0, 0, n_sets, 0, 0, set_off_tbl_off,
+                       const_t_off, const_t_off, const_t_off, const_t_off, 0, 0, n_sets if streamed else 0,
+                       method, 0, 1.0, *([0.0] * 24))
+    assert len(data) == data_size
+    body = data + maps + const_block + set_offsets + tail
+    assert len(body) == body_end
+    return head + struct.pack("<i", len(body)) + body + info, piece
+
+
+def darkages_install(root: Path) -> dict:
+    """A small DOOM: The Dark Ages folder, as :func:`eternal_install` but in The Dark Ages's formats: a skinned
+    model with six joints per vertex and an extra joint, a streamed static model, an inline one, an animation kept
+    in the container and one streamed, textures (one mip streamed) and materials naming them without extension."""
+    from darkstl.importers.idtech.formats.streamdb import darkages_id
+
+    base = root / "base"
+    base.mkdir(parents=True, exist_ok=True)
+    (root / "DOOMTheDarkAges.exe").write_bytes(b"MZ")
+    quad = np.array([[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]], np.float64)
+    normals = np.tile([[0.0, -1.0, 0.0]], (4, 1))
+    uvs = np.array([[0, 1], [1, 1], [1, 0], [0, 0]], np.float64)
+    tris = [[0, 2, 1], [0, 3, 2]]
+    shield, shield_piece = static_model_darkages([
+        {"material": "models/props/shield/shield", "positions": quad * 40.0, "normals": normals, "uvs": uvs,
+         "triangles": tris},
+        {"material": "models/props/shield/shield", "positions": quad * 20.0 + [0, 5, 0], "normals": normals,
+         "uvs": uvs, "triangles": [[0, 2, 1]]}], True)
+    relic, _ = static_model_darkages([{"material": "models/pickups/relic", "positions": quad * 10.0,
+                                       "normals": normals, "uvs": uvs, "triangles": tris}], False)
+    # raw joint 8 is the extra joint, which repeats skinned joint 1 (spine)
+    joints = np.array([[0, 1, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0], [8, 0, 0, 0, 0, 0], [8, 0, 0, 0, 0, 0]])
+    weights = np.array([[1, 0, 0, 0, 0, 0], [0.6, 0.4, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0]],
+                       np.float64)
+    skel_name = "md6/characters/slayer/base/slayer.md6skl"
+    slayer, slayer_piece = md6_model_darkages(skel_name, 2, [0, 1], [1], [{
+        "name": "body", "material": "models/characters/slayer/slayer", "joint_offset": 0, "influence": 6,
+        "positions": quad * 72.0, "normals": normals, "uvs": uvs, "triangles": tris, "joints": joints,
+        "weights": weights}])
+    skel = skeleton_darkages(["origin", "spine"], [-1, 0], [(0, 0, 0), (0, 0, 36.0)])
+    angles = [0.0, 0.5, 1.0, math.pi / 2]
+    turn, _ = anim_darkages(skel_name, 4, 30, 1, angles, const_t={0: (0.0, 0.0, 0.0), 1: (0.0, 0.0, 36.0)})
+    swing, swing_piece = anim_darkages(skel_name, 4, 30, 1, angles[::-1], streamed=True, wide=True)
+    albedo = image(8, 8, [bc1_solid(8, 8, 0xF800), bc1_solid(4, 4, 0xF800), bc1_solid(4, 4, 0xF800)], 33, 1,
+                   streamed=1, version=24)
+    normal = image(4, 4, [bytes(16 * 4)], 3, 3, version=24)
+    shield_albedo = image(4, 4, [bc1_solid(4, 4, 0x07E0)], 33, 1, version=24)
+    slayer_decl = b'{ edit = { RenderLayers = { item[0] = { parms = { ' \
+        b'albedo = { filePath = "models/characters/slayer/slayer_albedo"; } ' \
+        b'normal = { filePath = "models/characters/slayer/slayer_n"; } } } } } }'
+    shield_decl = b'{ edit = { RenderLayers = { item[0] = { parms = { ' \
+        b'albedo = { filePath = "models/props/shield/shield_albedo"; } } } } } }'
+    h_slayer, h_shield, h_albedo, h_swing = 0x1111, 0x2222, 0x3333, 0x5556
+    entries = [
+        ("baseModel", "md6/characters/slayer/base/slayer.md6mesh", slayer, h_slayer, 1),
+        ("skeleton", skel_name, skel, 0x4444, 0),
+        ("anim", "md6/characters/slayer/animation/turn.md6anim", turn, 0x5555, 1),
+        ("anim", "md6/characters/slayer/animation/swing.md6anim", swing, h_swing, 0),
+        ("model", "models/props/shield/shield.lwo", shield, h_shield, 0),
+        ("model", "models/pickups/relic.lwo", relic, 0x6666, 0),
+        ("image", "models/characters/slayer/slayer_albedo.tga$bc1srgb$mtlkind=albedo", albedo, h_albedo, 0),
+        ("image", "models/characters/slayer/slayer_n.tga$mtlkind=normal", normal, 0x7777, 0),
+        ("image", "models/props/shield/shield_albedo.tga$mtlkind=albedo", shield_albedo, 0x8888, 0),
+        ("rs_streamfile", "generated/decls/material2/models/characters/slayer/slayer.decl", slayer_decl, 0, 0),
+        ("rs_streamfile", "generated/decls/material2/models/props/shield/shield.decl", shield_decl, 0, 0),
+    ]
+    game, fp_game = container(entries, 13)
+    meta, _ = container([("file", "generated/buildgame/container.mask",
+                          container_mask({fp_game: [True] * len(entries)}, 13), 0, 1)], 13)
+    (base / "gameresources.resources").write_bytes(game)
+    (base / "meta.resources").write_bytes(meta)
+    pieces = {darkages_id(h_slayer, 4, 0): slayer_piece, darkages_id(h_shield, 4, 0): shield_piece,
+              darkages_id(h_albedo, 0, 0): bc1_solid(8, 8, 0xF800), darkages_id(h_swing, 0, 0): swing_piece}
+    (base / "gameresources.streamdb").write_bytes(streamdb(pieces))
+    spec = {"files": [{"name": n} for n in ("meta.resources", "gameresources.resources", "gameresources.streamdb")],
+            "maps": [{"name": "common"}], "mapFileRefs": [{"file": i, "map": 0} for i in range(3)]}
+    (base / "packagemapspec.json").write_text(json.dumps(spec))
+    return {"root": root, "angles": angles}

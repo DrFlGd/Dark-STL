@@ -22,7 +22,7 @@ class Profile:
     badge: str
     executables: tuple[str, ...]  # any of these beside base/ says it's this game
     container_version: int  # IDCL version of its .resources files (0: DOOM 2016's .index)
-    darkages_stream_ids: bool = False  # how StreamDB ids are made from a resource's hash
+    darkages: bool = False  # The Dark Ages's formats and StreamDB ids
     shared_maps: tuple[str, ...] = ("common", "warehouse")
     unit: float = 0.0254  # metres per game unit (id units are taken as inches; to confirm on real files)
     normal_green: str | None = None  # "directx" / "opengl" once checked on a flat sample; None: detected
@@ -31,7 +31,7 @@ class Profile:
 
 PROFILES = {
     ETERNAL: Profile(ETERNAL, "DE", ("DOOMEternalx64vk.exe",), 12),
-    DARKAGES: Profile(DARKAGES, "TDA", ("DOOMTheDarkAges.exe",), 13, darkages_stream_ids=True,
+    DARKAGES: Profile(DARKAGES, "TDA", ("DOOMTheDarkAges.exe",), 13, darkages=True,
                       shared_maps=("common", "warehouse", "init")),
 }
 GAMES = tuple(PROFILES)
