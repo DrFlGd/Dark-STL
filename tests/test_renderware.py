@@ -173,7 +173,7 @@ def test_the_library_sorts_models_by_their_definitions(sa):
     assert (ours["crate01"].category, ours["crate01"].group) == ("Map Pieces", "LA / LAe")
     assert ours["unlisted"].category == "Other"
     assert all(e.game == SA_NAME for e in ours.values())
-    assert str(ours["landstal"].path).endswith("gta3.img/landstal.dff") and notes == []
+    assert ours["landstal"].path.as_posix().endswith("gta3.img/landstal.dff") and notes == []
     assert importer_for(ours["landstal"].path).key == "renderware"
 
 
