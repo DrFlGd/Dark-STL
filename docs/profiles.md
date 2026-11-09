@@ -48,7 +48,7 @@ from then on and its sorting can be changed in that file.
 |------------|------------|
 | `format`   | 1. A file made for a newer Dark STL (a higher number) is left out and listed as a problem. |
 | `name`     | The game's name, as the library lists it. Required. |
-| `engine`   | Which backend reads it: `unreal4`, `unreal5`, `unreal3`, `fromsoft`, `reengine`, `redengine`, `renderware`. Required unless the profile `extends` another. |
+| `engine`   | Which backend reads it: `unreal4`, `unreal5`, `unreal3`, `fromsoft`, `reengine`, `redengine`, `renderware`, `rage`. Required unless the profile `extends` another. |
 | `importer` | The importer that reads it, when not the engine's usual one (`unreal` for Unreal 4/5). The shipped Returnal and Borderlands profiles name their own importers (`returnal`, `borderlands`). |
 | `extends`  | Another profile's name: that profile's settings are taken first and this file's go over them (each section is merged key by key, one level down). |
 | `defaults` | `true` only in `unreal-defaults.json`: the settings every Unreal 4/5 game starts from (its own file's settings go over them, and its `models` keys replace the defaults' one by one). |
@@ -215,6 +215,19 @@ file of the same name in the profiles folder replaces one, and a new one adds a 
   lights;
 * `shared_textures`: `vehicles` and `all`, the dictionaries models fall back on;
 * `bone_match`: `id` (HAnim ids, San Andreas) or `name` (III, Vice City), how animations find bones.
+
+### `rage`: Grand Theft Auto V
+
+GTA V is read entirely from its profile (`gta5.json`), in the same way:
+
+* `recognise.files` (the executable or an archive below the game folder) and `recognise.folder_names`;
+* `language`: whose `.gxt2` text names vehicles and weapons (`american`);
+* `ped_animations`: the clip dictionaries (`.ycd`, without the extension) characters are posed with;
+* `shared_textures`: `vehicles` and `all`, the texture dictionaries models fall back on;
+* `groups`: library group names for `vehicle_classes` (`VC_SPORT`...), `ped_prefixes` (`a_m_`...) and
+  `weapon_groups` (`GROUP_PISTOL`...).
+
+The archive keys are never in a profile: Dark STL finds them in the user's own `GTA5.exe`.
 
 ## Shipped profiles
 
