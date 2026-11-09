@@ -242,8 +242,11 @@ def mesh_options(args: dict) -> MeshOptions:
 
 
 def _json_value(value, what: str):
-    """A value the page sends as JSON in a command, or as JSON text in a URL."""
+    """A value the page sends as JSON in a command, or as JSON text in a URL (blank when there is none: the
+    desktop app's engine:// requests keep blank parameters)."""
     if isinstance(value, str):
+        if not value.strip():
+            return None
         try:
             return json.loads(value)
         except ValueError:

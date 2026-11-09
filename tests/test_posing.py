@@ -160,6 +160,16 @@ def _mesh(s, sid, **args):
     return header, arrays["positions"].reshape(-1, 3) / 1000.0
 
 
+def test_blank_url_parameters_mean_no_turns_and_nothing_attached():
+    """The desktop app's engine:// requests keep blank parameters, which mean none."""
+    from darkstl.app.service import _parse_lists, mesh_options
+
+    opts = mesh_options(_parse_lists({"parts": "all", "flags": "", "pose": "", "bones": "", "attach": " "}))
+    assert opts.bones is None and opts.attach is None and opts.pose is None
+    opts = mesh_options(_parse_lists({"bones": '{"hand": [0, 0, 30]}', "attach": "{}"}))
+    assert opts.bones == {"hand": (0.0, 0.0, 30.0)} and not opts.attach
+
+
 def test_bones_listed_with_their_places_and_partners(home, game):  # noqa: F811
     s = make_service(home)
     wait(s, s.call("folder_add", {"path": str(game)})["job"])
