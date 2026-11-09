@@ -252,8 +252,13 @@ class Store:
                 return piece
         return None
 
-    def stream_id(self, hash_: int, n: int) -> int:
-        return sdb.darkages_id(hash_, n) if self.profile.darkages_stream_ids else sdb.eternal_id(hash_, n)
+    def geometry_id(self, hash_: int, lod: int) -> int:
+        """The StreamDB id of a model's level of detail ``lod`` (0: the finest)."""
+        return sdb.darkages_id(hash_, 4 - lod, 0) if self.profile.darkages else sdb.eternal_id(hash_, lod)
+
+    def anim_piece_id(self, hash_: int, layout: int) -> int:
+        """The StreamDB id of a Dark Ages animation's streamed frame sets (its stream layout ``layout``)."""
+        return sdb.darkages_id(hash_, 0, layout)
 
     def path_of(self, type_: str, name: str) -> Path:
         """Where a resource is, as the library lists it: ``base/<container>/<name>``."""
@@ -298,6 +303,11 @@ def open_store(root: Path, game: str | None = None, cache: Path | None = None, f
             from ..fromsoft.formats import oodle
 
             oodle.add_hint_path(Path(root), levels=0)
+            # The Dark Ages ships no Oodle library (it's built into the exe): DOOM Eternal's, when it is installed
+            # beside it (the same Steam library), is tried too
+            eternal = Path(root).parent / "DOOMEternal"
+            if eternal.is_dir():
+                oodle.add_hint_path(eternal, levels=0)
             s = Store(Path(root), game, cache)
             _stores[key] = s
         return s

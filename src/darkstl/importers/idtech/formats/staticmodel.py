@@ -3,6 +3,9 @@
 A header (reference point, levels of detail, surfaces, whether the geometry is streamed), per surface its material
 decl and up to five levels of detail, lightmap settings and decal projections; then either the one level kept in
 the container, or per level the memory layouts and disk layout of its StreamDB piece.
+
+DOOM: The Dark Ages (``darkages``) writes a longer level of detail record (three more numbers after the counts,
+the mask after them), decal projections of three quaternions, and disk layouts without memory layouts.
 """
 
 from __future__ import annotations
@@ -43,6 +46,22 @@ def read_disk_layout(r: Reader, layouts: list[MemoryLayout]) -> DiskLayout:
     return DiskLayout(comp, size, stored, offset, layouts)
 
 
+def _darkages_lod(r: Reader) -> LodInfo:
+    if r.i32() != -5:
+        raise FormatError("not a DOOM: The Dark Ages static model (level of detail record)")
+    nv, ne, _u1, _u2, _u3, mask = r.unpack("6I")
+    r.vec(6)  # bounds
+    offset = r.vec(3)
+    scale = r.f32()
+    uv_offset = r.vec(2)
+    uv_scale = r.f32()
+    r.u32()
+    r.vec(2)
+    if r.u32() != LOD_MAGIC:
+        raise FormatError("not a static model (level of detail record)")
+    return LodInfo(nv, ne // 3, mask, offset, scale, uv_offset, uv_scale)
+
+
 def _static_lod(r: Reader) -> LodInfo:
     if r.i32() != -2:
         raise FormatError("not a static model (level of detail record)")
@@ -59,7 +78,7 @@ def _static_lod(r: Reader) -> LodInfo:
     return LodInfo(nv, ne // 3, mask, offset, scale, uv_offset, uv_scale)
 
 
-def read_static_model(data: bytes) -> StaticModel:
+def read_static_model(data: bytes, darkages: bool = False) -> StaticModel:
     r = Reader(data)
     r.vec(3)
     n_lods, n_surf = r.unpack("II")
@@ -73,21 +92,21 @@ def read_static_model(data: bytes) -> StaticModel:
         r.unpack("III")
         lods: list[LodInfo | None] = []
         for _ in range(LODS):
-            lods.append(None if r.u32() else _static_lod(r))
+            lods.append(None if r.u32() else (_darkages_lod(r) if darkages else _static_lod(r)))
         surfaces.append(StaticSurface(mat, lods))
     r.f32()
     r.unpack("II")
     n_axes = r.u32()
     r.bytes(n_axes * 56)
     n_proj = r.u32()
-    r.bytes(n_proj * 32)
+    r.bytes(n_proj * (48 if darkages else 32))
     r.string()
     r.u32()
     r.bytes(n_surf * LODS)
     model = StaticModel(surfaces, streamable)
     if streamable:
         for _ in range(LODS):
-            layouts = [read_memory_layout(r) for _ in range(r.u32())]
+            layouts = [] if darkages else [read_memory_layout(r) for _ in range(r.u32())]
             model.disk.append(read_disk_layout(r, layouts))
     else:
         pos = r.pos

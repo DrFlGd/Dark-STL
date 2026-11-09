@@ -2,7 +2,8 @@
 
 After a 4-byte prefix, a header of 16-bit offsets (relative to the end of the prefix), then per joint (padded to a
 multiple of 8) a local rotation (x, y, z, w), scale and translation, the parent table, the inverse bind matrices
-(3x4, rows) and, after the header's size, the joint names.
+(3x4, rows) and, after the header's size, the joint names. DOOM: The Dark Ages's header (``darkages``) starts with
+32-bit sizes and offsets (size, loaded size, base pose, inverse base pose, two hashes) before the 16-bit ones.
 """
 
 from __future__ import annotations
@@ -58,11 +59,15 @@ def trs_matrices(rot: np.ndarray, scale: np.ndarray, trans: np.ndarray) -> np.nd
     return out
 
 
-def read_skeleton(data: bytes) -> Skeleton:
+def read_skeleton(data: bytes, darkages: bool = False) -> Skeleton:
     if len(data) < 64:
         raise FormatError("not a skeleton (too short)")
     base = 4
-    (size, n, _users, _crc, pose_off, inv_off, parent_off) = struct.unpack_from("<7h", data, base)
+    if darkages:
+        size, _loaded, pose_off, inv_off, _name_hash, _parent_hash, n, _handles, parent_off = struct.unpack_from(
+            "<6i3h", data, base)
+    else:
+        (size, n, _users, _crc, pose_off, inv_off, parent_off) = struct.unpack_from("<7H", data, base)
     if n <= 0 or n > 4096:
         raise FormatError("not a skeleton (joint count)")
     n8 = (n + 7) & ~7
@@ -72,7 +77,9 @@ def read_skeleton(data: bytes) -> Skeleton:
     trn = np.frombuffer(data, "<f4", n8 * 3, p + n8 * 28).reshape(n8, 3)
     parents = np.frombuffer(data, "<i2", n8, base + parent_off).astype(np.int64)
     del inv_off  # the bind pose is rebuilt from the local transforms
-    r = Reader(data, base + (size & 0xFFFF))
+    if not 0 < base + size < len(data):
+        raise FormatError("not a skeleton (its names are missing)")
+    r = Reader(data, base + size)
     names = [r.string() for _ in range(n)]
     return Skeleton(names, parents[:n].copy(), rot[:n].astype(np.float64), scl[:n].astype(np.float64),
                     trn[:n].astype(np.float64))

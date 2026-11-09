@@ -2,7 +2,7 @@
 
 Dark STL is a desktop app for game models: a flexible import system (the FromSoftware games,
 Cyberpunk 2077, the RE Engine games, Borderlands, Returnal and any Unreal 4/5 game, Grand Theft
-Auto, DOOM Eternal, and OBJ, glTF, FBX and PSK files from other tools), an intuitive library to
+Auto, DOOM Eternal and DOOM: The Dark Ages, and OBJ, glTF, FBX and PSK files from other tools), an intuitive library to
 explore and organise them across games, and the tools to extract, manipulate and clean a model
 before printing (configure, pose, clean, enhance). Print post-processing (making a model
 watertight, cutting it into pieces, painting it for a multi-colour printer) belongs to the
@@ -48,7 +48,7 @@ importer and registering it in `importers/__init__.py`:
 | ActorX PSK/PSKX | UModel's and FModel's exports of Unreal models: points, wedges, faces and materials, mirrored from Unreal's frame like the Unreal games' own models; each material's textures found by name beside the model, from UModel's `.mat`, FModel's `.json` and UModel's `.props.txt` material files, then from texture names like the material's. The skeleton isn't read | Synthetic files (0.35.0) |
 | RenderWare (GTA III, Vice City, San Andreas) | `.img` archives (with `.dir`, or `VER2`) read in place, `.dff` models (parts placed by frames, skins, vehicles with their wheels copied to every axle and their colours from `carcols.dat` as variants), `.txd` textures (DXT, paletted and raw rasters), `.ifp` animations for peds, `.ide`/`.ipl`/`.gxt` for kinds, areas and vehicle names. Per-game differences are JSON profiles in `importers/profiles/` (`gta3`, `gtavc`, `gtasa`), read by the shared profile loader. See Reading Grand Theft Auto files | Synthetic files (0.50.0) |
 | RAGE (GTA V, then GTA IV) | GTA V: `.rpf` v7 archives (open, AES, NG, nested) with keys found in the user's `GTA5.exe`, RSC7 resources in the original and the Enhanced layouts: `.ydr` drawables, `.ydd` ped components (each ped an outfit), `.yft` vehicles with their wheels, `.ytd` textures, `.ycd` animations, names from `.gxt2` and the `.meta` lists. GTA IV (and its episodes): IMG3 archives with the key found in `GTAIV.exe`, RSC5 `.wdr`, `.wdd` (outfits), `.wft` (vehicles with their wheels), `.wtd`, names from the `.ide` files and `.gxt` | Synthetic files (0.51.0 GTA V, 0.52.0 GTA IV) |
-| id Tech 6/7/8 (DOOM, DOOM Eternal, DOOM: The Dark Ages) | `.resources` containers (IDCL; DOOM 2016's `.index`) and `.streamdb` with the game's Oodle, BIM textures, `.lwo` static and `.md6mesh` skinned models, `.md6skl` skeletons, `.md6anim` animations, `material2` decls. See Reading id Tech 6/7/8 files | DOOM Eternal built (0.53.0, synthetic files only); DOOM 2016 (0.54.0) and The Dark Ages (0.55.0) planned |
+| id Tech 6/7/8 (DOOM, DOOM Eternal, DOOM: The Dark Ages) | `.resources` containers (IDCL; DOOM 2016's `.index`) and `.streamdb` with the game's Oodle, BIM textures, `.lwo` static and `.md6mesh` skinned models, `.md6skl` skeletons, `.md6anim` animations, `material2` decls. See Reading id Tech 6/7/8 files | DOOM Eternal (0.53.0) and DOOM: The Dark Ages (0.54.0) built, synthetic files only; DOOM 2016 waits on Jerred's sample files |
 
 An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
 folder), `detect_game`, `variants` (files holding several models) and `describe`.
@@ -676,7 +676,7 @@ Everything is first built and tested on byte-built files (`tests/synth_rw.py`,
 ### Reading id Tech 6/7/8 files (DOOM, DOOM Eternal, DOOM: The Dark Ages)
 
 Requested by Jerred on 2026-11-09; built in three releases, one per game, by a single importer
-(DOOM Eternal in 0.53.0, checked only on synthetic files so far), `importers/idtech/`, with a profile per game. The layouts below were worked out from
+(DOOM Eternal in 0.53.0, The Dark Ages in 0.54.0, both checked only on synthetic files so far), `importers/idtech/`, with a profile per game. The layouts below were worked out from
 [Valen](https://github.com/jandk/valen) (Jan De Kock, MIT: DOOM Eternal and The Dark Ages, the
 most complete reader of these games' models, textures and animations), EntityAtlan
 (FlavorfulGecko5, MIT: The Dark Ages' containers, StreamDB and Oodle use), EternalResourceExtractor
@@ -688,7 +688,7 @@ values are little-endian unless said otherwise.
 | --- | --- | --- | --- | --- | --- |
 | DOOM (2016) | id Tech 6 | `DOOMx64vk.exe` / `DOOMx64.exe`, `base/*.index` | `.index` (table) + `.resources` + `.patch` / `_NNN.patch` | raw deflate (entry sizes differ) | not needed |
 | DOOM Eternal | id Tech 7 | `DOOMEternalx64vk.exe`, `base/packagemapspec.json` | `IDCL` v12 `.resources`, `.streamdb` | Oodle Kraken | `oo2core_8_win64.dll` beside the exe |
-| DOOM: The Dark Ages | id Tech 8 | `DOOMTheDarkAges.exe`, `base/packagemapspec.json` | `IDCL` v13 `.resources`, `.streamdb` | Oodle Kraken / Leviathan | none shipped (built into the exe): Eternal's `oo2core_8`, any `oo2core_9_win64.dll`, or Settings › Oodle |
+| DOOM: The Dark Ages | id Tech 8 | `DOOMTheDarkAges.exe`, `base/packagemapspec.json` | `IDCL` v13 `.resources`, `.streamdb` | Oodle Kraken / Leviathan | none shipped (built into the exe): Eternal's `oo2core_8` (found by itself when `DOOMEternal` is beside it in the Steam library), any `oo2core_9_win64.dll`, or Settings › Oodle |
 
 **Containers (Eternal, The Dark Ages).** `base/packagemapspec.json` lists every container
 (`files`), the maps (`maps`) and which files each map loads (`mapFileRefs`); `common`,
@@ -754,8 +754,35 @@ inverse bind matrices (3x4) and the names. **Animations (`anim`, `.md6anim`)**: 
 name, bounds, frame count and rate, constant rotations, scales and translations for the joints
 that don't move, RLE joint lists, and frame sets, each holding every animated joint's first value,
 a bit per frame saying where a key is, and the keys; rotations are 48-bit "smallest three"
-quaternions. The Dark Ages streams long animations (a stream info and disk layout like geometry).
-Animations are matched to a model by skeleton name; the list is built once per game and cached.
+quaternions. Animations are matched to a model by skeleton name; the list is built once per game and cached.
+
+**What The Dark Ages changes (0.54.0).** *Static models*: a level of detail record starts with -5
+(Eternal: -2) and has three more numbers before the vertex mask; decal projections are three
+quaternions (Eternal: two); streamable models keep only a disk layout per level, no memory layouts.
+*Geometry pieces*: without memory layouts, each surface's attribute streams follow one another in
+vertex-mask order, each starting on a multiple of its record size, then its 16-bit indices, and
+the next surface starts on 8 bytes. A model's level `n` is StreamDB id `hash_combine(hash,
+hash_combine(fmix64(4 - n), fmix64(0)))`. *Skinned models*: the skeleton's name, bounds, then two
+joint tables instead of a remap table (the skinned joints, and extra joints that repeat earlier
+entries: the table is the skinned joints padded to 8, then `resolved[extra[i]]` per extra joint),
+level-of-detail count and deviations, blend shape names, a bound radius per skeleton joint (so
+the skeleton is read first), meshes (name, material, three numbers, per level its counts, joints
+per vertex, bounds, scales, mask and a joint offset), surface infos, wounds, geo decals and per
+stream a wound offset and disk layout. Joints per vertex 4, 6 or 8 sit in a skinning stream
+(`SKINNING_4/6/8`: the joint bytes, then the middle weights as bytes /255); the last three
+weights are packed in the normal's and tangent's spare bits (7 bits /254, 4 bits /45, /75 or /104,
+4 bits /60, /89 or /120 for 4, 6, 8 joints) and the first is what's left. `SKINNING_1` takes the
+joint from the normal's spare byte; with no skinning stream joints are in the colour as in
+Eternal. Dark STL keeps the four heaviest joints and rescales them. *Skeletons*: the header starts
+with 32-bit size, loaded size, base pose and inverse base pose offsets and two hashes, then the
+joint count and 16-bit table offsets. *Animations*: an attachment count after the skeleton name,
+a longer data block (stream method: kept in the container, streamed, or streamed per level of
+detail), joint lists with a 16-bit size whose top bit says the joints are 16-bit, quaternions
+scaled by 1/32768 (Eternal 1/32767), key bits read from the end of each joint's row, and frame
+sets of 48 bytes ending with their level of detail. Streamed frame sets are in StreamDB piece
+`hash_combine(hash, hash_combine(fmix64(0), fmix64(layout)))`, at offsets the stream info (after
+the data block) lists; of per-level frame sets, the finest are read. *Materials*: `filePath`s
+leave out `.tga`. Images and containers were covered in 0.53.0 (version 24 images, IDCL 13).
 
 **Materials (`generated/decls/material2/<name>.decl`).** Text decls in id's syntax
 (`{ inherit = "...", edit = { RenderLayers = { item[0] = { parms = { albedo = { filePath = ... } } } }, Parms = {...} } }`),
@@ -792,7 +819,7 @@ reads such a folder like an install, and the copies keep the install's paths, so
 and folders carry over.
 
 **Layout.** `importers/idtech/`: `formats/` (`resources.py` IDCL containers and the container
-mask, `farmhash.py` the fingerprint the mask is keyed by, `index6.py` DOOM 2016's `.index` (0.54.0), `streamdb.py`, `image.py`, `geometry.py` vertex masks
+mask, `farmhash.py` the fingerprint the mask is keyed by, `index6.py` DOOM 2016's `.index` (to come), `streamdb.py`, `image.py`, `geometry.py` vertex masks
 and streams, `staticmodel.py`, `md6model.py`, `md6skel.py`, `md6anim.py`, `decl.py` the decl
 parser), `games.py` (the three profiles: executable, container version, hash scheme, unit,
 normal green, what is shared; a game profile in the settings folder with `"engine": "idtech"`
@@ -801,12 +828,13 @@ game's index: names → live copies, streamed pieces, loose extracted files), `m
 `catalog.py`, `animation.py` (poses for the Pose tab and packages) and `__init__.py`.
 
 **Phases.** 0.53.0 DOOM Eternal (containers, mask, StreamDB, images, static and skinned models,
-skeletons, animations, materials, catalog, names, Collect, packages); 0.54.0 DOOM (2016) (its
-`.index` and the older layouts, from Jerred's samples); 0.55.0 DOOM: The Dark Ages (version 13
-containers, new stream ids, the changed image, model and animation layouts; Valen reads them, so
-this is mostly a profile and the differences). Every format is tested on byte-built files.
-Risks: Oodle for The Dark Ages (no DLL in its folder; Eternal's or another `oo2core` needed, said
-in the app when missing); BCPack entries (consoles) are skipped; id's unit and the normal-map
+skeletons, animations, materials, catalog, names, Collect, packages); 0.54.0 DOOM: The Dark Ages
+(the changed model, skeleton and animation layouts above, streamed animations); DOOM (2016) and
+VFR (its `.index` and the older layouts) next, from Jerred's samples, as the next free version.
+Every format is tested on byte-built files.
+Risks: Oodle for The Dark Ages (no DLL in its folder; Eternal's, found beside it, or another
+`oo2core` needed, said in the app when missing); The Dark Ages's vegetation and strand-hair
+models aren't read; BCPack entries (consoles) are skipped; id's unit and the normal-map
 green direction are confirmed on the first real files; DOOM 2016 depends on samples.
 
 ### Step 1: even vertex spacing
@@ -1134,7 +1162,7 @@ src/darkstl/
     idtech/     formats/ (IDCL .resources + container mask, StreamDB, BIM images, static and md6
                 models, skeletons, animations, decls), games.py (per-game profiles), store.py (a
                 game's index of live resources, or a collected copy), materials.py (material2 decls
-                -> texture roles), catalog.py, animation.py (poses), DOOM Eternal so far
+                -> texture roles), catalog.py, animation.py (poses): DOOM Eternal, The Dark Ages
   geometry/     TriMesh, subdivision, isotropic remesh, UV seam matching, closest-point queries,
                 displacement, room.py (room around thin parts, thickness, keeping thin parts from
                 clipping), intersect.py (triangles passing through each other)
@@ -1192,16 +1220,15 @@ Each release's notes are in [releases/](releases/).
 | 0.27 to 0.35 | Model packages, the asset store and the library overlay (Phase 5): texture picker, own names and folders, Combine, saved variations, faster import, every texture of a game, glTF and PSK files |
 | 0.36 to 0.42 | Unreal 3, 4 and 5 models posed with the games' animations; Export model files for review; Redraw previews; Returnal fixes from Jerred's own files |
 | 0.43 to 0.49 | The build-out after the November 2026 review: the model page in work order and the Model Painter handoff, in-game names and one search across games, the Clean tab, thin parts kept safe and the Thickness view, posing freedom, Library II, game profiles, any Unreal 4/5 game, FBX |
-| 0.50 to 0.53 | Grand Theft Auto III, Vice City, San Andreas, IV and V; DOOM Eternal |
+| 0.50 to 0.54 | Grand Theft Auto III, Vice City, San Andreas, IV and V; DOOM Eternal and DOOM: The Dark Ages |
 
 ### Where things stand (2026-11-09)
 
-- **Being built:** DOOM: The Dark Ages (0.54.0).
 - **Next:** retiring the Finish and Cut tabs and the painted 3MF in favour of Model Painter's
   (Phase 8); in-game names for the RE Engine games.
 - **Waiting on Jerred:** DOOM (2016) and DOOM VFR need sample files from the game; the mobile and
   console versions of GTA wait for his go-ahead; the checks on his own installs in Phase 1 (Cyberpunk
-  2077, Returnal's first-person models, Grand Theft Auto, DOOM Eternal, the RE Engine games) and
+  2077, Returnal's first-person models, Grand Theft Auto, the DOOM games, the RE Engine games) and
   Library II on his libraries.
 
 ### Phase 0: foundations (the first pull request)
@@ -1245,8 +1272,9 @@ differs:
       player suits were fixed from his exported files (0.41.0 to 0.42.0); the other first-person
       models are still to check
 - [ ] Cyberpunk 2077: weapon cards, layered materials and Collect on a real install
-- [ ] Grand Theft Auto III to V and DOOM Eternal: everything so far is on synthetic files, including
-      the key search in `GTA5.exe` and `GTAIV.exe` and DOOM Eternal's size and green direction
+- [ ] Grand Theft Auto III to V, DOOM Eternal and The Dark Ages: everything so far is on synthetic
+      files, including the key search in `GTA5.exe` and `GTAIV.exe` and the DOOM games' size and green
+      direction
 - [x] Dark Souls: a whole install collected as packages (6.26 GB, see Phase 5)
 
 ### Phase 2: print-ready output
@@ -1372,7 +1400,8 @@ The plan is in Reading id Tech 6/7/8 files above.
 - [x] DOOM Eternal: `.resources` and `.streamdb` with the game's Oodle, textures, static and skinned
       models, skeletons, animations on the Pose tab, materials from decls (0.53.0; synthetic files
       only, in-game names still to come)
-- [ ] DOOM: The Dark Ages: version 13 containers, its stream ids and changed layouts (0.54.0, being built)
+- [x] DOOM: The Dark Ages: its model, skeleton and animation layouts, stream ids, streamed animations
+      (0.54.0; synthetic files only)
 - [ ] DOOM (2016) and DOOM VFR: their `.index`/`.resources`/`.patch` and the older layouts, from
       Jerred's samples (the next free version once they arrive)
 - [ ] Check each on Jerred's installs

@@ -381,6 +381,18 @@ def test_doom_eternal_from_containers(home, packages, tmp_path):  # noqa: F811
     assert_same(before, after)
 
 
+def test_doom_the_dark_ages_from_containers(home, packages, tmp_path):  # noqa: F811
+    """DOOM: The Dark Ages's models, textures and animations (one of them streamed) come along, as decompressed copies
+    or as packages."""
+    import synth_idtech
+
+    root = tmp_path / "DOOMTheDarkAges"
+    synth_idtech.darkages_install(root)
+    before, after, _plan = collect_and_uninstall(home, root, packages=packages)
+    assert any("swing" in shown[0][0]["animations"] for shown in before.values()), "the streamed animation"
+    assert_same(before, after)
+
+
 def test_every_texture_of_doom_eternal(home, tmp_path):  # noqa: F811
     import synth_idtech
 
