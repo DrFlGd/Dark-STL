@@ -1429,9 +1429,11 @@ def test_the_list_view_sorts_by_its_columns(page, app, tmp_path):
     page.goto(app.url + "#/browse/statues/Models")
     page.wait_for_selector('#list-head [data-sort="size"][aria-pressed="true"]')
     # and in the preferences, so it's there when the app is opened again (saved a moment after the click)
+    # (an earlier sort may be saved already: wait for this one, the page saves 250 ms after the last change)
+    want = {"browse:statues/Models": {"by": "size", "desc": False}}
     end = time.time() + 10
-    while time.time() < end and not app.service.call("prefs_get", {}).get("ds-ui", {}).get("sorts"):
+    while time.time() < end and app.service.call("prefs_get", {}).get("ds-ui", {}).get("sorts") != want:
         time.sleep(0.05)
-    assert app.service.call("prefs_get", {})["ds-ui"]["sorts"] == {"browse:statues/Models": {"by": "size", "desc": False}}
+    assert app.service.call("prefs_get", {})["ds-ui"]["sorts"] == want
     page.reload()
     page.wait_for_selector('#list-head [data-sort="size"][aria-pressed="true"]')
