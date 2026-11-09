@@ -301,16 +301,28 @@ def resolve_material(ref: ObjectRef) -> ResolvedMaterial:
 
 _SUFFIX = re.compile(r"_[A-Za-z]+\d*$")
 
-# Texture names particular to one game's studio, read before the usual suffixes. Returnal (Housemarque) keeps
-# its normal maps as ``_Comp``: the normal's X and Y in red and green, a mask in blue (Displace only reads red
-# and green, so the mask doesn't disturb it).
-_GAME_NAMES = {
-    "Returnal": [(re.compile(r"_comp\d*$", re.I), NORMAL)],
-}
+# Texture names particular to one game's studio, read before the usual suffixes, from the game's profile
+# (``textures.roles``). Returnal (Housemarque) keeps its normal maps as ``_Comp``: the normal's X and Y in red
+# and green, a mask in blue (Displace only reads red and green, so the mask doesn't disturb it).
+_ROLE_WORDS = {"albedo": ALBEDO, "diffuse": ALBEDO, "colour": ALBEDO, "color": ALBEDO, "basecolor": ALBEDO,
+               "normal": NORMAL, "specular": SPECULAR}
+
+
+def _game_names(game: str | None) -> list:
+    """(pattern, role) for the texture names particular to ``game``, as its profile lists them."""
+    try:
+        from ...unreal.profile import get
+    except ImportError:
+        return []
+    prof = get(game)
+    if prof is None:
+        return []
+    return [(rx, _ROLE_WORDS[role]) for role, patterns in prof.roles.items() if role in _ROLE_WORDS
+            for rx in patterns]
 
 
 def _name_role(name: str, game: str | None) -> str:
-    for rx, role in _GAME_NAMES.get(game or "", ()):
+    for rx, role in _game_names(game):
         if rx.search(name or ""):
             return role
     return role_from_name(name)
@@ -319,7 +331,7 @@ def _name_role(name: str, game: str | None) -> str:
 def _texture_role(tex) -> str:
     """A texture's role from what it is (a normal map's compression) and its name, the game's own names first."""
     game = getattr(getattr(tex.pkg, "files", None), "game", None)
-    for rx, role in _GAME_NAMES.get(game or "", ()):
+    for rx, role in _game_names(game):
         if rx.search(tex.name or ""):
             return role
     return role_from_texture(tex)

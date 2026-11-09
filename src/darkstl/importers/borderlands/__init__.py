@@ -77,6 +77,33 @@ def _materials(refs: list[ObjectRef], dirs: list[Path]) -> tuple[list[Material],
     return mats, textures, notes
 
 
+def _ue4_games() -> set[str]:
+    """The Unreal 4/5 Borderlands games (their profiles name this importer)."""
+    from ..unreal.profile import unreal_profiles
+
+    return {p.name for p in unreal_profiles("borderlands")} | set(unreal4.UE4_GAMES)
+
+
+def _ue4_game(folder: Path, game: str | None) -> str | None:
+    """The Unreal 4/5 Borderlands game ``folder`` (added as ``game``) is, or None."""
+    games = _ue4_games()
+    if game in games:
+        return game
+    found = files.detect_game(Path(folder))
+    return found if found in games else None
+
+
+def _is_ours(path: Path) -> bool:
+    """Whether an Unreal 4/5 package path is one of the Borderlands games' (OakGame's), not another Unreal game's."""
+    from .ue4 import vfs
+
+    parts = [x.lower() for x in Path(path).parts]
+    if "oakgame" in parts:
+        return True
+    hit = vfs.locate(path)
+    return hit is not None and vfs.game_files(hit[0]).game in _ue4_games()
+
+
 def _another_importers_game(game: str | None) -> bool:
     """Whether ``game`` is one another importer reads (an Unreal game that isn't Borderlands)."""
     if not game or game in GAMES:
@@ -113,9 +140,11 @@ class BorderlandsImporter(Importer):
     def scan(self, folder: Path, game: str, progress: ScanProgress | None = None) -> list[CatalogEntry]:
         if _another_importers_game(game):
             return []  # another Unreal game (Returnal): its own importer lists it
-        if game in unreal4.UE4_GAMES or (game not in files.UE3_GAMES and files.is_unreal4_folder(folder)):
+        if _ue4_game(folder, game):
             from .ue4 import catalog4
             return catalog4.scan(folder, game, progress)
+        if game not in files.UE3_GAMES and files.is_unreal4_folder(folder):
+            return []  # another Unreal 4/5 game: the Unreal importer lists it
         files.use_cache(self.cache)
         return catalog.scan(folder, game, progress, self.cache)
 
@@ -129,13 +158,15 @@ class BorderlandsImporter(Importer):
         if not ours and _another_importers_folder(folder):
             return []
         game = ours[0].game if ours else files.detect_game(folder)
-        if game in unreal4.UE4_GAMES or (not ours and files.is_unreal4_folder(folder)):
+        if (ours and unreal4.is_asset_path(ours[0].path)) or _ue4_game(folder, game):
             from .ue4 import catalog4
             return catalog4.folder_notes(folder, game, ours)
+        if not ours and files.is_unreal4_folder(folder):
+            return []  # another Unreal 4/5 game: the Unreal importer speaks for it
         return catalog.folder_notes(folder, found)
 
     def can_open(self, path: Path) -> bool:
-        return files.is_member(path) or unreal4.can_open(path)
+        return files.is_member(path) or (unreal4.can_open(path) and _is_ours(path))
 
     def load(self, path: Path, variant: str | None = None, texture_dirs: tuple[str, ...] = ()) -> SourceModel:
         path = Path(path)
@@ -312,7 +343,7 @@ class BorderlandsImporter(Importer):
         if _another_importers_folder(folder):
             return []
         game = files.detect_game(folder)
-        if game in unreal4.UE4_GAMES or (game not in files.UE3_GAMES and files.is_unreal4_folder(folder)):
+        if _ue4_game(folder, game):
             from .ue4 import catalog4
             return [(name, f"ue4|{ref}") for name, ref in unreal4.list_textures(catalog4._root_for(folder), game)]
         if game not in files.UE3_GAMES:
@@ -363,6 +394,17 @@ class BorderlandsImporter(Importer):
 
     def review_info(self, path: Path, files: list[str]) -> dict:
         return unreal4.review_info(Path(path), files) if unreal4.is_asset_path(Path(path)) else {}
+
+    def shared_files(self, root: Path, game: str, player_animations: bool = False) -> list[RelatedFile]:
+        """For Borderlands 3, Wonderlands and 4: what their profiles say a collected copy keeps besides the models
+        (the type mappings, which Borderlands 4's packages can't be read without)."""
+        ue4 = _ue4_game(Path(root), game)
+        if not ue4:
+            return []
+        from ..unreal import shared_files
+        from ..unreal.profile import for_game
+
+        return shared_files(Path(root), for_game(ue4))
 
     def related_files(self, path: Path, textures: bool = True, animations: bool = True,
                       lod: bool = False) -> list[RelatedFile]:
