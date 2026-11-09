@@ -508,6 +508,28 @@ generation-specific layouts side by side.
   extracts the members decrypted and still compressed as RSC files under their archive paths,
   as OpenIV exports them, plus the `.meta`, `.ymt` and `.gxt2` files the importer reads.
 
+#### Mobile and console versions
+
+Jerred asked on 2026-11-09 for the mobile and console releases too, after the PC games. They are
+the same games with different packaging, so each is a profile plus the readers for what differs,
+on the importer of its PC version. The user supplies their own copies: an Android `.obb` or the
+app's data folder, or files dumped from their own discs or consoles; Dark STL ships no keys and
+breaks no copy protection. In order of how much they share with what is built:
+
+| Release | Engine | What differs from the PC version | Work |
+|---|---|---|---|
+| III, Vice City, San Andreas: Android and iOS (War Drum, 2011-2015) | RenderWare | Models are ordinary `.dff` in `.img` archives; textures are not `.txd` but texture databases (`texdb/<name>.txt` listing each texture, with `.dxt`, `.etc`, `.pvr` or `.unc` `.dat`/`.toc` files holding them per GPU). San Andreas mobile is 2.0+ with its own `.img` names | A texture-database reader (DXT as on PC; ETC1 and PVRTC decoders), the `.obb` as a zip folder, profiles. Smallest step |
+| III, Vice City, San Andreas: Xbox | RenderWare | Native geometry (the Xbox native data plugin instead of triangle lists) and Xbox `.txd` rasters (DXT and swizzled RGBA) | Native geometry and raster readers; profiles |
+| III, Vice City, San Andreas: PlayStation 2 | RenderWare | PS2 native geometry (VIF packets of strips, quantised positions) and GS rasters (swizzled, 4/8-bit palettes, PS2 alpha) | The largest RenderWare step: VIF unpacking and GS unswizzling |
+| GTA IV: Xbox 360 and PS3 | RAGE (IV) | Big-endian `.img` (as on PC) holding `.xdr`/`.xtd` (360) or `.cdr`/`.ctd` (PS3); 360 resources compressed with LZX, textures tiled for the GPU | A big-endian reader for the RSC5 blocks (same layout), an LZX decoder, Xbox 360 untiling and PS3 swizzling |
+| GTA V: Xbox 360 and PS3 | RAGE (V) | RPF7 big-endian, `.xdr`/`.cdr` resources, LZX (360), each console's own archive key (in the dumped executable, found by hash as on PC) | As GTA IV's consoles, on the GTA V layouts |
+| GTA V: PS4, Xbox One, PS5, Xbox Series | RAGE (V) | The PC layouts (PS5/Series are Enhanced's), but archives keyed per console and executables encrypted on the console | Only if the user can supply decrypted files; otherwise exported files (which already open) |
+| Definitive Edition (all platforms, mobile included) | Unreal 4 | As the PC Definitive Edition | The generic Unreal importer's profile, as planned above |
+
+Each step is tested on byte-built files first, then on Jerred's own files. The Android releases come
+first (one new reader serves three games), then Xbox, then PS2, then the RAGE consoles (which need
+an LZX decoder and GPU untiling, more work than any one game so far).
+
 #### Trilogy Definitive Edition
 
 The Definitive Edition is Unreal Engine 4.26 with encrypted `.pak` files. It comes in through
@@ -1000,6 +1022,8 @@ The plan is in Reading Grand Theft Auto files above.
 - [x] GTA V: RPF7 with keys from the executable, peds as configurable models, vehicles, posing (0.51.0), on synthetic files
 - [x] GTA IV and Episodes from Liberty City on the shared RAGE reader (0.52.0), on synthetic files
 - [ ] Trilogy Definitive Edition as a profile on the generic Unreal importer
+- [ ] Mobile and console versions (see Mobile and console versions above): Android/iOS texture databases
+      first, then Xbox and PS2 RenderWare, then the RAGE consoles
 - [ ] Check each on Jerred's installs
 
 ### Phase 7: DOOM (id Tech 6/7/8)
