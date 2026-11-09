@@ -36,6 +36,11 @@ class ReturnalImporter(Importer):
             return []
         return catalog.scan(Path(folder), progress, self.cache)
 
+    def names(self, folder: Path, game: str, entries: list[CatalogEntry], fresh: bool = False) -> dict[str, str]:
+        """None yet: Returnal's names are in its localised string tables (.locres), which aren't joined to
+        the meshes yet. The models keep their file names."""
+        return {}
+
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
         ours = [e for e in found if e.importer == self.key]
         if not ours and catalog.detect_game(folder) != GAME:

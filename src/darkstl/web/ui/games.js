@@ -98,6 +98,20 @@ export function modelFilesItem(m, variant = null) {
     run: () => ui.set({ dialog: { type: "model-files", model: { id: m.id, label: m.label || m.name }, variant } }) };
 }
 
+/** Read the names a game gives its models from its files again (its text and item tables). */
+export async function readNames(game) {
+  try {
+    const { job } = await api("names_read", { game });
+    const r = await followJob(job, `Reading ${game}'s names`);
+    ui.set((s) => ({ libRev: (s.libRev || 0) + 1 }));
+    await loadOverview();
+    toast(r.named ? `${plural(r.named, "model")} in ${game} ${r.named === 1 ? "has" : "have"} ${r.named === 1 ? "its" : "their"} name from the game.`
+      : `No names were found in ${game}'s files. Dark STL reads them from the FromSoftware games' item text and tables (Unpack copies them out of the game's archives).`, 7000);
+  } catch (e) {
+    if (!e.stopped) toast(String(e.message || e));
+  }
+}
+
 /** The game's menu: add a folder to it, collect it, and each of its folders' actions. */
 export function gameMenu(game, place) {
   const items = [
@@ -106,6 +120,8 @@ export function gameMenu(game, place) {
     { id: "game-redraw", label: place?.category ? "Redraw previews here" : "Redraw this game's previews", sub: "pictures drawn by an older version, without textures", icon: "image",
       disabled: game.count ? false : "There are no models here.",
       run: () => redrawPreviews({ game: game.name, category: place?.category || null, group: place?.group ?? null }, place?.group || place?.category || game.name) },
+    { id: "game-names", label: "Read in-game names", sub: "name its models as the game does, from its item text", icon: "edit",
+      disabled: game.folders.length ? false : "This game has no folder to read them from.", run: () => readNames(game.name) },
   ];
   for (const f of game.folders) {
     const name = f.path.split(/[\\/]/).filter(Boolean).pop();

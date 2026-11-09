@@ -20,7 +20,7 @@ from ...model import BuildOption, CatalogEntry, Material, MeshOptions, Part, Rig
 from ...textures import dds
 from .. import loose
 from ..base import Importer, ScanProgress
-from . import catalog, files, materials, texindex
+from . import catalog, files, materials, names, texindex
 from . import games as profiles
 from .formats import binder, flver, tpf
 from .mesh import FlverMeshOptions, flver_to_trimesh
@@ -136,13 +136,23 @@ class FromSoftwareImporter(Importer):
         if isinstance(state, texindex.TextureIndex):
             texindex.register(state)
 
+    def names(self, folder: Path, game: str, entries: list[CatalogEntry], fresh: bool = False) -> dict[str, str]:
+        table = names.cached_table(Path(folder), game, self.cache / "names" if self.cache else None, force=fresh)
+        return names.entry_names(Path(folder), entries, table) if len(table) else {}
+
+    def stats(self, path: Path) -> dict | None:
+        return files.model_stats(Path(path))
+
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
         packed = []
         for d in (folder, folder / "sd"):
             try:
-                packed += sorted(p.name for p in d.iterdir() if _PACKED.match(p.name))
+                here = {p.name.lower(): p.name for p in d.iterdir()}
             except OSError:
-                pass
+                continue
+            # an archive is a .bdt with its header beside it (Dark Souls III's Data0.bdt alone is its item tables)
+            packed += sorted(name for low, name in here.items() if _PACKED.match(name)
+                             and (low[:-4] + ".bhd" in here or low[:-4] + ".bhd5" in here))
         if not packed or len(found) >= 50:
             return []
         names = ", ".join(packed[:4]) + (" ..." if len(packed) > 4 else "")
