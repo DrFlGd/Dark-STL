@@ -1,8 +1,8 @@
 """Where the app keeps its settings and caches, and the settings themselves.
 
 Settings are one JSON file: the game folders the user added (and which game
-each is), extra texture folders, the Oodle DLL, where exports go and the
-page's own preferences (theme, layout). ``DARKSTL_HOME`` puts everything in
+each is), extra texture folders, the Oodle DLL, where exports go, where Model
+Painter is and the page's own preferences (theme, layout). ``DARKSTL_HOME`` puts everything in
 one folder instead (for tests and portable installs).
 """
 
@@ -58,6 +58,7 @@ class Config:
     oodle: str = ""
     export_dir: str = ""
     library_dir: str = ""  # where collected copies of game files go (empty: the app's own folder)
+    model_painter: str = ""  # Model Painter's program, to open exports in (empty: found by itself, painter.py)
     prefs: dict = field(default_factory=dict)  # the page's own preferences
     path: Path | None = field(default=None, repr=False, compare=False)
 
@@ -68,8 +69,8 @@ class Config:
             raw = json.loads(path.read_text("utf-8"))
         except (OSError, ValueError):
             raw = {}
-        known = {k: raw[k] for k in ("game_folders", "texture_dirs", "oodle", "export_dir", "library_dir", "prefs")
-                 if k in raw}
+        keys = ("game_folders", "texture_dirs", "oodle", "export_dir", "library_dir", "model_painter", "prefs")
+        known = {k: raw[k] for k in keys if k in raw}
         cfg = cls(**known)
         cfg.game_folders = [f for f in cfg.game_folders if isinstance(f, dict) and f.get("path")]
         cfg.path = path

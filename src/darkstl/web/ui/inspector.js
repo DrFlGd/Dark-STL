@@ -1,8 +1,9 @@
 // The inspector on the right of a page, from Model Library:
 // a pane with tabs, and a rail along the window's edge with each tab's icon and
-// name written down it. Click a name to open that tab; click the open one, its »
-// button or ] to fold the pane to its rail. Its width, whether it's folded and
-// the tab open are kept per page.
+// its short name under it, the tabs in groups (the model page's Model, Edit and
+// Export). Click a name to open that tab; click the open one, its » button or ]
+// to fold the pane to its rail. Its width, whether it's folded and the tab open
+// are kept per page.
 import { html, useEffect, useRef, useState, useLayoutEffect } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui, setPref } from "./state.js";
@@ -12,7 +13,8 @@ import { typing } from "./actions.js";
 const MIN = 260, MAX = 520;
 
 /** `page`: whose settings these are (model, browse).
- *  `tabs`: [{ id, label, icon, body }] (a tab without a body isn't shown).
+ *  `tabs`: [{ id, label, icon, body, group }] (a tab without a body isn't shown);
+ *  `group` names the group a tab is in, drawn as a label over the first of them.
  *  `open`: whether it starts open on this page. `want`: a tab to show now
  *  (when it changes, e.g. a model was selected in Unsorted). */
 export function Inspector({ page, tabs, open: startOpen = true, want = null, label = "Details", crowded = false }) {
@@ -96,7 +98,7 @@ export function Inspector({ page, tabs, open: startOpen = true, want = null, lab
       <div class="pane-resize" role="separator" aria-label="Width" aria-orientation="vertical" aria-valuemin=${MIN} aria-valuemax=${MAX} aria-valuenow=${width} tabIndex="0"
         onPointerDown=${resize} onKeyDown=${(e) => { if (["ArrowLeft", "ArrowRight"].includes(e.key)) { e.preventDefault(); setPref({ inspectorWidth: Math.max(MIN, Math.min(MAX, width + (e.key === "ArrowLeft" ? 20 : -20))) }); } }}></div>
     </section>` : null}
-    <${Rail} side="right" tabs=${list} current=${isOpen ? tab?.id : null} onPick=${pick} />
+    <${Rail} side="right" tabs=${list} current=${isOpen ? tab?.id : null} onPick=${pick} compact=${local} />
   </div>`;
 }
 
@@ -123,11 +125,22 @@ export function useWidth(ref) {
   return w;
 }
 
-/** A rail: each tab's icon with its name written down the strip. */
-export function Rail({ side, tabs, current, onPick }) {
-  return html`<nav class=${`rail rail-${side}`} aria-label=${side === "right" ? "Inspector" : "Panes"}>
-    ${tabs.map((t) => html`<button type="button" key=${t.id} class="rail-tab" id=${`rail-${t.id}`} data-tab=${t.id} aria-pressed=${current === t.id ? "true" : "false"}
+/** A rail: each tab's icon with its short name under it, upright. Tabs with a
+ *  `group` get a thin line and the group's name over the first of them.
+ *  `compact`: icons only (no room beside the page), the lines kept. */
+export function Rail({ side, tabs, current, onPick, compact = false }) {
+  const items = [];
+  let group = null;
+  tabs.forEach((t, i) => {
+    if (t.group && t.group !== group) {
+      items.push(html`<div class="rail-group" key=${`group-${t.group}`} data-group=${t.group}>
+        ${i ? html`<span class="rail-sep" aria-hidden="true"></span>` : null}<span class="rail-group-name">${t.group}</span></div>`);
+      group = t.group;
+    }
+    items.push(html`<button type="button" key=${t.id} class="rail-tab" id=${`rail-${t.id}`} data-tab=${t.id} data-group=${t.group || null}
+      aria-pressed=${current === t.id ? "true" : "false"} aria-label=${t.label}
       title=${current === t.id ? `Hide ${t.label}` : `Show ${t.label}`} onClick=${() => onPick(t)}>
-      ${Icon[t.icon] ? Icon[t.icon](16) : null}<span class="rail-name">${t.label}</span></button>`)}
-  </nav>`;
+      ${Icon[t.icon] ? Icon[t.icon](17) : null}<span class="rail-name">${t.short || t.label}</span></button>`);
+  });
+  return html`<nav class=${`rail rail-${side}${compact ? " rail-compact" : ""}`} aria-label=${side === "right" ? "Inspector" : "Panes"}>${items}</nav>`;
 }

@@ -38,6 +38,7 @@ importer and registering it in `importers/__init__.py`:
 | ActorX PSK/PSKX | UModel's and FModel's exports of Unreal models: points, wedges, faces and materials, mirrored from Unreal's frame like the Unreal games' own models; each material's textures found by name beside the model, from UModel's `.mat`, FModel's `.json` and UModel's `.props.txt` material files, then from texture names like the material's. The skeleton isn't read | Synthetic files (0.35.0) |
 | RenderWare (GTA III, Vice City, San Andreas) | `.img` archives (with `.dir`, or `VER2`) read in place, `.dff` models (parts placed by frames, skins, vehicles with their wheels copied to every axle and their colours from `carcols.dat` as variants), `.txd` textures (DXT, paletted and raw rasters), `.ifp` animations for peds, `.ide`/`.ipl`/`.gxt` for kinds, areas and vehicle names. Per-game differences are JSON profiles in `importers/renderware/profiles/`. See Reading Grand Theft Auto files | Synthetic files (0.50.0) |
 | RAGE (GTA V, then GTA IV) | `.rpf` v7 and IMG3 archives with keys found in the user's executable, RSC7/RSC5 resources: `.ydr`/`.wdr`, `.ydd` ped components, `.yft` vehicles, `.ytd` textures, `.ycd` animations | Planned (0.51.0 GTA V, 0.52.0 GTA IV) |
+| id Tech 6/7/8 (DOOM, DOOM Eternal, DOOM: The Dark Ages) | `.resources` containers (IDCL; DOOM 2016's `.index`) and `.streamdb` with the game's Oodle, BIM textures, `.lwo` static and `.md6mesh` skinned models, `.md6skl` skeletons, `.md6anim` animations, `material2` decls. See Reading id Tech 6/7/8 files | Planned (0.53.0 Eternal, 0.54.0 DOOM 2016, 0.55.0 The Dark Ages) |
 
 An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
 folder), `detect_game`, `variants` (files holding several models) and `describe`.
@@ -160,11 +161,40 @@ the tests call directly.
   (`thumbnails.py`: the model from the 3D view's angle, coloured from its albedo texture, long
   weapons laid corner to corner) and cached by file date, a few at a time so browsing stays quick.
 - **The model page.** The 3D view with the game's textures (or clay, or wireframe), and the
-  inspector's Model (parts, importer options, size, file), Textures, Pose (an animation and a
-  frame, with a slider, stepping and playback; only for models with animations), Generate and
-  Export tabs.
+  inspector's tabs in the order the work happens, in three groups on the rail (each tab's icon
+  with its short name upright under it; icons only when the page is crowded): **Model**
+  (Configure, Model: parts, importer options, size, file; Textures; Pose: an animation and a
+  frame, with a slider, stepping and playback, only for models with animations), **Edit** (Mesh,
+  Displace, Finish, Cut) and **Export**. Since 0.43.0:
+  - *One place chooses the model worked on*: the Show buttons under the 3D view (Original,
+    Enhanced, Finished, Pieces). Finish, Cut and Export say "Working on: Enhanced · change" (the
+    link puts the keyboard on those buttons and makes them flash). Finish and Cut show a choice
+    of their own only while the view shows a model they can't take (Finish: Finished or Pieces;
+    Cut: Pieces), kept as they last used it.
+  - *Explanations fold away*: each tab's opening paragraph (Mesh, Displace, Finish, Cut, Paint)
+    shows its first sentence, with the rest open until that tab's job has run once (the
+    `tipsOpen` preference); ⓘ beside the heading opens it again.
+  - *A Next strip* under each result opens the next tab: Mesh → Displace; Displace → Export or
+    Finish; Finish → Cut or Export; Cut → Export; Export → Open in Model Painter.
+  - Toasts show at the top right of the 3D view, never over the buttons under it. The footer
+    stays one row: without room for every view button, shading, edges and the view's turns fold
+    into one *View* menu. Under a 1440 px window the game's tree beside the menu folds as a model
+    opens and comes back on the way back (opening or folding it there by hand is remembered for
+    model pages, `catPanelModel`).
+  - The Displace tab names its per-material columns (Texture, Strength); the Export tab shows its
+    folder as the last two parts of the path (the whole path in its tooltip and while editing).
   Meshes travel to the page in a packed binary form (`app/meshpack.py`) split at UV seams and
   grouped by material.
+- **The handoff to Model Painter (0.43.0).** Print finishing and painting move to Model Painter
+  (github.com/DrFlGd/Model-Painter). The Export tab's *Export for Model Painter* writes the model
+  shown as a GLB with its textures and materials, Y up, in metres, named
+  `<model>_for_painter.glb` (the `painter` preset of the `export` command), and *Open in Model
+  Painter* (beside *Show in folder*) starts Model Painter with the file, which opens it as the
+  model it was started with. Where Model Painter is: Settings › Model Painter, or found by
+  itself (`app/painter.py`: the per-user installer's folder, Program Files, or the portable
+  zip's folder beside Dark STL's own or in Downloads). The engine checks the program and the
+  file (`painter_target`); the desktop app's window starts it (`desktop/src/main.rs`), and
+  `darkstl gui` and the local server start it from the engine (`painter_open`).
 - **Safety.** The server listens on 127.0.0.1 only, checks the Host header (against DNS
   rebinding) and needs a token written into the page, so other web pages can't use it.
 
@@ -627,7 +657,7 @@ give closed meshes).
 | STL (binary or ASCII) | Geometry only, Z up, millimetres by default |
 | OBJ + MTL + PNG | Geometry, UVs, one material per game material with its albedo map, Y up |
 | PLY (binary) | Geometry and normals |
-| GLB | Geometry, UVs and embedded albedo textures |
+| GLB | Geometry, UVs and embedded albedo textures, Y up, in metres (glTF's unit); *For Model Painter* is this, named `<model>_for_painter.glb` |
 
 Units can be mm, cm, m or inches; the game's own scale is metres.
 
@@ -674,7 +704,8 @@ src/darkstl/
   export.py     STL, OBJ, PLY, GLB writers
   cli.py        command line
   app/          the desktop app: service.py (the page's commands), server.py (local web
-                server), meshpack.py (meshes for the 3D view), config.py, desktop.py (window)
+                server), meshpack.py (meshes for the 3D view), config.py, desktop.py (window),
+                painter.py (where Model Painter is, and opening an export in it)
   web/          the page: Model Library's interface (styles.css, ui/ layout, inspector,
                 menus) with Dark STL's pages: home.js, browser.js, modelpage.js, configure.js,
                 settings.js
@@ -739,6 +770,9 @@ differs:
       model as tiles, groups, search, previews (on Model Library's interface)
 - [x] Collect into the app: the files chosen models need (model, textures, animations) copied
       into the app's own library folder, so the game's install isn't needed afterwards
+- [x] The model page in the order the work happens (0.43.0): the rail's Model, Edit and Export groups,
+      one picker for the model worked on, explanations folded once used, a Next strip, a one-row footer,
+      and the handoff to Model Painter (For Model Painter GLB, Open in Model Painter)
 - [ ] In-game names (weapon, armor and enemy names from the game's text and param files)
 - [ ] Batch queue: enhance and export a whole group with one set of settings
 - [ ] Read Elden Ring MATBIN files for exact material maps
