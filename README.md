@@ -33,7 +33,7 @@ Importing is modular: each game family has its own importer, and everything afte
 Dark Souls III, Sekiro, Elden Ring), Cyberpunk 2077 files, Capcom RE Engine files (Resident Evil
 2, 3, 4, 7 and Village, Devil May Cry 5), Borderlands (Borderlands, Borderlands 2, The
 Pre-Sequel, Borderlands 3, Tiny Tina's Wonderlands, Borderlands 4), Returnal, Grand Theft Auto III,
-Vice City and San Andreas, DOOM Eternal, and Wavefront OBJ are supported today.
+Vice City, San Andreas, IV and V, DOOM Eternal, and Wavefront OBJ are supported today.
 
 ## Install
 
@@ -144,6 +144,30 @@ neither.
   `data\carcols.dat` (a variant each). Characters are posed on the Pose tab with `anim\ped.ifp`.
   A folder of `.dff` and `.txd` files exported with another tool opens too, its textures looked
   up by name. The Definitive Edition (Unreal Engine 4) isn't read by this importer.
+
+- **Grand Theft Auto V (PC, the original release and Enhanced):** add the game's install folder as
+  it is (the one with `GTA5.exe`). Models are read straight from the `.rpf` archives, nested ones and
+  the `update` and DLC archives included (an update's copy wins). The archives are encrypted with
+  keys that are in the game's executable: Dark STL doesn't include them, but finds them in your
+  `GTA5.exe` the first time (this reads through the executable once, which takes a while) and keeps
+  them in its settings folder (`keys\gta5.bin`). Vehicles (`.yft`) are sorted by class and named as
+  in the game (from `vehicles.meta` and the `.gxt2` text), with a wheel on every corner; characters
+  (`.ydd`) are listed as outfits, a slot for each component (top, legs, feet, hair...), and posed on
+  the Pose tab with the game's clips (`.ycd`); weapons are named and grouped from `weapons.meta`;
+  props and map pieces are grouped by archive. Textures come from the model's `.ytd`, its parents in
+  `gtxd.meta` and the shared vehicle dictionaries. Files exported with OpenIV or CodeWalker (`.ydr`,
+  `.ydd`, `.yft` with their `.ytd`) open too, without the keys. Vehicle paint colours aren't applied
+  yet (painted panels show their base texture).
+
+- **Grand Theft Auto IV (PC, with The Lost and Damned and The Ballad of Gay Tony):** add the game's
+  install folder as it is (the one with `GTAIV.exe`). Models (`.wdr`, `.wdd`, `.wft` with their
+  `.wtd` textures) are read straight from the `.img` archives in `pc\models\cdimages` and
+  `pc\data\maps`. The archives' tables are encrypted with a key that is in `GTAIV.exe`: Dark STL
+  doesn't include it, but finds it there the first time and keeps it in its settings folder
+  (`keys\gta4.bin`). The game's `.ide` files and `american.gxt` sort and name the vehicles; peds are
+  outfits of their components, as in GTA V; the episodes' models are listed with the base game's,
+  their groups named after the episode. GTA IV's animations aren't read yet, so its characters
+  can't be posed. Files exported with OpenIV or SparkIV open too.
 
 - **DOOM Eternal (id Tech 7):** add the game's install folder as it is. Models are read from the
   `.resources` containers and `.streamdb` files in `base` (the first scan reads through them once;

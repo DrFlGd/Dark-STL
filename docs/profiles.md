@@ -48,7 +48,7 @@ from then on and its sorting can be changed in that file.
 |------------|------------|
 | `format`   | 1. A file made for a newer Dark STL (a higher number) is left out and listed as a problem. |
 | `name`     | The game's name, as the library lists it. Required. |
-| `engine`   | Which backend reads it: `unreal4`, `unreal5`, `unreal3`, `fromsoft`, `reengine`, `redengine`, `renderware`, `idtech`. Required unless the profile `extends` another. |
+| `engine`   | Which backend reads it: `unreal4`, `unreal5`, `unreal3`, `fromsoft`, `reengine`, `redengine`, `renderware`, `rage`, `idtech`. Required unless the profile `extends` another. |
 | `importer` | The importer that reads it, when not the engine's usual one (`unreal` for Unreal 4/5). The shipped Returnal and Borderlands profiles name their own importers (`returnal`, `borderlands`). |
 | `extends`  | Another profile's name: that profile's settings are taken first and this file's go over them (each section is merged key by key, one level down). |
 | `defaults` | `true` only in `unreal-defaults.json`: the settings every Unreal 4/5 game starts from (its own file's settings go over them, and its `models` keys replace the defaults' one by one). |
@@ -220,6 +220,22 @@ file of the same name in the profiles folder replaces one, and a new one adds a 
 * `shared_textures`: `vehicles` and `all`, the dictionaries models fall back on;
 * `bone_match`: `id` (HAnim ids, San Andreas) or `name` (III, Vice City), how animations find bones.
 
+### `rage`: Grand Theft Auto IV and V
+
+GTA IV and V are read entirely from their profiles (`gta4.json`, `gta5.json`), in the same way:
+
+* `generation`: 5 (GTA V: RPF7 archives, RSC7 resources, `.y*` files) or 4 (GTA IV: IMG3 archives, RSC5
+  resources, `.w*` files);
+
+* `recognise.files` (the executable or an archive below the game folder) and `recognise.folder_names`;
+* `language`: whose text names vehicles and weapons (`american`: GTA V's `.gxt2`, GTA IV's `american.gxt`);
+* `ped_animations`: the clip dictionaries (`.ycd`, without the extension) characters are posed with;
+* `shared_textures`: `vehicles` and `all`, the texture dictionaries models fall back on;
+* `groups`: library group names for `vehicle_classes` (`VC_SPORT`...), `ped_prefixes` (`a_m_`...) and
+  `weapon_groups` (`GROUP_PISTOL`...).
+
+The archive keys are never in a profile: Dark STL finds them in the user's own `GTA5.exe` or `GTAIV.exe`.
+
 ## Shipped profiles
 
 | File                   | Game                    | Importer      |
@@ -232,3 +248,5 @@ file of the same name in the profiles folder replaces one, and a new one adds a 
 | `gta3.json`            | Grand Theft Auto III    | `renderware`  |
 | `gtavc.json`           | Grand Theft Auto: Vice City | `renderware` |
 | `gtasa.json`           | Grand Theft Auto: San Andreas | `renderware` |
+| `gta4.json`            | Grand Theft Auto IV     | `rage`        |
+| `gta5.json`            | Grand Theft Auto V      | `rage`        |

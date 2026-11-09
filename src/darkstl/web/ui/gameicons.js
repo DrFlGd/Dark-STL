@@ -10,6 +10,7 @@ const SHORT = {
   "Borderlands": "BL1", "Borderlands 2": "BL2", "Borderlands: The Pre-Sequel": "TPS", "Borderlands 3": "BL3",
   "Tiny Tina's Wonderlands": "TTW", "Borderlands 4": "BL4", "Returnal": "RET",
   "Grand Theft Auto III": "GTA3", "Grand Theft Auto: Vice City": "GTVC", "Grand Theft Auto: San Andreas": "GTSA",
+  "Grand Theft Auto IV": "GTA4", "Grand Theft Auto V": "GTA5",
   "DOOM Eternal": "DE", "DOOM (2016)": "D16", "DOOM: The Dark Ages": "TDA",
 };
 
