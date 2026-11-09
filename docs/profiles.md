@@ -48,7 +48,7 @@ from then on and its sorting can be changed in that file.
 |------------|------------|
 | `format`   | 1. A file made for a newer Dark STL (a higher number) is left out and listed as a problem. |
 | `name`     | The game's name, as the library lists it. Required. |
-| `engine`   | Which backend reads it: `unreal4`, `unreal5`, `unreal3`, `fromsoft`, `reengine`, `redengine` (and `renderware` from the Grand Theft Auto importer). Required unless the profile `extends` another. |
+| `engine`   | Which backend reads it: `unreal4`, `unreal5`, `unreal3`, `fromsoft`, `reengine`, `redengine`, `renderware`. Required unless the profile `extends` another. |
 | `importer` | The importer that reads it, when not the engine's usual one (`unreal` for Unreal 4/5). The shipped Returnal and Borderlands profiles name their own importers (`returnal`, `borderlands`). |
 | `extends`  | Another profile's name: that profile's settings are taken first and this file's go over them (each section is merged key by key, one level down). |
 | `defaults` | `true` only in `unreal-defaults.json`: the settings every Unreal 4/5 game starts from (its own file's settings go over them, and its `models` keys replace the defaults' one by one). |
@@ -201,6 +201,21 @@ that engine:
 * `redengine` (Cyberpunk 2077): `recognise.files` and `recognise.folder_pattern` add to the ways its folder is
   recognised.
 
+### `renderware`: Grand Theft Auto III, Vice City, San Andreas
+
+The RenderWare games are read entirely from their profiles (`gta3.json`, `gtavc.json`, `gtasa.json`), so a
+file of the same name in the profiles folder replaces one, and a new one adds a game:
+
+* `recognise.files` (executables or data files below the game folder) and `recognise.folder_names` (a folder
+  named after the game, holding its models);
+* `level_files`: the level lists naming the game's `.ide` and `.ipl` files, in load order;
+* `text` (the `.gxt`, for vehicle names), `car_colours` (`carcols.dat`), `ped_animations` (the `.ifp` peds
+  are posed with);
+* `paint` and `lights`: the placeholder material colours the game swaps for a car's colours, and those of its
+  lights;
+* `shared_textures`: `vehicles` and `all`, the dictionaries models fall back on;
+* `bone_match`: `id` (HAnim ids, San Andreas) or `name` (III, Vice City), how animations find bones.
+
 ## Shipped profiles
 
 | File                   | Game                    | Importer      |
@@ -210,3 +225,6 @@ that engine:
 | `borderlands3.json`    | Borderlands 3           | `borderlands` |
 | `wonderlands.json`     | Tiny Tina's Wonderlands | `borderlands` |
 | `borderlands4.json`    | Borderlands 4           | `borderlands` |
+| `gta3.json`            | Grand Theft Auto III    | `renderware`  |
+| `gtavc.json`           | Grand Theft Auto: Vice City | `renderware` |
+| `gtasa.json`           | Grand Theft Auto: San Andreas | `renderware` |

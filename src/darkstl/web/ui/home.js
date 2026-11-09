@@ -154,6 +154,7 @@ const FROMSOFT_PACKED = "Choose the install folder as it is: Dark STL offers to 
 const RE_ENGINE = "Choose the install folder as it is: the models are read straight from its .pak archives, named through the file lists that come with Dark STL. A folder a pak tool (REtool, ree-pak) extracted works too.";
 const BL_UE3 = "Choose the install folder as it is: the models are read from the packages in WillowGame\\CookedPCConsole (the first scan reads through them once).";
 const BL_UE4 = "Choose the install folder as it is: the models are read from the files in OakGame\\Content\\Paks.";
+const GTA_RW = "Choose the install folder as it is: the models are read from its .img archives, sorted into characters, vehicles, weapons and map pieces by the game's own lists, with cars in their colours from the game. A folder of .dff and .txd files exported with another tool works too.";
 export const GAME_NOTES = {
   "Elden Ring": `${FROMSOFT_PACKED} Its files are compressed with Oodle: Dark STL uses the game's own copy (oo2core_6_win64.dll in its folder).`,
   "Sekiro": `${FROMSOFT_PACKED} Its files are compressed with Oodle: Dark STL uses the game's own copy (oo2core_6_win64.dll in its folder).`,
@@ -170,6 +171,7 @@ export const GAME_NOTES = {
   "Borderlands 3": `${BL_UE4} Its AES key comes with Dark STL.`,
   "Tiny Tina's Wonderlands": `${BL_UE4} If its files are encrypted, add the game's AES key in Settings › Game tools › Unreal games.`,
   "Borderlands 4": `${BL_UE4} It also needs its type mappings (a .usmap file), and the AES key if its containers are encrypted: add them in Settings › Game tools › Unreal games.`,
+  "Grand Theft Auto III": GTA_RW, "Grand Theft Auto: Vice City": GTA_RW, "Grand Theft Auto: San Andreas": GTA_RW,
 };
 
 /** First start: no game folders yet. Each game Dark STL reads is a tile; clicking one says what to choose for it. */
