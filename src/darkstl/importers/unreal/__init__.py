@@ -8,7 +8,7 @@ kinds and groups) is the game's profile.
 
 A folder of an Unreal game that no profile names is listed too, as an "Unreal game" under the name the
 user gives it: the app writes a profile for it into the settings folder (recognised by its executable),
-sorted by the shipped defaults, with the AES key and type mappings from Settings › Unreal games. Its models
+sorted by the shipped defaults, with the AES key and type mappings from Settings › Game tools › Unreal games. Its models
 pose and collect as Returnal's do.
 """
 

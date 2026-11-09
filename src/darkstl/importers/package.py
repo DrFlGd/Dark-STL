@@ -9,7 +9,7 @@ from ..collect import RelatedFile, read_manifest
 from ..errors import FormatError
 from ..model import CatalogEntry, SourceModel
 from .. import package as pkg
-from .base import Importer, ScanProgress
+from .base import Importer, ScanProgress, made_by
 
 
 class PackageImporter(Importer):
@@ -47,6 +47,10 @@ class PackageImporter(Importer):
                                      str(index.get("group") or ""), stem, str(index.get("label") or stem),
                                      here / pkg.INDEX, self.key, is_lod=bool(index.get("is_lod")), packed=True,
                                      stats=stats if isinstance(stats, dict) else None)
+                if index.get("importer"):  # the importer of the game file it was made from (Importer.related)
+                    entry.__dict__["_source_importer"] = str(index["importer"])
+                if index.get("source"):
+                    entry.__dict__["_source_rel"] = str(index["source"])
                 if index.get("game_name") and index.get("source"):
                     entry.__dict__["_package_name"] = (str(index["source"]), str(index["game_name"]))
                 out.append(entry)
@@ -56,6 +60,15 @@ class PackageImporter(Importer):
         """The names the game gave the models when they were collected (kept in their packages), so they're
         named without the game: {source path in the game: name}."""
         return dict(e.__dict__["_package_name"] for e in entries if "_package_name" in e.__dict__)
+
+    def related(self, entry: CatalogEntry, entries: list[CatalogEntry]) -> list[tuple[str, CatalogEntry]]:
+        """What the importer of the game file it was made from says goes with it (packages keep the file's name,
+        kind and place in the game, so the same rules apply)."""
+        from . import IMPORTERS
+
+        source = entry.__dict__.get("_source_importer")
+        imp = next((i for i in IMPORTERS if i.key == source and i.key != self.key), None)
+        return imp.related(entry, entries) if imp is not None and made_by(entry, imp.key) else []
 
     def can_open(self, path: Path) -> bool:
         return pkg.is_package_index(Path(path)) or Path(path).name.endswith(pkg.SUFFIX) and Path(path).is_dir()

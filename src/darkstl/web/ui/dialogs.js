@@ -1,14 +1,16 @@
 // Dialogs: adding a game folder, changing a folder's game, opening one model
 // file, collecting models into the app, unpacking a game's archives, and confirming. Which one is open is
 // `ui.dialog` ({ type: "add-folder" | "change-game" | "open-file" | "collect" | "model-files" | "unpack" | "confirm" | "texture-picker" |
-// "arrange" | "arrange-folder" | "combine" | "attach", ... }); the last four keep the user's own names, folders, combined
-// models and attached models (the library overlay and the user's configurations).
+// "arrange" | "arrange-folder" | "combine" | "attach" | "collection-add" | "collection-name" | "tag", ... }); arrange,
+// arrange-folder, combine and attach keep the user's own names, folders, combined models and attached models (the library
+// overlay and the user's configurations); the last three are in organise.js (collections and tags).
 import { html, useState, useLayoutEffect, useRef, useEffect } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui } from "./state.js";
 import { routeHash, placeRoute } from "./context.js";
 import { Icon } from "./icons.js";
 import { api, binUrl, info, followJob, loadOverview, pickFolder, showInFolder, stopJob, toast, plural, bytesText } from "./api.js";
+import { CollectionAdd, CollectionName, TagDialog } from "./organise.js";
 
 export const close = () => ui.set({ dialog: null });
 
@@ -132,7 +134,7 @@ function AddFolder({ game: forGame, collected = false }) {
         : check?.game ? `Recognised as ${check.game}.`
         : check?.unreal ? html`<span id="folder-unreal">An Unreal Engine game Dark STL has no profile for${check.unreal.project ? ` (its project is ${check.unreal.project})` : ""}. Give it its name:
             its models are sorted by the folders the game keeps them in (Characters, Weapons, Props…), and a game profile is saved for it
-            (Settings › Game profiles) so the folder is recognised from now on. Encrypted games need their AES key in Settings › Unreal games.</span>`
+            (Settings › Game tools › Game profiles) so the folder is recognised from now on. Encrypted games need their AES key in Settings › Game tools › Unreal games.</span>`
         : check?.exists ? "Not recognised: choose the game, or another name for a folder of other models." : "Dark STL recognises Dark Souls, Bloodborne, Dark Souls III, Sekiro, Elden Ring, Cyberpunk 2077, the Resident Evil games (2, 3, 4, 7, Village), Borderlands (1, 2, The Pre-Sequel, 3, Wonderlands, 4), Returnal and other Unreal Engine games by their files."}</small>
     </div>`}
     ${ours && where !== check.library_dir ? html`<label class="check-row" title=${`Now: ${check.library_dir}`}>
@@ -322,11 +324,11 @@ function Collect({ game, category, group, model }) {
           : plan.textures.to_store ? html`<b>${plural(plan.textures.to_store, "texture")}</b> to keep, about <b>${bytesText(plan.textures.bytes)}</b>${
             plan.textures.present ? html`<span class="muted"> · ${plural(plan.textures.present, "texture")} kept already</span>` : null}`
           : html`<span class="muted">Every one of the game's ${plural(plan.textures.listed, "texture")} is kept already.</span>`}</p>` : null}
-        <p class="muted">Into <span class="note-path" id="collect-folder">${plan.folder}</span> · <a href=${routeHash("settings")} id="collect-change-folder" onClick=${close}>change where</a></p>`
+        <p class="muted">Into <span class="note-path" id="collect-folder">${plan.folder}</span> · <a href=${routeHash("settings:library")} id="collect-change-folder" onClick=${close}>change where</a></p>`
       : html`<p id="collect-plan-text"><b>${plural(plan.models, "model")}</b> · ${plural(plan.files, "file")} · ${bytesText(plan.bytes)}
           ${plan.present ? html`<span class="muted"> · ${plan.to_copy ? `${plural(plan.present, "file")} already there, ${bytesText(plan.bytes_to_copy)} to copy` : "all already there"}</span>` : null}</p>
         <p class="muted" id="collect-plan-kinds">${kinds.join(" · ")}</p>
-        <p class="muted">Into <span class="note-path" id="collect-folder">${plan.folder}</span> · <a href=${routeHash("settings")} id="collect-change-folder" onClick=${close}>change where</a></p>`}
+        <p class="muted">Into <span class="note-path" id="collect-folder">${plan.folder}</span> · <a href=${routeHash("settings:library")} id="collect-change-folder" onClick=${close}>change where</a></p>`}
     </div>
     ${busy ? html`<p class="muted" id="collect-progress">${progress || (packages ? "Importing…" : "Copying…")}</p>` : null}
   <//>`;
@@ -398,7 +400,7 @@ function ModelFiles({ model, variant }) {
       : !plan ? html`<p class="muted">Working out which files to export…</p>`
       : html`${opts.game_files ? html`<p id="model-files-plan-text">${plural(plan.files, "file")} · ${bytesText(plan.bytes)} before compression</p>` : null}
         ${opts.package && plan.configurable ? html`<p class="warn-text">A configurable model has no package of its own: export one of its parts for that.</p>` : null}
-        <p class="muted">Into <span class="note-path" id="model-files-dest">${plan.dest}</span> · <a href=${routeHash("settings")} onClick=${close}>change where</a></p>`}
+        <p class="muted">Into <span class="note-path" id="model-files-dest">${plan.dest}</span> · <a href=${routeHash("settings")} onClick=${close} title="Settings › General › Exports">change where</a></p>`}
     </div>
     ${busy ? html`<p class="muted" id="model-files-progress">${progress || "Exporting…"}</p>` : null}
   <//>`;
@@ -655,16 +657,24 @@ function Combine({ model: base }) {
   const [folder, setFolder] = useState(base.group ? `${base.category}/${base.group.replace(/ \/ /g, "/")}` : base.category);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [related, setRelated] = useState([]); // the models that go with it (its set, its character's parts): offered first
+  useEffect(() => {
+    let live = true;
+    api("model_related", { id: base.id }).then((r) => live && setRelated(r.items.filter((i) => !i.configurable && i.game === base.game)), () => {});
+    return () => { live = false; };
+  }, [base.id]);
   useEffect(() => {
     let live = true;
     const t = setTimeout(() => {
-      api("models_query", { game: base.game, q, limit: 80 }).then((r) => live && setFound(r), (e) => live && setError(String(e.message || e)));
+      api("models_query", { game: base.game, q, limit: 80, related: false }).then((r) => live && setFound(r), (e) => live && setError(String(e.message || e)));
     }, 200);
     return () => { live = false; clearTimeout(t); };
   }, [q]);
   const isPicked = (i) => picked.some((p) => p.id === i.id);
   const toggle = (i) => setPicked(isPicked(i) ? picked.filter((p) => p.id !== i.id) : [...picked, i]);
-  const items = (found?.items || []).filter((i) => i.id !== base.id && !i.configurable);
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const first = related.filter((i) => words.every((w) => `${i.label} ${i.name} ${i.relation}`.toLowerCase().includes(w)));
+  const items = [...first, ...(found?.items || []).filter((i) => i.id !== base.id && !i.configurable && !first.some((r) => r.id === i.id))];
   const submit = async () => {
     if (!picked.length) { setError("Choose the models to add to it first."); return; }
     const [category, ...rest] = folder.replace(/\\/g, "/").split("/").map((x) => x.trim()).filter(Boolean);
@@ -693,7 +703,7 @@ function Combine({ model: base }) {
     <ul class="picker-list" id="combine-results" aria-label="Models">${items.map((i) => html`<li key=${i.id}>
       <label class=${isPicked(i) ? "picker-item selected" : "picker-item"} data-model=${i.stem}>
         <input type="checkbox" checked=${isPicked(i)} disabled=${busy} onChange=${() => toggle(i)} />
-        <span>${i.label}<small class="muted">${i.category}${i.group ? ` › ${i.group}` : ""} · ${i.name}</small></span></label></li>`)}
+        <span>${i.label}${i.relation ? html` <span class="card-tag related-tag" title="It goes with this model">${i.relation}</span>` : null}<small class="muted">${i.category}${i.group ? ` › ${i.group}` : ""} · ${i.name}</small></span></label></li>`)}
       ${found && !items.length ? html`<li class="muted picker-empty">No models match.</li>` : null}</ul>
     ${picked.length ? html`<p id="combine-picked">With ${picked.map((p) => p.label).join(", ")}.</p>` : null}
     <label class="field-block"><span>Name</span><input id="combine-name" value=${name} disabled=${busy} onInput=${(e) => setName(e.target.value)} /></label>
@@ -780,5 +790,8 @@ export function Dialogs() {
   if (dialog.type === "arrange-folder") return html`<${ArrangeFolder} key=${`${dialog.category}/${dialog.group || ""}`} ...${dialog} />`;
   if (dialog.type === "texture-picker") return html`<${TexturePicker} key=${`${dialog.sid}:${dialog.material}:${dialog.role}`} ...${dialog} />`;
   if (dialog.type === "unpack") return html`<${Unpack} key=${dialog.path} path=${dialog.path} game=${dialog.game} added=${dialog.added} />`;
+  if (dialog.type === "collection-add") return html`<${CollectionAdd} models=${dialog.models} />`;
+  if (dialog.type === "collection-name") return html`<${CollectionName} collection=${dialog.collection} models=${dialog.models} />`;
+  if (dialog.type === "tag") return html`<${TagDialog} models=${dialog.models} />`;
   return null;
 }

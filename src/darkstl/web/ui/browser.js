@@ -15,7 +15,9 @@ import { usePageKeys } from "./actions.js";
 import { Thumb } from "./thumbs.js";
 import { GameBadge, CategoryIcon } from "./gameicons.js";
 import { gameMenu, rescanFolder, collectItem, collectModelItem, unpackFolder, UNPACK_HINT, arrangeModel } from "./games.js";
-import { openModel, configText, Card, ListHead, ListRow, listColumns, sortOptions, usePageSort, statsTitle } from "./models.js";
+import { openModel, configText, Card, ListHead, ListRow, listColumns, sortOptions, usePageSort, statsTitle, useModelSelection, CardSize, cardStyle } from "./models.js";
+import { Related, SelectionSummary, markItems } from "./organise.js";
+import { Problems } from "./problems.js";
 
 const PAGE = 300;
 const VIEWS = [["grid", "Grid", "grid"], ["list", "List", "list"]];
@@ -117,6 +119,7 @@ function PlaceSummary({ game, cat, group, total }) {
 /** One model selected: its preview, where it is, and Open. */
 export function ModelSummary({ m }) {
   const collect = collectModelItem(m);
+  const marks = markItems(m);
   return html`<div class="place-summary model-summary" id="model-summary" data-model=${m.id}>
     <button type="button" class="insp-thumb" title="Open" onClick=${() => openModel(m)}><${Thumb} id=${m.id} category=${m.category} /></button>
     <h3 class="insp-title" id="summary-name">${m.label}</h3>
@@ -125,7 +128,10 @@ export function ModelSummary({ m }) {
       <button type="button" class="ghost" id="summary-show" onClick=${() => showInFolder(m.file)}>${Icon.folder(14)} Show in folder</button>
       <button type="button" class="ghost" id="summary-collect" disabled=${!!collect.disabled} title=${collect.disabled || "Copy this model's files into Dark STL's own folder"} onClick=${collect.run}>${Icon.inbox(14)} Collect…</button>
       ${m.configurable ? null : html`<button type="button" class="ghost" id="summary-arrange" title="Give it its in-game name, or file it in a folder of your own" onClick=${() => arrangeModel(m)}>${Icon.edit(14)} Rename or move…</button>`}
+      ${marks.map((it) => html`<button type="button" key=${it.id} class="ghost" id=${`summary-${it.id}`} title=${it.sub || it.label} onClick=${it.run}>${Icon[it.icon](14, it.filled)} ${it.label}</button>`)}
     </div>
+    ${m.tags?.length || m.collections?.length ? html`<p class="summary-marks" id="summary-marks">${(m.tags || []).map((t) => html`<a key=${t} class="card-tag" href=${searchHash(t)} title=${`Search every game for ${t}`}>${t}</a>`)}
+      ${(m.collections || []).map((c) => html`<a key=${c.id} class="card-location summary-collection" href=${routeHash(`collection:${c.id}`)} title=${`In ${c.name}`}>${Icon.stack(12)} ${c.name}</a>`)}</p>` : null}
     <dl class="insp-dl">
       ${m.game_name && m.game_name !== m.label ? html`<dt>In-game name</dt><dd id="summary-game-name">${m.game_name}</dd>` : null}
       ${m.game_name && m.file_label && m.file_label !== m.game_name ? html`<dt>From its file</dt><dd id="summary-file-label">${m.file_label}</dd>` : null}
@@ -143,12 +149,13 @@ export function ModelSummary({ m }) {
       ${m.lod ? html`<dt>Detail</dt><dd>Low-detail copy (seen from afar in the game)</dd>` : null}
       ${collect.disabled ? html`<dt>Kept</dt><dd>A copy Dark STL keeps in its own library folder</dd>` : null}
     </dl>
+    ${m.configurable || m.related ? html`<${Related} m=${m} id="summary-related" />` : null}
   </div>`;
 }
 
 export function Browser({ route }) {
   const place = placeOf(route);
-  const s = useStore(ui, (st) => ({ overview: st.overview, q: st.q, layout: st.layout, lod: st.lod }));
+  const s = useStore(ui, (st) => ({ overview: st.overview, q: st.q, layout: st.layout, lod: st.lod, cardSize: st.cardSize }));
   const [sort, setSort] = usePageSort(route);
   const libRev = useStore(ui, (st) => st.libRev);
   const game = s.overview?.games.find((g) => g.name === place.game);
@@ -157,7 +164,6 @@ export function Browser({ route }) {
   const [text, setText] = useState(s.q);
   const [result, setResult] = useState(null);
   const [limit, setLimit] = useState(PAGE);
-  const [picked, setPicked] = useState(null);
   const seq = useRef(0);
   useLayoutEffect(() => { setText(s.q); }, [s.q]);
   useEffect(() => { setLimit(PAGE); }, [route, s.q, sort.by, sort.desc, s.lod]);
@@ -174,11 +180,14 @@ export function Browser({ route }) {
     return () => clearTimeout(t);
   }, [text]);
   const items = tiles ? [] : result?.items || [];
-  const selected = items.find((m) => m.id === picked) || null;
+  const pick = useModelSelection(items);
+  const selected = pick.picked;
+  const picked = pick.pickedId;
+  const setPicked = pick.setPicked;
   usePageKeys((e) => {
     const ids = items.map((m) => m.id);
     if (e.key === "Enter") { if (selected) { e.preventDefault(); openModel(selected); } return; }
-    if (e.key === "Escape") { setPicked(null); return; }
+    if (pick.key(e)) return;
     if (!e.key.startsWith("Arrow") || !ids.length || e.ctrlKey || e.metaKey || e.altKey) return;
     let cols = 1;
     if (s.layout !== "list") {
@@ -213,37 +222,36 @@ export function Browser({ route }) {
   const list = s.layout === "list";
   const cols = listColumns(false);
   const fresh = result && result.q === s.q ? result : null;
-  const notes = !place.category ? game.folders.filter((f) => f.notes.length) : [];
-  return html`<${CommandBar} id="browse-head" up=${up} title=${html`<h1 class="crumbs" title=${[...up.map(([n]) => n), name].join(" › ")}>${icon}<span class="crumbs-name">${name}</span></h1>`}
+  return html`<${CommandBar} id="browse-head" up=${up} selection=${pick.bar} title=${html`<h1 class="crumbs" title=${[...up.map(([n]) => n), name].join(" › ")}>${icon}<span class="crumbs-name">${name}</span></h1>`}
       count=${html`<span class="page-count" id="browse-count">${total == null ? "" : plural(total, "model")}</span>`}
       search=${search}
-      tools=${tiles ? null : html`<${ViewSwitch} id="layout-switch" views=${VIEWS} value=${s.layout === "list" ? "list" : "grid"} onChange=${(v) => setPref({ layout: v })} />
+      tools=${tiles ? null : html`${list ? null : html`<${CardSize} />`}<${ViewSwitch} id="layout-switch" views=${VIEWS} value=${s.layout === "list" ? "list" : "grid"} onChange=${(v) => setPref({ layout: v })} />
         <${SortMenu} id="sort" options=${sortOptions(false)} value=${sort.by} onChange=${(v) => setSort({ by: v, desc: false })} />`}
       more=${{ id: "browse-more", title: "This game: folders, rescan, low-detail copies", items: more }} />
   <div class="browser">
     <div class="browse-main">
       ${cat ? html`<${GroupChips} game=${game.name} cat=${cat} group=${place.group} />` : null}
       <div class="browse-scroll">
-        ${notes.map((f) => html`<div class="warn-note folder-note" key=${f.path}>${f.notes.map((n, i) => html`<p key=${i}>${n}</p>`)}
-          ${f.packed ? html`<p><button type="button" class="primary compact folder-unpack" onClick=${() => unpackFolder(f.path, f.packed.game)}>${Icon.inbox(14)} Unpack ${f.packed.game}…</button></p>` : null}</div>`)}
         <${SearchNote} q=${s.q} found=${fresh ? `${plural(fresh.total, "model")} found in ${name}` : ""}
           wider=${s.q ? html`${place.category ? html`<a href=${routeHash(placeRoute(game.name))} id="search-game">Search all of ${game.name}</a>` : null}
             <a href=${searchHash(s.q)} id="search-everywhere" title="The same search in every game in the library">Search every game</a>` : null}
           onClear=${() => { setText(""); ui.set({ q: "" }); }} />
         ${tiles ? html`<div class="subcat-tiles" id="kind-tiles" aria-label="Kinds of model">${game.categories.map((c) => html`<${KindTile} key=${c.name} game=${game.name} cat=${c} lod=${s.lod} />`)}</div>
-          ${!game.categories.length ? html`<div class="empty" id="no-results">No models were found in this game's ${game.folders.length === 1 ? "folder" : "folders"}.</div>` : null}` : null}
+          ${!game.categories.length ? html`<div class="empty" id="no-results">No models were found in this game's ${game.folders.length === 1 ? "folder" : "folders"}.</div>` : null}
+          <${Problems} game=${game} />` : null}
         ${result?.error ? html`<p class="warn-note" role="alert">${result.error}</p>` : null}
         ${!tiles && fresh && !items.length && !result.error ? html`<div class="empty" id="no-results">${s.q ? `Nothing in ${name} matches that search.` : "No models here."}</div>` : null}
         ${!tiles && list && items.length ? html`<${ListHead} cols=${cols} sort=${sort} onSort=${setSort} />` : null}
-        ${!tiles ? html`<div class=${`results ${list ? "list-view lib-list" : "grid-view"}`} role="listbox" aria-label="Models">
-          ${items.map((m) => list ? html`<${ListRow} key=${m.id} m=${m} cols=${cols} selected=${picked === m.id} onPick=${(x) => setPicked(x.id)} />`
-            : html`<${Card} key=${m.id} m=${m} selected=${picked === m.id} where=${whereOf(m, place)} onPick=${(x) => setPicked(x.id)} />`)}
+        ${!tiles ? html`<div class=${`results ${list ? "list-view lib-list" : "grid-view"}${pick.multi ? " picking" : ""}`} role="listbox" aria-label="Models" aria-multiselectable="true"
+            style=${list ? null : cardStyle(s.cardSize)}>
+          ${items.map((m) => list ? html`<${ListRow} key=${m.id} m=${m} cols=${cols} selected=${pick.sel.has(m.id)} onPick=${pick.onPick} onMenu=${pick.onMenu} dragIds=${pick.dragIds} />`
+            : html`<${Card} key=${m.id} m=${m} selected=${pick.sel.has(m.id)} where=${whereOf(m, place)} onPick=${pick.onPick} onMenu=${pick.onMenu} dragIds=${pick.dragIds} />`)}
         </div>` : null}
         ${!tiles && result && result.total > items.length ? html`<button type="button" class="ghost more-btn" id="show-more" onClick=${() => setLimit(limit + PAGE)}>Show more (${(result.total - items.length).toLocaleString()} left)</button>` : null}
       </div>
     </div>
     <${Inspector} page="browse" open=${!matchMedia("(max-width: 1250px)").matches} tabs=${[
-      { id: "details", label: "Details", icon: "info", body: selected ? html`<${ModelSummary} key=${selected.id} m=${selected} />`
+      { id: "details", label: "Details", icon: "info", body: pick.multi ? html`<${SelectionSummary} models=${pick.chosen} />` : selected ? html`<${ModelSummary} key=${selected.id} m=${selected} />`
         : html`<${PlaceSummary} game=${game} cat=${cat} group=${place.group} total=${tiles ? null : result?.total} />` },
     ]} />
   </div>`;

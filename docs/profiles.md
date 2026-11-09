@@ -6,8 +6,8 @@ into kinds and groups, what its texture names mean, which of its text names its 
 besides the models.
 
 Dark STL ships its profiles in `src/darkstl/importers/profiles/` (in the installed app, inside its `engine`
-folder; Settings › Game profiles lists them). Your own go in the **profiles folder** of Dark STL's settings
-folder (Settings › Game profiles › Open the profiles folder):
+folder; Settings › Game tools › Game profiles lists them). Your own go in the **profiles folder** of Dark STL's settings
+folder (Settings › Game tools › Game profiles › Open the profiles folder):
 
 | System  | Profiles folder                                   |
 |---------|---------------------------------------------------|
@@ -16,10 +16,10 @@ folder (Settings › Game profiles › Open the profiles folder):
 | Linux   | `~/.config/darkstl/profiles/`                     |
 
 * A file there with the same file name as a shipped one (`returnal.json`) **replaces** it. Settings › Game
-  profiles › *Copy to change* copies a shipped profile there for you.
+  tools › Game profiles › *Copy to change* copies a shipped profile there for you.
 * Any other file there **adds** a game.
 * A file is read again whenever it changes; rescan the game's folder to see its models sorted the new way.
-* Files that can't be read are listed under Settings › Game profiles, with the reason.
+* Files that can't be read are listed under Settings › Game tools › Game profiles, with the reason.
 
 When you add the folder of an Unreal Engine game Dark STL has no profile for, the add-folder dialog says so and
 asks for the game's name; Dark STL then writes a profile for it into the profiles folder (recognised by its
@@ -89,10 +89,10 @@ Sections other engines don't know are ignored, so one file can carry notes or se
 * `release`: the Unreal Engine release its packages were cooked with: `"auto"` reads it from the game's
   executable; `"4.26"` and the like say it outright (needed for games cooked without version numbers whose
   executable doesn't say). `default_release` is used when `auto` finds nothing.
-* `aes_keys`: keys that open its encrypted `.pak` files. Keys from Settings › Unreal games and from an
+* `aes_keys`: keys that open its encrypted `.pak` files. Keys from Settings › Game tools › Unreal games and from an
   `unreal-keys.txt` in the game's folder are tried too.
 * `usmap.words`: words in a `.usmap` file's name that say it's this game's type mappings (from Settings ›
-  Unreal games); `type_prefix`: what the game's own classes start with (`Oak` for Borderlands 3).
+  Game tools › Unreal games); `type_prefix`: what the game's own classes start with (`Oak` for Borderlands 3).
 * `layout`: `"bl3"` for Borderlands 3's own changes to the package layout; empty for every other game.
 * `look_through_for_animations`: when no animation is named like one, look through every package for those
   made for a model's skeleton (slower the first time).

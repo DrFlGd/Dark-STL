@@ -313,8 +313,21 @@ SHOW_TWICE = """() => {
 
 
 def test_settings_and_themes(page, app, weapon_dir):  # noqa: F811
+    # Settings has three pages: General, Library and Game tools, each with its own sections
     page.goto(app.url + "#/settings")
-    page.wait_for_selector("#settings-games")
+    page.wait_for_selector("#settings-nav")
+    assert page.locator("#settings-nav [data-page]").all_inner_texts()[0].startswith("General")
+    for section in ("#settings-exports", "#settings-previews", "#settings-look", "#settings-painter"):
+        page.wait_for_selector(section)
+    assert page.locator("#settings-games").count() == 0 and page.locator("#settings-oodle").count() == 0
+    page.click('#settings-nav [data-page="tools"]')
+    for section in ("#settings-oodle", "#settings-unreal", "#settings-archives"):
+        page.wait_for_selector(section)
+    assert page.url.endswith("#/settings/tools") and page.locator("#settings-exports").count() == 0
+    page.click('#settings-nav [data-page="library"]')
+    for section in ("#settings-games", "#settings-library", "#settings-textures"):
+        page.wait_for_selector(section)
+    assert page.get_attribute('#settings-nav [data-page="library"]', "aria-current") == "page"
     page.click("#settings-add-folder")
     page.fill("#folder-path", str(weapon_dir / "nope"))
     page.wait_for_selector("#folder-missing")
@@ -322,8 +335,16 @@ def test_settings_and_themes(page, app, weapon_dir):  # noqa: F811
     page.wait_for_selector("text=Recognised as Dark Souls III.")
     page.click("#add-folder-dialog-ok")
     page.wait_for_selector("#kind-tiles")
-    page.goto(app.url + "#/settings")
+    page.goto(app.url + "#/settings/library")
     page.wait_for_selector(f'#folder-list [data-folder="{Path(weapon_dir)}"]')
+    # the previews' switch: characters posed (on by default)
+    page.goto(app.url + "#/settings")
+    page.wait_for_selector("#posed-previews")
+    assert page.is_checked("#posed-previews")
+    page.click("#posed-previews")  # (saved, then shown: a controlled box)
+    page.wait_for_function("document.querySelector('#posed-previews') && !document.querySelector('#posed-previews').checked")
+    page.wait_for_selector("#toast >> text=bind pose")
+    assert app.service.config.posed_previews is False
     for skin in ("partsbin", "layerline", "classic", "drafting"):
         page.select_option("#skin-select", skin)
         assert page.evaluate("document.documentElement.dataset.skin") == skin
@@ -339,9 +360,10 @@ def test_an_unreal_game_without_a_profile_is_added_by_name_and_its_profile_shown
     opened = []
     app.service.host.open_path = opened.append
     root = _unreal_game(tmp_path, "Moonfall", folder="Moonfall Deluxe")
-    page.goto(app.url + "#/settings")
+    page.goto(app.url + "#/settings/tools")
     page.wait_for_selector("#settings-profiles")
     assert page.locator("#profiles-none").count() == 1
+    page.goto(app.url + "#/settings/library")
     page.click("#settings-add-folder")
     page.fill("#folder-path", str(root))
     page.wait_for_selector("#folder-unreal")
@@ -353,8 +375,8 @@ def test_an_unreal_game_without_a_profile_is_added_by_name_and_its_profile_shown
     page.click("#add-folder-dialog-ok")
     page.wait_for_selector('#kind-tiles [data-sub="Weapons"]', timeout=60000)
     assert page.locator('#kind-tiles [data-sub="Characters"]').count() == 1
-    # its profile is listed in Settings, and shown when asked
-    page.goto(app.url + "#/settings")
+    # its profile is listed in Settings (Game tools), and shown when asked
+    page.goto(app.url + "#/settings/tools")
     page.wait_for_selector("#profiles-user")
     assert "Moon Fall" in page.inner_text("#profiles-user")
     page.click("#profiles-user button")
@@ -951,7 +973,7 @@ def test_unpack_a_packed_game(page, packed_ds3):  # noqa: F811
     page.wait_for_selector("#unpack-dialog", state="detached", timeout=30000)
     page.wait_for_selector('#kind-tiles [data-sub="Weapons"]')
     assert page.inner_text("#browse-count") == "4 models"
-    page.goto(page.url.split("#")[0] + "#/settings")
+    page.goto(page.url.split("#")[0] + "#/settings/tools")
     page.wait_for_selector("#settings-archives")
     page.wait_for_selector("#filelists-status >> text=Downloaded lists for Dark Souls III")  # the copied list counts as one
     if shots:
@@ -1652,3 +1674,109 @@ def test_turn_a_bone_save_the_pose_and_attach_a_model(page, app, game):  # noqa:
     assert kept and kept[0]["place"]["bone"] == "hand" and kept[0]["place"]["offset_mm"][0] == 50
     page.click("#rail-export")
     assert page.get_attribute("#export-name", "placeholder").endswith("_Wave")
+
+
+# ----------------------------------------------------------------- Library II (0.48)
+
+
+def test_collections_tags_and_stars_from_the_page(page, app, weapon_dir):  # noqa: F811
+    """A card's right-click menu: Add to collection… (it shows in the menu, with its models on its page), Tag… (a
+    filter when searching every game) and Star (Starred in the menu); a card dragged onto a collection joins it."""
+    from test_app import wait
+
+    wait(app.service, app.service.call("folder_add", {"path": str(weapon_dir)})["job"])
+    page.goto(app.url + "#/browse/Dark%20Souls%20III/Weapons")
+    page.wait_for_selector(".results [data-model]")
+    cards = page.locator(".results [data-model]")
+    first, second = cards.nth(0), cards.nth(1)
+    first_id, second_id = first.get_attribute("data-model"), second.get_attribute("data-model")
+    first.click(button="right")
+    page.click('[data-action="add-collection"]')
+    page.wait_for_selector("#collection-add-dialog")
+    page.fill("#collection-new-name", "To print")
+    page.click("#collection-add-dialog-ok")
+    page.wait_for_selector('#collection-list [data-collection] >> text=To print')
+    link = page.locator("#collection-list [data-collection]").first
+    assert link.locator(".nav-count").inner_text() == "1"
+    # dragged onto it in the menu: added too
+    second.drag_to(link)
+    page.wait_for_function("document.querySelector('#collection-list [data-collection] .nav-count')?.textContent === '2'")
+    # tagged and starred from the menu
+    first.click(button="right")
+    page.click('[data-action="tag"]')
+    page.wait_for_selector("#tag-dialog")
+    page.fill("#tag-input", "needs supports")
+    page.click("#tag-dialog-ok")
+    page.wait_for_selector(f'.results [data-model="{first_id}"] .card-tag >> text=needs supports')
+    second.click(button="right")
+    page.click('[data-action="star"]')
+    page.wait_for_selector(f'.results [data-model="{second_id}"] .card-star')
+    page.wait_for_function("document.querySelector('#nav-starred .nav-count')?.textContent === '1'")
+    # the collection's page lists them in its order
+    link.click()
+    page.wait_for_selector("#collection-head")
+    page.wait_for_function("document.querySelectorAll('#collection-results [data-model]').length === 2")
+    assert page.locator("#collection-results [data-model]").first.get_attribute("data-model") == first_id
+    assert page.inner_text("#collection-name-title") == "To print"
+    # Starred
+    page.click("#nav-starred")
+    page.wait_for_function(f"document.querySelectorAll('#collection-results [data-model]').length === 1")
+    assert page.locator("#collection-results [data-model]").first.get_attribute("data-model") == second_id
+    # the tag is a filter when searching every game
+    page.goto(app.url + "#/search")
+    page.wait_for_selector("#filter-tags .chip-btn")
+    page.click("#filter-tags .chip-btn")
+    page.wait_for_function("document.querySelectorAll('#search-results [data-model]').length === 1")
+    assert page.locator("#search-results [data-model]").first.get_attribute("data-model") == first_id
+    # Home shows the collections
+    page.goto(app.url + "#/")
+    page.wait_for_selector('#collection-tiles [data-collection="starred"]')
+    assert page.locator("#collection-tiles [data-collection]").count() == 2
+
+
+def test_choose_several_and_export_them_through_the_queue(page, app, weapon_dir, tmp_path):  # noqa: F811
+    """Shift+click chooses a run of cards; their right-click menu queues Export as GLB, which writes one file each;
+    the Queue page lists it. A card held under the pointer turns round its model."""
+    from test_app import wait
+
+    out = tmp_path / "exports"
+    app.service.call("settings_set", {"export_dir": str(out)})
+    wait(app.service, app.service.call("folder_add", {"path": str(weapon_dir)})["job"])
+    page.goto(app.url + "#/browse/Dark%20Souls%20III/Weapons")
+    page.wait_for_selector('.results [data-thumb="ok"]', timeout=30000)
+    cards = page.locator(".results [data-model]")
+    # hovered a moment: the picture turns (its turntable drawn in the background, or now)
+    cards.nth(0).hover()
+    page.wait_for_selector(".results .thumb-turn img", timeout=30000)
+    page.mouse.move(0, 0)
+    page.wait_for_selector(".results .thumb-turn", state="detached")
+    cards.nth(0).click()
+    cards.nth(1).click(modifiers=["Shift"])
+    page.wait_for_selector("#browse-head[data-selecting]")
+    assert page.inner_text("#bar-count") == "2 models chosen"
+    page.wait_for_selector("#selection-summary")
+    page.keyboard.press("Escape")
+    page.wait_for_selector("#browse-head[data-selecting]", state="detached")
+    page.keyboard.press("Control+a")
+    page.wait_for_selector("#browse-head[data-selecting]")
+    cards.nth(1).click(button="right")
+    page.click('[data-action="bulk-glb"]')
+    page.wait_for_selector("#toast >> text=Queued: Exporting 2 models as GLB")
+    page.wait_for_selector("#toast >> text=Exported 2 models as GLB", timeout=120000)
+    assert len(list(out.rglob("*.glb"))) == 2
+    page.click("#nav-queue")
+    page.wait_for_selector('#queue-list [data-state="done"]')
+    assert "2 models exported" in page.inner_text("#queue-list")
+
+
+def test_first_run_offers_a_tile_for_each_game(page, app):
+    page.wait_for_selector("#first-games")
+    assert page.locator("#first-games [data-game]").count() >= 20
+    page.click('#first-games [data-game="Elden Ring"]')
+    page.wait_for_selector("#first-game-note")
+    assert "unpack" in page.inner_text("#first-game-note") and "Oodle" in page.inner_text("#first-game-note")
+    page.click('#first-games [data-game="Cyberpunk 2077"]')
+    page.wait_for_selector('#first-game-note[data-game="Cyberpunk 2077"]')
+    page.click("#first-add-game")
+    page.wait_for_selector("#add-folder-dialog")
+    assert page.input_value("#folder-game") == "Cyberpunk 2077"

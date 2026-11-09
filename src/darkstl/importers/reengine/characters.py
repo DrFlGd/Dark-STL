@@ -87,9 +87,25 @@ def characters_from_folders(entries: Iterable[CatalogEntry], game: str) -> list[
     return out
 
 
+def character_part(entry: CatalogEntry, path: Path | None = None) -> tuple[tuple[str, str], str] | None:
+    """((character id, its folder), the part's slot) of a character's part kept in its own folder (see the
+    module doc); None for a model that isn't one. ``path``: where its file is (a package's source path)."""
+    if entry.category != "Characters" or entry.config is not None:
+        return None
+    cid = character_id(entry.stem)
+    if not cid:
+        return None
+    path = Path(path or entry.path)
+    folder = _character_folder(path, cid)
+    if folder is None:
+        return None
+    slot = _slot_of(path, folder)
+    return ((cid, str(folder).lower()), slot) if slot else None
+
+
 def _part_label(stem: str, cid: str, slot: str) -> str:
     rest = stem[len(cid):].strip("_-. ") if stem.lower().startswith(cid) else stem
     return (rest or slot).replace("_", " ")
 
 
-__all__ = ["characters_from_folders"]
+__all__ = ["character_part", "characters_from_folders"]

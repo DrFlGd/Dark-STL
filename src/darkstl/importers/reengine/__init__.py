@@ -17,7 +17,7 @@ from ...collect import RelatedFile
 from ...errors import FormatError
 from ...geometry.mesh import TriMesh, weld
 from ...model import CatalogEntry, MeshOptions, Part, Rig, SourceModel, Texture, frame_matrix
-from ..base import Importer, ScanProgress
+from ..base import Importer, ScanProgress, index_entries, made_by, source_path
 from . import animation, catalog, files, materials
 from . import games as profiles
 from .formats import mdf as mdffmt
@@ -92,6 +92,26 @@ class REEngineImporter(Importer):
         from .characters import characters_from_folders
 
         return from_folders(entries, game) + characters_from_folders(entries, game)
+
+    def related(self, entry: CatalogEntry, entries: list[CatalogEntry]) -> list[tuple[str, CatalogEntry]]:
+        """A character's other parts (body, face, hair...), each kept in a folder of its own below the
+        character's folder."""
+        from .characters import character_part
+
+        def part(e: CatalogEntry):
+            return character_part(e, source_path(e)) if made_by(e, self.key) else None
+
+        mine = part(entry)
+        if mine is None:
+            return []
+        index = index_entries(entries, self.key, lambda e: (part(e) or (None,))[0])
+        out = []
+        for e in index.get(mine[0], []):
+            if e is entry:
+                continue
+            slot = part(e)[1]
+            out.append((f"Same character: {slot.replace('_', ' ')}", e))
+        return out
 
     def can_open(self, path: Path) -> bool:
         return files.is_mesh_file(Path(path))
