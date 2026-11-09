@@ -127,6 +127,11 @@ class IdTechImporter(Importer):
             return []
         return catalog.scan(Path(folder), game, progress, self.cache, self.key)
 
+    def names(self, folder: Path, game: str, entries: list[CatalogEntry], fresh: bool = False) -> dict[str, str]:
+        """None yet: DOOM's names are in its entityDef decls (which name each model) and .blang string tables,
+        which aren't joined to the models yet. The models keep their file names."""
+        return {}
+
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
         from ..fromsoft.formats import oodle
 

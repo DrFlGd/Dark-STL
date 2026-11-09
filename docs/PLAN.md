@@ -137,12 +137,40 @@ the tests call directly.
   and names guessed by varying the last number of known ones (checked against the file's
   contents for the 32-bit hash games). Only model, texture and animation files of `chr/`,
   `parts/`, `obj/`, `asset/` and `map/` are written, into `<app library>/<game>/` (a folder of
-  collected files), with the Oodle DLL. Engine commands `unpack_plan`, `unpack_run`,
+  collected files), with the Oodle DLL, plus the item text (`msg/`) and tables (`param/gameparam/`,
+  and Dark Souls III's `Data0.bdt` or Elden Ring's `regulation.bin` copied beside them) that the
+  in-game names come from (0.44.0). Engine commands `unpack_plan`, `unpack_run`,
   `filelists`, `filelists_download`; CLI `darkstl unpack`. Dark Souls II `.bnd` models are now
   listed too (unchecked on real files).
 - **One library per game.** The menu lists each game with its model count. A game's page shows
   its kinds of model (weapons, armour, characters...) as tiles; a kind shows its groups as chips
   and its models as cards or rows, searchable, with the selected model's details beside them.
+- **In-game names (0.44.0).** `Importer.names(folder, game, entries)` gives the names the game
+  itself uses, {model key: name}, called after each scan (and by a game's *Read in-game names*,
+  which reads the files again). They're kept in the game's library overlay as its `game_names`
+  layer; a model shows the user's name first, then the game's, then the one its file gives
+  (shown muted under it). FromSoftware (`importers/fromsoft/names.py`): the item text
+  (`msg/<language>/item*.msgbnd.dcx`, FMG files read by `formats/fmg.py`) joined through the item
+  tables (PARAM files, `formats/param.py`: EquipParamWeapon's model number, EquipParamProtector's
+  model number and slot bits, NpcParam's name id) from `param/gameparam/gameparam.parambnd.dcx`
+  or the encrypted regulation file (Dark Souls III's `Data0.bdt`, Elden Ring's `regulation.bin`).
+  A weapon model takes the name of the lowest row that uses it (the plain weapon, not its +1 or
+  infusions); a character the name most of its rows give. The table is cached per folder by its
+  files' sizes and dates. Packages keep the name, so a collected copy is named without the game.
+  Cyberpunk, Borderlands, Returnal and the RE Engine games give none yet.
+- **The library index and the search across every game (0.44.0).** `library_index.py` keeps a
+  JSON file per game (`<cache>/library/index-<game>-<hash>.json`) written at each scan: every model's
+  names, kind, file and what's known of it (size in mm, vertices, triangles, parts, textures,
+  animations). Sizes and counts come from a quick read of the file where the importer can do one
+  (`Importer.stats`: FromSoftware FLVER headers, packages' indexes or their glTF's head), read in
+  the background after a scan, and otherwise when a model's preview is drawn or it's opened. The
+  search (the box at the top of the menu, on Home, and its page `#/search?q=`; `/` goes to it) looks
+  through names, in-game names, file names (and tags, once there are any) of every game, grouped by game, with chips for
+  game, kind, has animations, has textures, a triangle range and collected or not.
+- **List view columns (0.44.0).** Name, game (when searching every game), kind and group, size,
+  triangles, parts, textures, animations and collected; a header sorts by it (again: the other way),
+  and each page keeps its own sort in the preferences. Cards show "size · triangles" once known.
+  Home has the search box and the last eight models opened above the game tiles.
 - **Collect into the app.** A game install is tens of gigabytes; the files Dark STL reads for
   the models someone wants are a few megabytes. *Collect into the app…* (a game's ⋯ menu, a
   kind's or group's details, a model's right-click menu or the model page's ⋯ menu) copies the
@@ -806,7 +834,8 @@ src/darkstl/
                 a model, its textures and its animations on disk), materials.py (albedo / normal /
                 height per material), mesh.py (FLVER -> mesh, skinned to a pose), animation.py
                 (skeletons, spline-compressed animations, poses), catalog.py (classifies models
-                by FromSoftware naming)
+                by FromSoftware naming), names.py (in-game names from the item text and tables:
+                formats/fmg.py, formats/param.py)
     redengine/  formats/ (CR2W container, .archive packs, CMesh render blobs, CBitmapTexture),
                 depot.py (depot paths -> loose files or archive members), materials.py (.mi/.mt
                 chains -> texture roles), mesh.py (chunks -> mesh), catalog.py (names learnt
@@ -834,7 +863,10 @@ src/darkstl/
   package.py    model packages: writing and reading them, the asset store (textures, animations)
   game_textures.py  every texture of a game kept in its asset store: listed, estimated, stored
   posing.py     posing a mesh from a skeleton and per-vertex weights (packages)
-  overlay.py    the library overlay: the user's own changes per game (names, folders, textures)
+  overlay.py    the library overlay: the user's own changes per game (names, folders, textures) and
+                the names the game gives its models
+  library_index.py  the library index: every model of a game with its size and counts, for the search
+                and the list's columns
   variations.py saved variations: enhanced models kept beside the model's package
   thumbnails.py preview pictures for the library's cards, cached on disk
   pipeline.py   the three steps with their settings
@@ -845,8 +877,8 @@ src/darkstl/
                 server), meshpack.py (meshes for the 3D view), config.py, desktop.py (window),
                 painter.py (where Model Painter is, and opening an export in it)
   web/          the page: Model Library's interface (styles.css, ui/ layout, inspector,
-                menus) with Dark STL's pages: home.js, browser.js, modelpage.js, configure.js,
-                settings.js
+                menus) with Dark STL's pages: home.js, browser.js, search.js (every game),
+                models.js (cards, list rows and columns), modelpage.js, configure.js, settings.js
 tests/          synthetic game files built byte by byte (no game data in the repo)
 ```
 
@@ -911,7 +943,11 @@ differs:
 - [x] The model page in the order the work happens (0.43.0): the rail's Model, Edit and Export groups,
       one picker for the model worked on, explanations folded once used, a Next strip, a one-row footer,
       and the handoff to Model Painter (For Model Painter GLB, Open in Model Painter)
-- [ ] In-game names (weapon, armor and enemy names from the game's text and param files)
+- [x] In-game names (weapon, armour and character names from the game's text and param files):
+      FromSoftware games (0.44.0)
+- [ ] In-game names for the other importers (Cyberpunk, Borderlands, Returnal, RE Engine)
+- [x] One search across every game, with filters, a list view with sortable columns, sizes and
+      counts on the cards, and Recent on Home (0.44.0)
 - [ ] Batch queue: enhance and export a whole group with one set of settings
 - [ ] Read Elden Ring MATBIN files for exact material maps
 - [ ] Dark Souls II (FLVER2 with its own texture layout)

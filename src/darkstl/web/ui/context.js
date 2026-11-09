@@ -3,7 +3,8 @@
 export const ctx = {};
 export function setContext(values) { Object.assign(ctx, values); }
 
-/** Routes: home | settings | about | browse:<game>[/<category>[/<group>]] (parts URI-encoded) | model:<id>[@<variant>] */
+/** Routes: home | settings | about | search (the search across every game; its words in the hash: #/search?q=…)
+ *  | browse:<game>[/<category>[/<group>]] (parts URI-encoded) | model:<id>[@<variant>] */
 export function routeHash(route) {
   if (route === "home") return "#/";
   if (route.startsWith("browse:")) return `#/browse/${route.slice(7)}`;
@@ -23,7 +24,16 @@ export function routeFromHash(hash) {
     const v = new URLSearchParams(query).get("v");
     return `model:${decodeURIComponent(rest[0])}${v ? `@${encodeURIComponent(v)}` : ""}`;
   }
-  return ["settings", "about"].includes(first) ? first : "home";
+  return ["settings", "about", "search"].includes(first) ? first : "home";
+}
+
+/** The search across every game, for these words. */
+export const searchHash = (q) => `#/search${q ? `?q=${encodeURIComponent(q)}` : ""}`;
+
+/** The words of the search across every game in a hash (#/search?q=…). */
+export function searchOf(hash) {
+  const [path, query = ""] = hash.replace(/^#\/?/, "").split("?");
+  return path.split("/")[0] === "search" ? new URLSearchParams(query).get("q") || "" : null;
 }
 
 /** A place in the library: a game, one of its categories, one of that category's groups. */
