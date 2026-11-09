@@ -24,6 +24,9 @@ from pathlib import Path
 FORMAT = "darkstl-library-index"
 VERSION = 1
 STAT_KEYS = ("size_mm", "vertices", "triangles", "parts", "textures", "animated")
+# what's known to be wrong with a model, for its game's Problems list: it couldn't be read (``error``), textures it
+# names weren't found (``missing_textures``, how many), its animations couldn't be read (``anim_error``)
+PROBLEM_KEYS = ("error", "missing_textures", "anim_error")
 
 
 def model_stats(model, mesh) -> dict:
@@ -39,8 +42,14 @@ def model_stats(model, mesh) -> dict:
     parts = list(getattr(model, "parts", None) or [])
     vertices = sum(int(p.vertices) for p in parts) if parts else int(mesh.n_vertices if mesh is not None else 0)
     triangles = sum(int(p.triangles) for p in parts) if parts else int(mesh.n_faces if mesh is not None else 0)
-    return {"size_mm": size, "vertices": vertices, "triangles": triangles, "parts": len(parts) or 1,
-            "textures": len(model.textures or {}), "animated": model.animations is not None}
+    out = {"size_mm": size, "vertices": vertices, "triangles": triangles, "parts": len(parts) or 1,
+           "textures": len(model.textures or {}), "animated": model.animations is not None}
+    missing = list(getattr(model, "missing_textures", None) or [])
+    if missing:
+        out["missing_textures"] = len(missing)
+    if getattr(model, "_anim_error", None):  # found while drawing its preview in a pose
+        out["anim_error"] = str(model._anim_error)
+    return out
 
 
 def clean_stats(stats: dict | None) -> dict | None:
@@ -54,7 +63,7 @@ def clean_stats(stats: dict | None) -> dict | None:
             out["size_mm"] = [round(float(v), 1) for v in size]
         except (TypeError, ValueError):
             pass
-    for k in ("vertices", "triangles", "parts", "textures"):
+    for k in ("vertices", "triangles", "parts", "textures", "missing_textures"):
         if stats.get(k) is not None:
             try:
                 out[k] = int(stats[k])
@@ -64,6 +73,9 @@ def clean_stats(stats: dict | None) -> dict | None:
         out["animated"] = bool(stats["animated"])
     if stats.get("from"):
         out["from"] = str(stats["from"])
+    for k in ("error", "anim_error"):
+        if stats.get(k):
+            out[k] = str(stats[k])[:300]
     return out or None
 
 
@@ -153,4 +165,4 @@ def read_index(path: str | os.PathLike) -> dict:
     return json.loads(Path(path).read_text("utf-8"))
 
 
-__all__ = ["LibraryIndex", "STAT_KEYS", "clean_stats", "longest", "model_stats", "read_index"]
+__all__ = ["LibraryIndex", "PROBLEM_KEYS", "STAT_KEYS", "clean_stats", "longest", "model_stats", "read_index"]

@@ -153,6 +153,9 @@ class SourceModel:
     paint: PaintRecipe | None = field(default=None, repr=False)  # how ``paint_for`` mixes, for model packages
     paint_uvs: PaintUVs | None = field(default=None, repr=False)  # what such a paint is mixed from on this model
     rig: Rig | None = field(default=None, repr=False)  # the skeleton animations pose, for model packages
+    # the textures the model's materials name that weren't found (in its files or the game's folder): listed on
+    # the game's Problems, with Find textures… and Choose texture…
+    missing_textures: list[str] = field(default_factory=list, repr=False)
 
     def build_mesh(self, options: MeshOptions | None = None) -> TriMesh:
         options = options or MeshOptions()

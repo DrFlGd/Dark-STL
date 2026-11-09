@@ -121,3 +121,49 @@ def scan(root: str | os.PathLike, game: str | None = None,
             progress(i, name)
     entries = sorted(by_stem.values(), key=lambda e: e.sort_key)
     return entries
+
+
+# ---------------------------------------------------------------------------
+# Models that go together (Importer.related)
+
+_RX_TAIL = re.compile(r"^(?P<base>.+?)(?P<tail>_\d{1,2}|_[a-z])$", re.I)
+
+
+def family(stem: str) -> tuple[str, str] | None:
+    """The family a model's file belongs to, and what it is in it: (key, role). Armour pieces with the same id
+    make a set (key ``set:<sex>:<id>``, role the slot); a weapon and its ``_1`` sheath or variant files share
+    the weapon's key (role ``Weapon`` or ``Variant``), a character and its variant files the character's. The
+    low-detail copy of a model (``_l``) is in its model's family with the role ``Low-detail copy``."""
+    s = LOD_SUFFIX.sub("", stem.lower())
+    lod = s != stem.lower()
+    m = _RX_PART.match(s) or _RX_PART_DS2.match(s)
+    if m:
+        kind, sex, pid, rest = m.group("kind"), m.group("sex"), m.group("id"), m.group("rest")
+        if kind in ARMOR_SLOTS:
+            return f"set:{sex}:{pid}", "Low-detail copy" if lod else ARMOR_SLOTS[kind]
+        if kind == "wp":
+            return f"wp:{sex}:{pid}", "Low-detail copy" if lod else "Variant" if rest else "Weapon"
+        return None
+    m = _RX_CHR.match(s)
+    if m:
+        return f"c:{m.group('id')}", "Low-detail copy" if lod else "Variant" if m.group("rest") else "Character"
+    m = _RX_OBJ.match(s) or _RX_AEG.match(s)
+    if m:
+        t = _RX_TAIL.match(s)
+        base = t.group("base") if t and (_RX_OBJ.match(t.group("base")) or _RX_AEG.match(t.group("base"))) else s
+        return f"o:{base}", "Low-detail copy" if lod else "Variant" if base != s else "Object"
+    return None
+
+
+def relation(mine: tuple[str, str], other: tuple[str, str], same_model: bool) -> str | None:
+    """How a model of the same family (``other``: its key and role) is related to one (``mine``), in a few words;
+    None for one not worth listing (another piece's low-detail copy)."""
+    if other[1] == "Low-detail copy":
+        return "Low-detail copy" if same_model else None
+    if mine[1] == "Low-detail copy":
+        return "Full-detail model" if same_model else None
+    if mine[0].startswith("set:"):
+        return f"Same armour set: {other[1].lower()}"
+    if other[1] == "Variant":
+        return "Sheath or variant" if mine[0].startswith("wp:") else "Variant"
+    return {"Weapon": "Its weapon", "Character": "Its character", "Object": "Its object"}.get(other[1], other[1])

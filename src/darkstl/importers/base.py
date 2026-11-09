@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -11,6 +12,47 @@ from ..errors import FormatError
 from ..model import CatalogEntry, SourceModel, Texture
 
 ScanProgress = Callable[[int, str], None]  # (files looked at, the file now); a count below 0: just the text
+
+
+def made_by(entry: CatalogEntry, key: str) -> bool:
+    """Whether ``entry`` was listed by the importer ``key``, or is a model package made from a file it reads."""
+    return entry.importer == key or (entry.importer == "package" and entry.__dict__.get("_source_importer") == key)
+
+
+def source_path(entry: CatalogEntry) -> Path:
+    """The path of the game file a model is read from: for a model package, where that file would be in the
+    package's folder (the package mirrors the game's folders: ``<packages>/<path in the game>.darkpkg``)."""
+    if entry.importer == "package":
+        folder = Path(entry.path).parent
+        if folder.name.endswith(".darkpkg"):
+            return folder.with_name(folder.name[:-len(".darkpkg")])
+    return Path(entry.path)
+
+
+_indexes: dict[tuple, tuple[list, dict]] = {}
+_indexes_lock = threading.Lock()
+KEEP_INDEXES = 8  # lists indexed at once per importer: one per game
+
+
+def index_entries(entries: list[CatalogEntry], name: str, key: Callable[[CatalogEntry], Any]) -> dict[Any, list[CatalogEntry]]:
+    """``entries`` grouped by ``key`` (None: left out), worked out once per list (``name`` tells the importers'
+    indexes apart): for :meth:`Importer.related`, which is asked about many models of the same list."""
+    ident = (name, id(entries), len(entries))
+    with _indexes_lock:
+        kept = _indexes.get(ident)
+        if kept is not None and kept[0] is entries:
+            return kept[1]
+    out: dict[Any, list[CatalogEntry]] = {}
+    for e in entries:
+        k = key(e)
+        if k is not None:
+            out.setdefault(k, []).append(e)
+    with _indexes_lock:
+        _indexes[ident] = (entries, out)  # (the list is held, so its id isn't reused meanwhile)
+        mine = [i for i in _indexes if i[0] == name]
+        for old in mine[:-KEEP_INDEXES]:  # the oldest: lists of the library before it changed
+            del _indexes[old]
+    return out
 
 
 class Importer:
@@ -76,6 +118,14 @@ class Importer:
         of them left out when not known. None when the importer can't tell without opening the model (it's
         then learnt when the model's preview is drawn or it's opened)."""
         return None
+
+    def related(self, entry: CatalogEntry, entries: list[CatalogEntry]) -> list[tuple[str, CatalogEntry]]:
+        """Other models of the game that go with ``entry`` (one this importer listed, or a package made from one:
+        see :func:`made_by`): the rest of an armour set, a weapon's sheath, a character's face and hair, its
+        low-detail copy. ``entries`` is every model of the game in the library, the same list object until the
+        library changes, so it can be indexed once (:func:`index_entries`). Each as (how it's related, in a few
+        plain words, the entry). Empty by default. (Configurable models' parts are added by the library.)"""
+        return []
 
     def configurations(self, folder: Path, game: str, entries: list[CatalogEntry]) -> list:
         """Models in ``folder`` that are built from parts chosen per slot (a weapon and its magazines,
