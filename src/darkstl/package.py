@@ -705,6 +705,7 @@ def _write_model(folder: Path, name: str, model: SourceModel, store: AssetStore,
         "textures": textures, "info": list(model.info), "notes": list(model.notes),
         "sockets": {k: np.asarray(v, np.float64).reshape(-1).tolist() for k, v in model.sockets.items()},
         "flags": {o.key: o.default for o in model.options},
+        "skeleton": len(rig.names) if rig is not None else 0,  # bones the glTF keeps (adjusted on the Pose tab)
         "animations": animations, "animation_note": note,
         **({"paint": paint} if paint else {}), **({"paint_uvs": paint_uvs} if paint_uvs else {}),
     }
@@ -944,11 +945,18 @@ def load_package(path: str | os.PathLike, variant: str | None = None, cache: Pat
     rows = data.get("animations") or []
     anims = None
     rig = None
-    if rows:
+    if rows or data.get("skeleton"):  # (packages before 0.47 keep a skeleton only with animations)
         pm = package_mesh()
-        anims = PackageAnimations(folder, rows, pm.bones, data.get("animation_note"))
-        rig = Rig(pm.bones, pm.parents, pm.bind_local, pm.bind_world,
-                  lambda name, frame: (anims.stored(name).names, anims.stored(name).local(frame)))
+        if rows:
+            anims = PackageAnimations(folder, rows, pm.bones, data.get("animation_note"))
+
+        def pose_locals(name: str, frame: int):
+            if anims is None:
+                raise FormatError(f"{data.get('name')} has no animations to pose it with")
+            return anims.stored(name).names, anims.stored(name).local(frame)
+
+        if pm.bones:
+            rig = Rig(pm.bones, pm.parents, pm.bind_local, pm.bind_world, pose_locals)
 
     def build(options: MeshOptions) -> TriMesh:
         pm = package_mesh()

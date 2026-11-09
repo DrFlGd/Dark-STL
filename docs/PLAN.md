@@ -191,9 +191,11 @@ the tests call directly.
 - **The model page.** The 3D view with the game's textures (or clay, or wireframe), and the
   inspector's tabs in the order the work happens, in three groups on the rail (each tab's icon
   with its short name upright under it; icons only when the page is crowded): **Model**
-  (Configure, Model: parts, importer options, size, file; Textures; Pose: an animation and a
-  frame, with a slider, stepping and playback, only for models with animations), **Edit** (Mesh,
-  Displace, Finish, Cut) and **Export**. Since 0.43.0:
+  (Configure, Model: parts (a read-only list since 0.45.0, with a link to Clean, where parts are left
+  out), importer options, size, file; Textures; Pose: an animation and a frame, with a slider,
+  stepping and playback, bones turned on top, saved poses and attached models, for models with a
+  skeleton, sockets or models attached), **Edit** (Clean, Mesh, Displace, Finish, Cut; see
+  "Cleaning" below) and **Export**. Since 0.43.0:
   - *One place chooses the model worked on*: the Show buttons under the 3D view (Original,
     Enhanced, Finished, Pieces). Finish, Cut and Export say "Working on: Enhanced · change" (the
     link puts the keyboard on those buttons and makes them flash). Finish and Cut show a choice
@@ -300,6 +302,52 @@ AnimSet isn't `bAnimRotationOnly` (the default) or names them in `UseTranslation
 (`ForceMeshTranslationBoneNames` keeps the mesh's); the root keeps its place on the floor. A
 skeletal mesh with bones shows the Pose tab until the game's AnimSets are listed, then only if
 one fits. Collect copies the packages its AnimSets are read from.
+
+**Posing freedom (0.47.0).** On top of an animation's frame, or on the bind pose of a model
+with no animations, any bone can be turned (`posing.py`, the same for every importer that gives a
+`Rig`: FromSoftware and RE Engine models with or without animations, Unreal 3/4/5 skeletal meshes
+whose animations are found, and the packages made of them). A turn is three
+angles in degrees about the bone's own axes, X then Y then Z (three.js's "XYZ" Euler order:
+`Rx · Ry · Rz`), kept by bone name in `MeshOptions.bones`. Each bone's local matrix is the bind
+pose's, replaced by the animation's where it moves the bone, then multiplied by its turn on the
+right; the hierarchy is composed again so children follow, and the bind-pose mesh is skinned with
+its own weights (`world · bind⁻¹`). Without turns the importers pose the model as before. A model
+made of others (configurable models, attached models) passes the turns to each part that has the
+bone (`SourceModel.adjusts_bones`).
+- *Mirror*: bones pair up by the side their names say (`L_`/`R_`, `_l`/`_r`, `Left`/`Right`,
+  ` L `/` R `, `.L`/`.R`, `LUpperArm`/`RUpperArm`, `_L1`/`_R1`), only when the partner exists. A turn
+  is carried across in the model's frame: `D = B·R·Bᵀ` with `B` the bone's bind rotation, reflected
+  across the plane the two bones lie apart in (`S·D·S`, the axis along which the pairs' pivots
+  differ most), then into the partner's frame (`R' = B'ᵀ·D'·B'`).
+- *In the page*: the Pose tab lists the bones as a tree (those that move none of the model's
+  vertices behind *Every bone*), with a find box; the chosen bone gets X, Y and Z sliders with
+  boxes to type in, *Mirror to …*, *Reset bone*; *Reset all*, *Mirror left → right* and back.
+  *Show bones in the 3D view* draws a ball at each bone's pivot (click one to choose it) and three.js's
+  `TransformControls` rotate gizmo, in the bone's local space, on the chosen one; a drag is composed
+  with the turn already there (`q_turn · q_drag`, a bone with mirrored axes conjugated) and sent when
+  it ends.
+- *Saved poses*: the animation, frame and turns kept under a name in the game's library overlay
+  (`poses` of the model's entry, with the skeleton's signature: a hash of its sorted bone names),
+  listed on the Pose tab to apply, rename or delete, and offered to every model of the game with
+  the same signature. The footer under the 3D view names the pose shown; Export's file name, the
+  Generate result's record and saved variations carry the turns.
+- *Attached models*: a model of the library held by a bone or socket of this one, with an offset
+  (millimetres, along the bone's axes), a turn and a scale (`attach.py`, kept in the overlay's
+  `attach` list of the model, by the attached model's path in the game). The model opened is then a
+  wrapper: the base's parts, materials and textures followed by each attached model's (named
+  "Label / part"), its bind-pose mesh weighted whole to the holding bone, posed with the rest, so it
+  follows every frame and turn and goes through Clean, Mesh, Displace, Finish, Cut and Export like
+  the model's own parts. What is attached is part of what the page opens (the overlay's signature for
+  the file); where each one sits is in `MeshOptions.attach`, so moving it only builds the mesh again.
+  A socket holds it where the socket is in the bind pose. Up to 16 per model.
+- *GLB export*: the original model exported as GLB carries its skeleton in the pose shown (each
+  bone's local matrix in the export frame, Y up and scaled like the mesh), the posed mesh bound to it
+  with its four largest weights per vertex, so Blender opens it posed and rigged. An enhanced model's
+  GLB carries the skeleton in its pose without weights (remeshing doesn't keep them).
+- *With the Clean tab (0.45.0)*: the pose, the bones' turns and the attached models make the mesh
+  the Clean tab's steps work on (pose → Clean → Mesh). Its transform (print height, turn, mirror,
+  move, on the floor) is kept as a matrix with the result (`clean.Cleaned.affine`), which moves the
+  bones shown on the Pose tab and the GLB's skeleton with the model.
 
 The library groups models by their FromSoftware naming:
 
@@ -708,6 +756,51 @@ used, so the side stays straight instead of swelling into a bulge. This is on by
   mirrored UV seam and reports the error of each method. At 70k vertices integration on the
   mesh cuts the error against v0.1 by 14 to 59 % on every scene; edge keeping and the blur
   clean-up measured worse on these scenes, so they are off by default.
+- **Thin parts (0.46.0).** Relief is sized by the texture alone, so a claw tip a few
+  millimetres thick can be given more relief than it is thick, pushing its two sides through
+  each other, and a cape a few millimetres from the body can be pushed into it. Before the
+  vertices move, `geometry/room.py` measures every vertex's room on both sides: a ball
+  touching the surface at the vertex is grown inward and outward until it meets another part
+  of the surface (the shrinking-ball method of Ma et al. 2012 on the evenly spaced vertices,
+  with a KD-tree for nearest points). Inward room is half the thickness behind the vertex;
+  outward room is half the gap to whatever is in front of it. Each height *h* is then capped
+  softly by the room *R* on its side: *h' = uR tanh(h / uR)*, where *u* is "Room the relief
+  may use" (Displace › More settings, 80 % by default). Small heights stay as they were, large
+  ones bend away from the room and none reach it, and the cap fades out where nothing was met
+  within the distance looked, so open and thick areas keep all their relief. Each vertex only
+  looks 8 times as far as the largest relief two rings around it, so vertices that barely move
+  cost next to nothing; on dense meshes the room is measured at about 150,000 vertices and the
+  rest take the tightest of those near them. Where a part is thinner than the vertex spacing
+  (a blade's edge, the last millimetre of a point) the cap alone still leaves folds, so the
+  move directions of vertices using much of their room are blended with their neighbours',
+  and triangles still crossing are found (`geometry/intersect.py`) and the heights around them
+  damped, a few rounds. The Enhanced panel and the warnings say how many vertices were lowered
+  and by how much. The test bench's thin scenes (a 4 mm blade, three 60 mm claws, a cape 3 mm
+  behind a body; normal maps of 3-texel relief) count the triangle pairs that pass through
+  each other, at 70k vertices:
+
+  | Scene | Relief | Crossing before | Without | Cap and calmer directions | With (repaired) | Relief kept | Vertices lowered | Seconds (thin parts / whole step) |
+  |---|---|---|---|---|---|---|---|---|
+  | Blade | 2.57 mm | 0 | 6,145 | 450 | 0 | 87.1 % | 17,963 | 1.1 / 1.8 |
+  | Claws | 1.38 mm | 0 | 6,171 | 0 | 0 | 98.4 % | 1,452 | 1.0 / 1.6 |
+  | Cape | 4.45 mm | 0 | 245 | 0 | 0 | 94.1 % | 10,788 | 1.3 / 2.0 |
+
+  At 1M vertices (4 cores) keeping thin parts adds 6.7 to 9.0 s to a 10 to 12 s displacement
+  (claws 11.2 → 17.9 s, blade 11.9 → 21.4 s, cape 10.2 → 17.9 s), and every crossing found
+  (2,104, 9,384 and 88) is repaired; 88 to 99 % of the relief is kept. Displacement of the
+  relief bench's panels is unchanged (nothing on them is thin).
+- **Thickness shading (0.46.0).** The 3D view's *Thickness* shading colours the model by the
+  thickness behind each point, against the thinnest wall the printer makes (0.8 mm unless
+  changed) at the height it will be printed (typed in the small panel over the view; when empty,
+  the size shown: the game's, or the print height the Clean tab scaled it to): red under it, orange to yellow up to two and four times it, clay beyond. Single
+  sheets (capes, banners: no thickness of their own) are red. It is measured the same way as
+  the room above, inward only and against surfaces facing towards or away from the point (so a
+  box's corner doesn't make its walls look thin), on an evenly spaced stand-in of up to 300k
+  points for coarse game meshes. Game parts overlap, so a closed part counts as solid
+  throughout, a ball inside it ends only where it does (not against another part pushed into
+  it), and surfaces hidden inside another closed part are left out (shown as thick enough).
+  The engine sends the thickness with the mesh (`model_mesh` with `thickness=1`, one float per
+  vertex in the packed mesh); the page recolours at once when the height or the wall changes.
 - **Height / grayscale maps.** Used directly, with a chosen height range in millimetres.
 - **Green channel.** DirectX and OpenGL normal maps flip green. FromSoftware's games all use
   DirectX, so their models use that. For other models it is detected per texture (the
@@ -720,6 +813,64 @@ used, so the side stays straight instead of swelling into a bulge. This is on by
   known up to a constant on each UV island, so each island is shifted so the islands agree
   along their seams as well as possible, and what still differs is faded smoothly into each
   island over a few vertex spacings.
+
+### Cleaning (Clean tab, before step 1)
+
+Game models carry what shouldn't be printed: a body under the armour, a lining inside a cuirass, capes
+and cloth with no thickness (often inside a bigger part, not a part of their own), stray faces. The
+**Clean** tab (first in the Edit group, `clean.py`) takes them off before the Mesh step, and sets the
+model's print size. Since 0.45.0.
+
+- **A list of steps per model.** Each step is a JSON object (`op` and its settings) kept in the
+  page's prefs (`cleanPlans`, the last 20 models) and saved with each variation (`mesh.clean`). The
+  engine does the list again on the model as built and posed (`SourceModel.build_mesh`: after the
+  pose and the parts, before everything else), so a step can be taken away at any time, and the
+  list is part of every cache key (`MeshOptions.clean`, keyed by a hash of the list). The tab shows
+  each step as a row with what it did ("removed 2 parts, 1,204 faces") and a button that takes it
+  away. Steps run in order; the transform runs last.
+- **Faces by stable ids.** A step that removes faces records them as part index and the face's place
+  in that part (`part << 32 | index`, kept as runs per part), so it finds the same faces with other
+  parts left out, and finds nothing (saying so) when its part is off. Faces a step adds (filled
+  holes) get ids in a part of their own (`1 << 20` plus a hash of the step).
+- **Parts in or out**: the part checkboxes (moved here from the Model tab) and *Remove parts hidden
+  inside others*: a connected shell whose sample points are 99% inside another part's closed shape.
+  The inside test is a winding number from rays cast along a slightly turned axis over a binned grid
+  of the other part's triangles; open shells are closed first where their openings are small
+  (`_closed`), so an armour piece open at the neck still counts as a shape.
+- **Hidden faces** deeper than a depth (mm): each face's centre and corners are tested inside every
+  other part's shape, and the distance to that shape's surface (a KD-tree over triangle samples plus
+  the exact closest point, searched no further than the depth) must reach the depth. Faces close to
+  an opening (an arm entering a sleeve) stay.
+- **Thin sheets** (Jerred's cloth with little or no thickness): (a) *open* shells whose openings
+  would take more than 30% of their area to close (a cape); (b) *two-sided* cloth, two layers within
+  0.02 mm of each other back to back; (c) a *thin* layer, where the surface behind a face (the
+  closest opposing face, along its inward normal) is nearer than the thickness asked for. Thin faces
+  are joined across edges and with the faces facing them, and narrow rim slivers between the two
+  sides join too, so a flap of cloth in a bigger part comes out as one region. The tab lists regions
+  biggest first (at most 40, the smaller ones counted), each highlighted in the 3D view when pointed
+  at; the ones ticked (none to start with) are removed as one step.
+- **Pick and remove**: a click on the model picks the face under it and spreads across edges where
+  the surface bends less than an angle (`FaceGraph.flood`); Shift+click adds, Alt+click takes away;
+  the picked faces show in the 3D view and are removed as one step. The 3D view's triangles are
+  matched to the engine's faces through the order the mesh is sent in (sorted by material).
+- **Repair**: small holes filled (openings up to a size closed with a fan to their middle, taking the
+  material and texture coordinates around them), duplicate two-sided faces dropped (the same
+  triangle twice, either way round), vertices welded within a distance (faces that close up
+  dropped), flipped faces turned (each surface's faces made to agree, outwards on a closed one, by
+  2-colouring the doubled edge graph and choosing per shell by volume or by the shading normals).
+- **Transform** (one step, changed in place): print height (mm, after the turns) or scale, quarter
+  turns and free angles about X, Y, Z, mirror across X, Y, Z, move (mm), stand on the floor. From then
+  on the model is in print millimetres: the stage footer, Model › Size, the Textures and Displace
+  readouts and Export show print millimetres with the game's own muted beside them, and finders
+  (hidden faces, sheets) measure on the model as it is shown.
+- **Command line**: `--clean` steps on `export` and `enhance`: `hidden-parts`, `hidden-faces[:mm]`,
+  `sheets[:mm]`, `holes[:mm]`, `duplicates[:mm]`, `weld[:mm]`, `normals`, `scale:`, `height:`,
+  `rotate:x,y,z`, `mirror:xyz`, `floor`. Finders there work by rule (what they find now) rather than
+  by recorded faces.
+- **The app's side**: `model_stats` (also `clean_check`) does the list and returns each step's row;
+  `clean_find` (a job: hidden parts, hidden faces, sheets), `clean_select` (a click's flood) and
+  `clean_ids` (the 3D view's triangles as stable ids). Addresses of meshes name the list by the page's
+  hash of it, which the engine learns from the JSON sent first (the last 64 kept).
 
 ### Making it watertight (Finish tab, before cutting or export)
 
@@ -846,7 +997,8 @@ src/darkstl/
     loose.py    the loose pictures in a folder of other tools' models, listed for the texture picker
     package.py  model packages (see package.py), listed and opened like any game's models
   geometry/     TriMesh, subdivision, isotropic remesh, UV seam matching, closest-point queries,
-                displacement
+                displacement, room.py (room around thin parts, thickness, keeping thin parts from
+                clipping), intersect.py (triangles passing through each other)
   textures/     DDS decoding, normal map -> height, grayscale height, UV coverage, texel size
   library.py    the library: game folders scanned by every importer, by game, kind and group
   configs.py    configurable models: configuration lists, finding their files, assembling a choice
@@ -861,6 +1013,7 @@ src/darkstl/
   variations.py saved variations: enhanced models kept beside the model's package
   thumbnails.py preview pictures for the library's cards, cached on disk
   pipeline.py   the three steps with their settings
+  clean.py      the Clean tab's steps: hidden parts and faces, thin sheets, picked faces, repairs, transform
   cut.py        the model made solid and cut into pieces with joints (manifold3d)
   export.py     STL, OBJ, PLY, GLB writers
   cli.py        command line
@@ -869,7 +1022,8 @@ src/darkstl/
                 painter.py (where Model Painter is, and opening an export in it)
   web/          the page: Model Library's interface (styles.css, ui/ layout, inspector,
                 menus) with Dark STL's pages: home.js, browser.js, search.js (every game),
-                models.js (cards, list rows and columns), modelpage.js, configure.js, settings.js
+                models.js (cards, list rows and columns), modelpage.js, configure.js, clean.js,
+                settings.js
 tests/          synthetic game files built byte by byte (no game data in the repo)
 ```
 
@@ -919,7 +1073,13 @@ differs:
       pieces are watertight since 0.9.0 (openings closed, open surfaces thickened, parts
       united); the same could be offered for the whole model
 - [x] Cut into pieces with joints (flat, pegs, dowels, magnets, key) and a clearance per cut
-- [ ] Thin-part thickening for blades and capes
+- [x] Clean tab (0.45.0): parts in or out, parts and faces hidden inside others, thin sheets (open,
+      two-sided, thin) listed and removed, faces picked in the 3D view, holes, duplicates, weld,
+      flipped faces, print height and placement; a list of steps per model, done again on every build
+- [x] Thin parts kept from being displaced through themselves or into close parts (room per
+      vertex, soft cap, calmer directions, crossing repair; bench thin scenes) (0.46.0)
+- [x] Thickness shading: what is too thin to print at a chosen height (0.46.0)
+- Thickening thin parts for printing is print finishing, which moved to Model Painter (0.43.0)
 - [x] Per-material strength and on/off in the material list
 - [x] Use detail normal maps as well as the main normal map (blend maps still to do)
 - [ ] Height-map preview painted on the model before running the full step
@@ -939,6 +1099,9 @@ differs:
 - [ ] In-game names for the other importers (Cyberpunk, Borderlands, Returnal, RE Engine)
 - [x] One search across every game, with filters, a list view with sortable columns, sizes and
       counts on the cards, and Recent on Home (0.44.0)
+- [x] Posing freedom (0.47.0): bones turned on top of a frame or the bind pose (sliders and a
+      rotate gizmo), mirrored left ↔ right by name, saved poses offered to models with the same
+      skeleton, library models attached to a bone or socket, the GLB keeping the skeleton posed
 - [ ] Batch queue: enhance and export a whole group with one set of settings
 - [ ] Read Elden Ring MATBIN files for exact material maps
 - [ ] Dark Souls II (FLVER2 with its own texture layout)
@@ -1058,10 +1221,29 @@ The plan is in Reading id Tech 6/7/8 files above.
   `.motfsm2` setups (rather than in the motlists themselves) are not used.
 - Output is not guaranteed watertight (pieces cut on the Cut tab are); most slicers repair it,
   but Phase 2 adds a proper fix.
+- Keeping thin parts measures room on the evenly spaced mesh, so parts thinner than about two
+  vertex spacings are handled by the repair step rather than the cap, and lose more of their
+  relief there. The Thickness shading counts an open part (most game parts have openings at
+  the neck or cuffs) as a single sheet where its inward ball ends against the front of another
+  part pushed into it; closed parts don't have this problem.
+- Clean tab steps record faces by part and place in the part: a model whose importer later builds it
+  differently (or a configurable model with other parts chosen) may find other faces there; each
+  step's row says what it removed, so such a step can be taken away and made again. Thin sheets
+  are measured on the model as it is: cloth thicker than the thickness asked for is a solid.
 - Without an anibnd beside the model, skinned meshes (characters, armor) are shown in their
   bind pose, which is a T or A pose. Armour pieces take the player's animations
   (`c0000.anibnd`) only when that archive is copied next to them.
 - Animations that use root motion are shown in place; cloth simulated in the game keeps its
   bind pose.
+- Posing freedom: turning bones needs a skeleton and the bind-pose mesh's skin weights. Unreal
+  skeletal meshes with no animations found, Cyberpunk models, and glTF and PSK files from other
+  tools (read in their bind pose without weights) have no bones to turn yet. Packages made
+  before 0.47.0 of models without animations kept no skeleton: collect them again to turn their
+  bones. A socket holds an attached model where the socket is in the bind pose (sockets aren't
+  posed); attach to a bone to have it follow. Mirroring works out the plane from the bind pose's
+  pairs of bones, so a skeleton whose sides aren't mirror images in its bind pose mirrors only
+  roughly. Attaching is for library models (not files opened on their own, or configurable
+  models). An enhanced model's GLB has the skeleton without skin weights, and none when the Clean
+  tab's transform moved or sized the model it was made from.
 - Isotropic remeshing needs the optional `pyacvd` package; the app falls back to subdivision
   without it. The Windows app includes it, with only the parts of VTK it uses.
