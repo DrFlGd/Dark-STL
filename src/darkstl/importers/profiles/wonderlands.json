@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "name": "Tiny Tina's Wonderlands",
+  "engine": "unreal4",
+  "importer": "borderlands",
+  "extends": "Borderlands 3",
+  "recognise": {
+    "files": ["OakGame/Binaries/Win64/Wonderlands.exe", "Wonderlands.exe"],
+    "folder_pattern": "wonderlands|\\bttwl?\\b"
+  },
+  "unreal": {
+    "project": "OakGame",
+    "layout": "",
+    "aes_keys": [],
+    "usmap": {"words": ["wonderlands", "ttwl"], "type_prefix": "oak"}
+  }
+}

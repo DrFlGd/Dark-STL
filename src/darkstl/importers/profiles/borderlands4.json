@@ -1,0 +1,21 @@
+{
+  "format": 1,
+  "name": "Borderlands 4",
+  "engine": "unreal5",
+  "importer": "borderlands",
+  "extends": "Borderlands 3",
+  "recognise": {
+    "files": ["OakGame/Binaries/Win64/Borderlands4.exe", "Borderlands4.exe"],
+    "folder_pattern": "borderlands ?4|\\bbl4\\b"
+  },
+  "unreal": {
+    "project": "OakGame",
+    "layout": "",
+    "aes_keys": [],
+    "usmap": {"words": ["borderlands4", "borderlands 4", "bl4", "oak2"], "type_prefix": "oak"}
+  },
+  "models": {
+    "peek": {"names": "^[a-z]{3}_(ar|ps|sg|sm|sr|hw)_", "folders": ["weapons", "gear"], "containers_only": true,
+             "limit": 40000}
+  }
+}

@@ -11,7 +11,7 @@ from test_app import home, make_service, wait  # noqa: F401 - fixture
 
 from darkstl import library
 from darkstl.errors import FormatError
-from darkstl.importers import importer_for, open_model
+from darkstl.importers import importer_for, open_model, profiles
 from darkstl.importers.renderware import RenderWareImporter, files, games
 from darkstl.importers.renderware.formats import chunks as ck
 from darkstl.importers.renderware.formats import dff as dfffmt
@@ -154,7 +154,7 @@ def test_a_profile_in_the_settings_folder_replaces_the_shipped_one(tmp_path, mon
     override.mkdir()
     (override / "gtasa.json").write_text('{"name": "San Andreas (modded)", "engine": "renderware", '
                                          '"recognise": {"files": ["gta_sa.exe"]}}')
-    monkeypatch.setattr(games, "_settings_profiles", lambda: override)
+    monkeypatch.setattr(profiles, "settings_folder", lambda: override)
     games.forget()
     try:
         assert "San Andreas (modded)" in games.game_names() and SA_NAME not in games.game_names()

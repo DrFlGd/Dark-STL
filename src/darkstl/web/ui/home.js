@@ -199,7 +199,8 @@ function FirstRun({ error }) {
     </div>
     <div class="home-card first-tips">
       <h2>Other folders</h2>
-      <p><b>Any folder of extracted files</b>, such as .partsbnd, .chrbnd, .objbnd, .flver or .mesh files you've pulled out with other tools, or models FModel, UModel or Blender exported (.gltf, .glb, .psk, .pskx, .obj) with their textures beside them.</p>
+      <p><b>Any folder of extracted files</b>, such as .partsbnd, .chrbnd, .objbnd, .flver or .mesh files you've pulled out with other tools, or models FModel, UModel or Blender exported (.gltf, .glb, .fbx, .psk, .pskx, .obj) with their textures beside them.</p>
+      <p><b>Another Unreal Engine 4 or 5 game</b>: choose its install folder as it is. Dark STL asks for its name, sorts its models by the folders the game keeps them in, and saves a game profile for it (Settings › Game tools › Game profiles) so the folder is recognised from then on.</p>
       <p><b>Models Dark STL collected before</b> (on this computer or another): choose its library folder, or one game's folder in it, with <i>Add collected files</i>. Each game can come from either its own folder or its collected files.</p>
       <p class="muted">Once a game is listed, the models you want can be collected into the app, so the game's folder isn't needed afterwards.</p>
     </div>

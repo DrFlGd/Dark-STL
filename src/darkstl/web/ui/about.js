@@ -21,7 +21,7 @@ export function About() {
     </section>
     <section class="ls-section">
       <h2>Games and files</h2>
-      <p>${games.length ? `Recognised by their folders: ${games.join(", ")}.` : ""} Models are read from .partsbnd, .chrbnd, .objbnd, .geombnd and .mapbnd files (also inside .dcx), loose .flver files, and models other tools export: glTF (.gltf, .glb) from Blender or FModel, ActorX (.psk, .pskx) from UModel or FModel, with the textures their materials name, and .obj files.
+      <p>${games.length ? `Recognised by their folders: ${games.join(", ")}.` : ""} Models are read from .partsbnd, .chrbnd, .objbnd, .geombnd and .mapbnd files (also inside .dcx), loose .flver files, and models other tools export: glTF (.gltf, .glb) from Blender or FModel, FBX (.fbx) from Blender, Maya, Unreal and the modding tools, ActorX (.psk, .pskx) from UModel or FModel, with the textures their materials name, and .obj files.
         The FromSoftware games that pack them in archives (Dark Souls, Dark Souls II and III, Sekiro, Elden Ring) are unpacked by Dark STL itself, models only, into its own library.
         Cyberpunk 2077 models (.mesh with .xbm textures) are read straight from the game's .archive files, or from files exported with WolvenKit.
         Resident Evil models (RE Engine .mesh files with their .mdf2 materials and .tex textures) are read extracted or inside .pak archives with a file list.

@@ -1,8 +1,9 @@
 """What differs between GTA III, Vice City and San Andreas: one game profile (JSON) each.
 
-The profiles ship in ``profiles/*.json`` beside this file, and a file of the same name in the
-settings folder's ``profiles/`` folder replaces one (so a profile can be tuned without a release).
-Each names its engine backend (``renderware``) and:
+The profiles ship with the other games' in ``importers/profiles/`` (``gta3.json``, ``gtavc.json``,
+``gtasa.json``) and are read by the shared loader (:mod:`darkstl.importers.profiles`): a file of the same
+name in the settings folder's ``profiles/`` folder replaces one, and a new file with ``"engine":
+"renderware"`` adds a game. Each names its engine backend (``renderware``) and:
 
 - ``recognise``: files (below the game folder) and folder names that say a folder is the game;
 - ``level_files``: the level lists naming the game's ``.ide`` and ``.ipl`` files, in load order;
@@ -16,14 +17,13 @@ Each names its engine backend (``renderware``) and:
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 
+from .. import profiles as shared
+
 ENGINE = "renderware"
-PROFILE_DIR = Path(__file__).with_name("profiles")
 
 
 @dataclass
@@ -64,42 +64,22 @@ class Profile:
         )
 
 
-def _settings_profiles() -> Path | None:
-    try:
-        from ...app.config import config_dir
-    except Exception:  # noqa: BLE001 - no app settings (tests, command line without them)
-        return None
-    try:
-        return Path(config_dir()) / "profiles"
-    except Exception:  # noqa: BLE001
-        return None
-
-
-@lru_cache(maxsize=4)
-def _load(override_dir: str | None) -> tuple[Profile, ...]:
-    files: dict[str, Path] = {p.name.lower(): p for p in sorted(PROFILE_DIR.glob("*.json"))}
-    if override_dir and os.path.isdir(override_dir):
-        for p in sorted(Path(override_dir).glob("*.json")):
-            files[p.name.lower()] = p  # replaces the shipped profile of the same name, or adds one
-    out = []
-    for p in files.values():
-        try:
-            data = json.loads(p.read_text("utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(data, dict) or data.get("engine") != ENGINE or not data.get("name"):
-            continue
-        out.append(Profile.from_json(data, str(p)))
-    return tuple(out)
-
-
 def profiles() -> tuple[Profile, ...]:
-    d = _settings_profiles()
-    return _load(str(d) if d is not None else None)
+    """The RenderWare games' profiles, through the shared loader (shipped, or replaced by the settings folder)."""
+    found = tuple(shared.profiles(ENGINE))
+    known = _cache.get("from", ())
+    if len(known) != len(found) or any(a is not b for a, b in zip(known, found)):
+        _cache["from"] = found
+        _cache["profiles"] = tuple(Profile.from_json(p.data, str(p.source or "")) for p in found)
+    return _cache["profiles"]
+
+
+_cache: dict = {}
 
 
 def forget() -> None:
-    _load.cache_clear()
+    shared.forget()
+    _cache.clear()
 
 
 def profile(game: str | None) -> Profile | None:
@@ -113,25 +93,7 @@ def game_names() -> tuple[str, ...]:
     return tuple(p.name for p in profiles())
 
 
-def find_ci(root: Path, rel: str) -> Path | None:
-    """``rel`` below ``root`` as it is named on disk, or None."""
-    cur = Path(root)
-    for part in rel.replace("\\", "/").split("/"):
-        if not part:
-            continue
-        nxt = cur / part
-        if nxt.exists():
-            cur = nxt
-            continue
-        try:
-            names = {n.lower(): n for n in os.listdir(cur)}
-        except OSError:
-            return None
-        found = names.get(part.lower())
-        if found is None:
-            return None
-        cur = cur / found
-    return cur
+find_ci = shared.find_ci
 
 
 def recognise(folder: Path) -> Profile | None:

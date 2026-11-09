@@ -29,24 +29,45 @@ GAME_WL = "Tiny Tina's Wonderlands"
 GAME_BL4 = "Borderlands 4"
 UE3_GAMES = (GAME_BL1, GAME_BL2, GAME_TPS)
 
-# executables and folders that say which game a folder is
-_MARKERS = [
-    (GAME_BL4, ("OakGame/Binaries/Win64/Borderlands4.exe", "Borderlands4.exe")),
-    (GAME_WL, ("OakGame/Binaries/Win64/Wonderlands.exe", "Wonderlands.exe")),
-    (GAME_BL3, ("OakGame/Binaries/Win64/Borderlands3.exe", "Borderlands3.exe")),
+# executables and folders that say which game a folder is: the Unreal 3 games' here (a game profile in the
+# settings folder can add to them, see _ue3_markers), the Unreal 4/5 games' in their profiles
+_UE3_MARKERS = [
     (GAME_TPS, ("Binaries/Win32/BorderlandsPreSequel.exe", "BorderlandsPreSequel.exe")),
     (GAME_BL2, ("Binaries/Win32/Borderlands2.exe", "Borderlands2.exe")),
     (GAME_BL1, ("Binaries/Borderlands.exe", "Binaries/Win64/BorderlandsGOTY.exe", "Borderlands.exe",
                 "BorderlandsGOTY.exe")),
 ]
-_HINTS = [
-    (GAME_BL4, re.compile(r"borderlands ?4|\bbl4\b", re.I)),
-    (GAME_WL, re.compile(r"wonderlands|\bttwl?\b", re.I)),
-    (GAME_BL3, re.compile(r"borderlands ?3|\bbl3\b", re.I)),
+_UE3_HINTS = [
     (GAME_TPS, re.compile(r"pre[-_ ]?sequel|\btps\b", re.I)),
     (GAME_BL2, re.compile(r"borderlands ?2|\bbl2\b", re.I)),
     (GAME_BL1, re.compile(r"borderlands(?! ?[234])|\bbl1\b", re.I)),
 ]
+
+
+def _ue4_profiles():
+    from ..unreal.profile import unreal_profiles
+
+    return [p for p in unreal_profiles("borderlands")]
+
+
+def _ue3_markers() -> list[tuple[str, tuple[str, ...]]]:
+    """The Unreal 3 games' markers, with the files a profile of the same name in the settings folder lists."""
+    from .. import profiles
+
+    out = []
+    for game, markers in _UE3_MARKERS:
+        extra = profiles.overrides("unreal3", game).get("recognise", {}) or {}
+        out.append((game, tuple(str(f) for f in extra.get("files") or []) + markers))
+    return out
+
+
+def _markers() -> list[tuple[str, tuple[str, ...]]]:
+    """(game, the files that say a folder is it), the Unreal 4/5 games first (from their profiles)."""
+    return [(p.name, tuple(p.recognise_files)) for p in _ue4_profiles()] + _ue3_markers()
+
+
+def _hints() -> list[tuple[str, re.Pattern]]:
+    return [(p.name, p.folder_pattern) for p in _ue4_profiles() if p.folder_pattern is not None] + _UE3_HINTS
 
 
 def is_member(path: Path) -> bool:
@@ -99,15 +120,17 @@ def _root(path: Path) -> Path:
 
 def detect_game(folder: Path) -> str | None:
     folder = Path(folder)
+    markers = _markers()
     for candidate in [folder, *list(folder.parents)[:3]]:
-        for game, markers in _MARKERS:
-            if any((candidate / m).exists() for m in markers):
+        for game, files in markers:
+            if any((candidate / m).exists() for m in files):
                 return game
     text = str(folder)
     unreal4 = is_unreal4_folder(folder)
     has_packages = not unreal4 and _has_packages(folder)
-    for game, rx in _HINTS:
-        if game in UE4_GAMES and not unreal4:
+    ue4 = {p.name for p in _ue4_profiles()} | set(UE4_GAMES)
+    for game, rx in _hints():
+        if game in ue4 and not unreal4:
             continue
         if rx.search(text) and (has_packages or unreal4 or (folder / "WillowGame").is_dir()):
             return game

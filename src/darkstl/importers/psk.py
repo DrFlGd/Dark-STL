@@ -217,32 +217,17 @@ def _nearest(paths: list[Path], near: Path) -> Path:
     return min(paths, key=score)
 
 
-class PskImporter(LoosePictures, Importer):
-    key = "psk"
-    name = "ActorX PSK (UModel, FModel)"
-    file_filter = "ActorX models (*.psk *.pskx)"
+class NamedTextures:
+    """For an importer of models other tools exported: finds pictures and material files by name in the folder
+    the models were exported into (a model's own folder's parent, or the nearest export folder)."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._indexes: dict[Path, _Index] = {}
 
-    def can_open(self, path: Path) -> bool:
-        return Path(path).suffix.lower() in SUFFIXES
-
-    def scan(self, folder: Path, game: str, progress: ScanProgress | None = None) -> list[CatalogEntry]:
-        from ..listing import files_under
-
-        folder = Path(folder)
-        out = []
-        for path in files_under(folder):
-            if path.suffix.lower() in SUFFIXES:
-                rel = path.parent.relative_to(folder).as_posix()
-                out.append(CatalogEntry(game, "Models", "" if rel == "." else rel, path.stem, path.stem, path,
-                                        importer=self.key, packed=False))
-        self.note(folder, out)
+    def forget_index(self, folder: Path) -> None:
         with self._lock:
-            self._indexes.pop(folder, None)  # looked through again when a model is opened
-        return out
+            self._indexes.pop(Path(folder), None)  # looked through again when a model is opened
 
     def _root(self, path: Path) -> Path:
         """The folder a model's textures and material files are looked for in."""
@@ -320,6 +305,29 @@ class PskImporter(LoosePictures, Importer):
                 roles[role] = hit
                 details.append(f"{param or role}: {hit.name}")
             out.append((roles.get(ALBEDO), roles.get(NORMAL), roles.get(SPECULAR), guessed, details, missing))
+        return out
+
+
+class PskImporter(NamedTextures, LoosePictures, Importer):
+    key = "psk"
+    name = "ActorX PSK (UModel, FModel)"
+    file_filter = "ActorX models (*.psk *.pskx)"
+
+    def can_open(self, path: Path) -> bool:
+        return Path(path).suffix.lower() in SUFFIXES
+
+    def scan(self, folder: Path, game: str, progress: ScanProgress | None = None) -> list[CatalogEntry]:
+        from ..listing import files_under
+
+        folder = Path(folder)
+        out = []
+        for path in files_under(folder):
+            if path.suffix.lower() in SUFFIXES:
+                rel = path.parent.relative_to(folder).as_posix()
+                out.append(CatalogEntry(game, "Models", "" if rel == "." else rel, path.stem, path.stem, path,
+                                        importer=self.key, packed=False))
+        self.note(folder, out)
+        self.forget_index(folder)
         return out
 
     def related_files(self, path: Path, textures: bool = True, animations: bool = True, lod: bool = False):
@@ -418,4 +426,4 @@ class PskImporter(LoosePictures, Importer):
         return None
 
 
-__all__ = ["PskFile", "PskImporter", "material_textures", "read_psk", "texture_name"]
+__all__ = ["NamedTextures", "PskFile", "PskImporter", "material_textures", "read_psk", "texture_name"]

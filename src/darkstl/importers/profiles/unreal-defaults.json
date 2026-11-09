@@ -1,0 +1,64 @@
+{
+  "format": 1,
+  "name": "Unreal game",
+  "engine": "unreal4",
+  "defaults": true,
+  "unreal": {
+    "release": "auto",
+    "aes_keys": [],
+    "look_through_for_animations": true
+  },
+  "models": {
+    "skeletal": "^(sk|skm|skel|skel_mesh|skelmesh)_",
+    "static": "^(sm|stm|staticmesh)_",
+    "skip": "(_physics|_phys|_phy|_physicsasset|_collision|_col|_pa|_anim|_abp|_bp|_skeleton|_skel)$",
+    "label_prefix": "^(SK|SKM|SKEL|SM|STM)_",
+    "peek": {
+      "names": "unnamed",
+      "limit": 60000,
+      "not_a_mesh": "^(t|tx|tex|m|mi|mic|mf|mm|mat|mpc|pm|a|an|anim|am|as|abp|bs|bp|bpi|wbp|w|ui|ico|s|sc|sw|sfx|snd|cue|ak|mus|vo|dt|da|ct|cv|curve|e|enum|st|f|font|ns|ne|nps|p|ps|fx|vfx|pfx|cs|ls|l|lvl|seq|skel|sks|phys|pa|pp|ppm|lut|hlod|ndf|ds|dlg|gc|ga|ge|gd|tag|ai|bt|bb|eqs|env|rt|vt|cube|hdr|media|mp)_",
+      "skip_folders": ["audio", "sound", "sounds", "wwise", "wwiseaudio", "ui", "hud", "movies", "localization",
+                       "textures", "materials", "animations", "anims", "blueprints", "fx", "vfx", "effects",
+                       "particles", "niagara", "data", "datatables", "curves", "fonts", "cinematics", "sequences",
+                       "developers", "collections", "splash", "music"]
+    },
+    "group_skip": ["meshes", "mesh", "models", "model", "skeletalmeshes", "staticmeshes", "common", "shared",
+                   "geometry", "geo", "art"],
+    "top_skip": ["art", "assets", "asset", "core", "game", "main", "meshes", "models", "content"],
+    "kinds": [
+      {"folders": ["weapons", "weapon", "guns", "gun", "firearms", "melee", "swords", "blades", "bows"],
+       "kind": "Weapons", "group": ["{1|Weapons}"]},
+      {"folders": ["armor", "armour", "armors", "armours", "outfits", "outfit", "clothing", "clothes", "costumes",
+                   "costume", "apparel", "equipment", "attire"], "kind": "Armor", "group": ["{1}"]},
+      {"folders": ["enemies", "enemy", "creatures", "creature", "monsters", "monster", "bosses", "boss", "mobs",
+                   "animals", "animal", "wildlife", "beasts", "aliens"], "kind": "Characters",
+       "group": ["Creatures", "{1}"]},
+      {"name_has": ["head", "hair", "face", "beard", "eyebrow", "eyelash", "eyeball"], "class": "SkeletalMesh",
+       "folders": ["characters", "character", "chars", "player", "players", "heroes", "hero", "pawns", "humans",
+                   "people", "npc", "npcs", "body", "bodies"], "kind": "Faces & Hair", "group": ["{1}"]},
+      {"folders": ["characters", "character", "chars", "player", "players", "heroes", "hero", "pawns", "humans",
+                   "people", "npc", "npcs", "body", "bodies"], "kind": "Characters", "group": ["{1}"]},
+      {"folders": ["vehicles", "vehicle", "cars", "car", "ships", "aircraft", "boats", "mounts"], "kind": "Objects",
+       "group": ["Vehicles", "{1}"]},
+      {"folders": ["environment", "environments", "env", "levels", "level", "maps", "map", "world", "worlds",
+                   "architecture", "buildings", "building", "structures", "foliage", "vegetation", "terrain",
+                   "landscape", "rocks", "trees", "levelart", "biomes", "biome", "modular", "kits", "dungeons",
+                   "interiors", "exteriors"], "kind": "Map Pieces", "group": ["{1|top}"]},
+      {"folders": ["props", "prop", "items", "item", "pickups", "pickup", "objects", "object", "interactables",
+                   "interactable", "furniture", "collectibles", "consumables", "decorations", "tools"],
+       "kind": "Objects", "group": ["{1|Props}"]}
+    ],
+    "otherwise": {
+      "StaticMesh": {"kind": "Objects", "group": ["{top}"]},
+      "SkeletalMesh": {"kind": "Characters", "group": ["{top}"]}
+    }
+  },
+  "textures": {"normal_green": "directx", "roles": {}},
+  "names": {
+    "tables": "(^|/)(st_[^/]*|[^/]*stringtable[^/]*)\\.uasset$|/stringtables?/[^/]*\\.uasset$",
+    "keys": "([_.]|^)(name|displayname|itemname|title)$",
+    "skip_keys": "desc|flavou?r|lore|tooltip|hint|subtitle|message|prompt|hidden",
+    "limit": 400
+  },
+  "collect": {"engine_release": true, "usmap": true}
+}
