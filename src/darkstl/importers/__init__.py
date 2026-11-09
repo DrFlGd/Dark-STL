@@ -15,6 +15,7 @@ from .base import Importer
 from .borderlands import BorderlandsImporter
 from .fromsoft import FromSoftwareImporter
 from .gltf import GltfImporter
+from .idtech import IdTechImporter
 from .package import PackageImporter
 from .psk import PskImporter
 from .redengine import RedEngineImporter
@@ -22,7 +23,7 @@ from .reengine import REEngineImporter
 from .returnal import ReturnalImporter
 from .wavefront import WavefrontImporter
 
-IMPORTERS: list[Importer] = [PackageImporter(), FromSoftwareImporter(), RedEngineImporter(), REEngineImporter(),
+IMPORTERS: list[Importer] = [PackageImporter(), FromSoftwareImporter(), RedEngineImporter(), IdTechImporter(), REEngineImporter(),
                              ReturnalImporter(), BorderlandsImporter(), GltfImporter(), PskImporter(),
                              WavefrontImporter()]
 

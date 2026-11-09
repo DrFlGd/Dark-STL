@@ -114,7 +114,7 @@ def _is_part(item: dict, items: list[dict]) -> bool:
 def assert_same(before: dict, after: dict) -> None:
     for key, shown in before.items():
         assert key in after, f"{key} isn't listed in the collected copy"
-        assert after[key] == shown, f"{key} differs in the collected copy"
+        assert after[key] == shown, f"{key} differs in the collected copy: {after[key]} vs {shown}"
 
 
 @pytest.fixture(params=[False, True], ids=["files", "packages"])
@@ -367,3 +367,24 @@ def test_borderlands_2_animations(home, packages, tmp_path):  # noqa: F811
     before, after, _plan = collect_and_uninstall(home, root, bl_files.GAME_BL2, packages=packages)
     assert any("AnimSet_Siren: Wave" in shown[0][0]["animations"] for shown in before.values())
     assert_same(before, after)
+
+
+def test_doom_eternal_from_containers(home, packages, tmp_path):  # noqa: F811
+    """DOOM Eternal's models (read from .resources containers and .streamdb pieces), their textures and an imp's
+    animation come along, as decompressed copies or as packages."""
+    import synth_idtech
+
+    root = tmp_path / "DOOMEternal"
+    synth_idtech.eternal_install(root)
+    before, after, _plan = collect_and_uninstall(home, root, packages=packages)
+    assert any("turn" in shown[0][0]["animations"] for shown in before.values()), "the imp can be posed"
+    assert_same(before, after)
+
+
+def test_every_texture_of_doom_eternal(home, tmp_path):  # noqa: F811
+    import synth_idtech
+
+    root = tmp_path / "DOOMEternal"
+    synth_idtech.eternal_install(root)
+    t = keep_every_texture_and_uninstall(home, root)
+    assert t["listed"] == 3
