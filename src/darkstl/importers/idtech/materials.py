@@ -150,7 +150,7 @@ class ImageRef:
         with self._lock:
             if self._img is None:
                 loc = self.store.loc("image", self.name)
-                darkages = self.store.profile.darkages_stream_ids
+                darkages = self.store.profile.darkages
                 holder: dict = {}
 
                 def fetch(i: int, size: int):
@@ -167,7 +167,7 @@ class ImageRef:
         data = self.store.read("image", self.name)
         img, _ = imgfmt.read_header(data)
         loc = self.store.loc("image", self.name)
-        darkages = self.store.profile.darkages_stream_ids
+        darkages = self.store.profile.darkages
         if not img.streamed_mips:
             return []
         if img.single_stream:

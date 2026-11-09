@@ -77,9 +77,31 @@ def _index_for(store: Store, cache: Path | None) -> _SkeletonIndex:
     return idx
 
 
-def anim_info(data: bytes) -> tuple[str, int, float]:
+def anim_info(data: bytes, darkages: bool = False) -> tuple[str, int, float]:
+    if darkages:  # the header says it all; the frame sets may be in the StreamDB
+        h = animfmt.read_darkages_header(data)
+        return h.skeleton, h.frames, h.fps
     a = animfmt.read_md6_anim(data)
     return a.skeleton, a.frames, a.fps
+
+
+def read_anim(store: Store, name: str) -> animfmt.Md6Anim:
+    """An animation of the store's game, with its streamed frame sets."""
+    data = store.read("anim", name)
+    if not store.profile.darkages:
+        return animfmt.read_md6_anim(data)
+    hash_ = store.loc("anim", name).hash
+    return animfmt.read_darkages_anim(
+        data, lambda layout, size: store.stream(store.anim_piece_id(hash_, layout), size))
+
+
+def anim_pieces(store: Store, name: str) -> list[tuple[int, int]]:
+    """The StreamDB pieces (id, size) an animation's frame sets are in (The Dark Ages)."""
+    if not store.profile.darkages:
+        return []
+    data = store.read("anim", name)
+    hash_ = store.loc("anim", name).hash
+    return [(store.anim_piece_id(hash_, layout), size) for layout, size in animfmt.darkages_pieces(data)]
 
 
 class IdAnimations:
@@ -118,7 +140,7 @@ class IdAnimations:
                 got = idx.data.get(name)
                 if got is None:
                     try:
-                        got = list(anim_info(self.store.read("anim", name)))
+                        got = list(anim_info(self.store.read("anim", name), self.store.profile.darkages))
                     except (FormatError, OSError, ValueError, IndexError, Exception):  # noqa: BLE001
                         got = ["", 0, 0.0]
                     idx.data[name] = got
@@ -162,7 +184,7 @@ class IdAnimations:
         with self._lock:
             a = self._anims.get(info.source)
             if a is None:
-                a = animfmt.read_md6_anim(self.store.read("anim", info.source))
+                a = read_anim(self.store, info.source)
                 if len(self._anims) > 8:
                     self._anims.clear()
                 self._anims[info.source] = a

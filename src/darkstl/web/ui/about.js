@@ -12,7 +12,7 @@ export function About() {
   <div class="pages"><div class="library-settings about-page">
     <section class="ls-section">
       <h2>What it does</h2>
-      <p>Dark STL lists the models in your games (FromSoftware's, Cyberpunk 2077, the RE Engine games, Borderlands, Returnal, Grand Theft Auto III, Vice City, San Andreas, IV and V, and DOOM Eternal) by game and kind, shows them with their textures, and makes print-ready meshes from them in two steps:</p>
+      <p>Dark STL lists the models in your games (FromSoftware's, Cyberpunk 2077, the RE Engine games, Borderlands, Returnal, Grand Theft Auto III, Vice City, San Andreas, IV and V, DOOM Eternal and DOOM: The Dark Ages) by game and kind, shows them with their textures, and makes print-ready meshes from them in two steps:</p>
       <ol class="how-list">
         <li><b>Even out the vertices.</b> Game models put few vertices on large flat areas and many on small details. Dark STL spreads the number of vertices you choose evenly over the surface, so detail can go anywhere.</li>
         <li><b>Raise the texture detail.</b> The game paints fine relief (scratches, engravings, stitching, scales) into its normal maps. Dark STL turns that into height and moves each vertex by it.</li>
@@ -31,7 +31,7 @@ export function About() {
         Grand Theft Auto III, Vice City and San Andreas models (RenderWare .dff with .txd textures) are read straight from the games' .img archives or loose; the games' own lists sort them and name the vehicles, cars come in their colours, and characters are posed with the game's animations (.ifp).
         Grand Theft Auto V models (.ydr, .ydd, .yft with .ytd textures, in the original and the Enhanced layouts) are read straight from the game's .rpf archives, opened with the keys in your own GTA5.exe; vehicles come with their wheels, each character is an outfit of its components, and characters are posed with the game's clips (.ycd).
         Grand Theft Auto IV models (.wdr, .wdd, .wft with .wtd textures) are read the same way from the game's .img archives, opened with the key in your own GTAIV.exe, the episodes' models with them.
-        DOOM Eternal (id Tech 7) models, textures, skeletons and animations are read straight from the game's .resources containers and .streamdb files.
+        DOOM Eternal (id Tech 7) and DOOM: The Dark Ages (id Tech 8) models, textures, skeletons and animations are read straight from the games' .resources containers and .streamdb files.
         Each game is read by its own importer, so more games can be added; generating and exporting work the same for all of them.</p>
       <p class="muted">Dark STL needs your own copies of the games. It contains no code or data from them.</p>
     </section>
@@ -46,7 +46,7 @@ export function About() {
         <li><span>The RenderWare formats of the Grand Theft Auto games as the ${link("https://gtamods.com/wiki/Main_Page", "GTAMods wiki")} documents them and ${link("https://github.com/aap/librw", "librw")} by aap (MIT) reads them (Dark STL reads them with code of its own)</span></li>
         <li><span>The GTA V formats (RPF7 archives, the NG cipher, RSC7 resources, drawables, textures and clips) as ${link("https://github.com/dexyfex/CodeWalker", "CodeWalker")} by dexyfex (MIT) reads them, with its published hashes of the archive keys; the keys themselves are found in your copy of the game and are not part of Dark STL</span></li>
         <li><span>The GTA IV formats (IMG3 archives, RSC5 resources, drawables, fragments, textures) as ${link("https://github.com/ahmed605/SparkIV", "SparkIV")}'s RageLib by Aru documents them, with its published hash of the archive key (Dark STL reads them with code of its own)</span></li>
-        <li><span>The id Tech 7 and 8 formats (DOOM Eternal's .resources containers, StreamDB files, models, images, skeletons and animations) as ${link("https://github.com/jandk/valen", "Valen")} by jandk (MIT) reads them, and ${link("https://github.com/FlavorfulGecko5/EntityAtlan", "EntityAtlan")} by FlavorfulGecko5 (MIT); Dark STL reads them with code of its own</span></li>
+        <li><span>The id Tech 7 and 8 formats (DOOM Eternal's and The Dark Ages's .resources containers, StreamDB files, models, images, skeletons and animations) as ${link("https://github.com/jandk/valen", "Valen")} by jandk (MIT) reads them, and ${link("https://github.com/FlavorfulGecko5/EntityAtlan", "EntityAtlan")} by FlavorfulGecko5 (MIT); Dark STL reads them with code of its own</span></li>
         <li><span>The interface of ${link("https://github.com/DrFlGd/Model-Library", "Model Library")} (and SCAD Workshop): its skins, menus, inspector and 3D view</span></li>
         <li><span>${link("https://preactjs.com", "Preact")} (MIT) and ${link("https://github.com/developit/htm", "htm")} (Apache 2.0) for the pages, ${link("https://threejs.org", "three.js")} r186 (MIT) for the 3D view</span></li>
         <li><span>NumPy, SciPy and Pillow for the meshes and textures</span></li>

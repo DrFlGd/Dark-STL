@@ -1,4 +1,4 @@
-"""Importer for id Tech 7/8 games: DOOM Eternal (and, as their phases land, DOOM 2016 and DOOM: The Dark Ages).
+"""Importer for id Tech 7/8 games: DOOM Eternal and DOOM: The Dark Ages (DOOM 2016 once its files are checked).
 
 Models are read straight from the game's ``.resources`` containers and ``.streamdb`` files (or from a folder that
 Collect wrote): static models (``.lwo``: props, pickups, map pieces) and skinned models (``.md6mesh``: monsters,
@@ -20,7 +20,7 @@ from ...geometry.mesh import TriMesh, weld
 from ...model import CatalogEntry, Material, MeshOptions, Part, Rig, SourceModel, Texture
 from ..base import Importer, ScanProgress
 from . import catalog, games, materials
-from .animation import IdAnimations
+from .animation import IdAnimations, anim_pieces
 from .formats import geometry as geo
 from .formats import md6model, md6skel, staticmodel
 from .formats import resources as res
@@ -49,47 +49,59 @@ class _Loaded:
         self.surfaces: list[geo.Surface] = []
         self.materials: list[str] = []
         self.pieces: list[tuple[int, int]] = []  # StreamDB pieces read (id, size)
+        darkages = store.profile.darkages
         if type_ == "baseModel":
-            m = md6model.read_md6_model(data)
+            skel_name = md6model.model_skeleton(data)
+            if store.has("skeleton", skel_name):
+                self.skeleton = md6skel.read_skeleton(store.read("skeleton", skel_name), darkages)
+            if darkages:
+                if self.skeleton is None:
+                    raise FormatError(f"{name}: its skeleton {skel_name} isn't in the game's files, and The Dark "
+                                      "Ages's models can't be read without it")
+                m = md6model.read_md6_model_darkages(data, len(self.skeleton))
+                lods = [next((lo for lo in ms.lods if lo is not None), None) for ms in m.meshes]
+            else:
+                m = md6model.read_md6_model(data)
+                lods = [ms.lods[0] for ms in m.meshes]
             self.skeleton_name = m.skeleton
-            lods = [ms.lods[0] for ms in m.meshes]
-            disk = m.disk[0]
-            if disk.size == 0 or any(lo is None for lo in lods):
+            disk = m.disk[0] if m.disk else None
+            if disk is None or disk.size == 0 or any(lo is None for lo in lods):
                 raise FormatError(f"{name} has no full-detail geometry")
-            ident = store.stream_id(loc.hash, 0)
+            ident = store.geometry_id(loc.hash, 0)
             buf = store.stream(ident, disk.size)
             if buf is None:
                 raise FormatError(f"{name}: its geometry isn't in the game's StreamDB files")
             self.pieces.append((ident, disk.size))
-            surfaces = geo.read_streamed(buf, lods, disk.layouts, True)
+            surfaces = (geo.read_sequential(buf, lods, True) if darkages
+                        else geo.read_streamed(buf, lods, disk.layouts, True))
             lookup = m.joint_lookup()
             for ms, s in zip(m.meshes, surfaces):
                 if s is None:
                     self.notes.append(f"{ms.name}: its vertex layout isn't in the file")
                     continue
                 if s.joints is not None:
-                    s.joints = lookup[np.clip(s.joints + ms.joint_offset, 0, 255)]
+                    s.joints = lookup[np.clip(s.joints + ms.joint_offset, 0, len(lookup) - 1)]
                 self.surfaces.append(s)
                 self.mesh_names.append(ms.name)
                 self.materials.append(ms.material)
-            if store.has("skeleton", m.skeleton):
-                self.skeleton = md6skel.read_skeleton(store.read("skeleton", m.skeleton))
-            else:
+            if self.skeleton is None:
                 self.notes.append(f"Its skeleton {m.skeleton} isn't in the game's files, so it can't be posed.")
             self.info = [f"id Tech skinned model, {len(m.meshes)} meshes, skeleton {m.skeleton}"]
         else:
-            m = staticmodel.read_static_model(data)
+            m = staticmodel.read_static_model(data, darkages)
             if m.streamable:
                 lod_i = next((i for i, d in enumerate(m.disk) if d.size > 0), None)
                 if lod_i is None:
                     raise FormatError(f"{name} has no geometry")
-                ident = store.stream_id(loc.hash, lod_i)
+                ident = store.geometry_id(loc.hash, lod_i)
                 buf = store.stream(ident, m.disk[lod_i].size)
                 if buf is None:
                     raise FormatError(f"{name}: its geometry isn't in the game's StreamDB files")
                 self.pieces.append((ident, m.disk[lod_i].size))
                 lods = [s.lods[lod_i] for s in m.surfaces]
-                got = geo.read_streamed(buf, [lo for lo in lods if lo is not None], m.disk[lod_i].layouts, False)
+                present = [lo for lo in lods if lo is not None]
+                got = (geo.read_sequential(buf, present, False) if darkages
+                       else geo.read_streamed(buf, present, m.disk[lod_i].layouts, False))
                 it = iter(got)
                 for s, lo in zip(m.surfaces, lods):
                     surf = next(it) if lo is not None else None
@@ -114,7 +126,7 @@ def PurePosix(material: str) -> str:
 
 class IdTechImporter(Importer):
     key = "idtech"
-    name = "id Tech 7/8 (DOOM Eternal)"
+    name = "id Tech 7/8 (DOOM Eternal, DOOM: The Dark Ages)"
     file_filter = "DOOM models (*.md6mesh *.lwo)"
     games = games.GAMES
     record_reads = False  # related_files names every resource and StreamDB piece a model reads
@@ -137,9 +149,15 @@ class IdTechImporter(Importer):
 
         notes = []
         if any(e.packed for e in found if e.importer == self.key) and oodle.located() is None:
-            notes.append("DOOM's resources are compressed with Oodle. Dark STL uses the game's own "
-                         "oo2core_8_win64.dll (beside DOOMEternalx64vk.exe); it wasn't found, so point to it in "
-                         "Settings › Game tools › Oodle.")
+            if any(e.game == games.DARKAGES for e in found if e.importer == self.key):
+                notes.append("DOOM: The Dark Ages's resources are compressed with Oodle, and the game doesn't ship "
+                             "the library (it's built into its .exe). Dark STL tries DOOM Eternal's "
+                             "oo2core_8_win64.dll when Eternal is installed beside it; it wasn't found, so point "
+                             "Settings › Game tools › Oodle at an oo2core_9_win64.dll (or Eternal's).")
+            else:
+                notes.append("DOOM's resources are compressed with Oodle. Dark STL uses the game's own "
+                             "oo2core_8_win64.dll (beside DOOMEternalx64vk.exe); it wasn't found, so point to it in "
+                             "Settings › Game tools › Oodle.")
         return notes
 
     def can_open(self, path: Path) -> bool:
@@ -283,7 +301,12 @@ class IdTechImporter(Importer):
         if animations and loaded.skeleton is not None:
             anims = IdAnimations(store, loaded.skeleton_name, loaded.skeleton,
                                  self.cache / "anims" if self.cache else None)
-            wanted += [("anim", a, "animation") for a in anims.files_used()]
+            for a in anims.files_used():
+                wanted.append(("anim", a, "animation"))
+                try:
+                    pieces += [(i, s, "animation") for i, s in anim_pieces(store, a)]
+                except (FormatError, OSError):
+                    pass
         out: list[RelatedFile] = []
         seen = set()
         for t, n, kind in wanted:
