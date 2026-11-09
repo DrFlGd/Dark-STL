@@ -287,6 +287,137 @@ they need; properties of types it does not know are kept as bytes and skipped by
   `<pack>.archive\<hash>.mesh`. Collecting extracts them under their depot paths, so the copies
   read like a WolvenKit export.
 
+### Reading id Tech 6/7/8 files (DOOM, DOOM Eternal, DOOM: The Dark Ages)
+
+Planned (requested by Jerred on 2026-11-09); built in three releases, one per game, by a single
+importer, `importers/idtech/`, with a profile per game. The layouts below were worked out from
+[Valen](https://github.com/jandk/valen) (Jan De Kock, MIT: DOOM Eternal and The Dark Ages, the
+most complete reader of these games' models, textures and animations), EntityAtlan
+(FlavorfulGecko5, MIT: The Dark Ages' containers, StreamDB and Oodle use), EternalResourceExtractor
+and SAMUEL (Eternal's `.resources` and `.streamdb`, GPL: read only as a cross-check) and DOOMExtract
+(emoose: DOOM 2016's `.index`/`.resources`). Dark STL re-implements them; no code is copied. All
+values are little-endian unless said otherwise.
+
+| Game | Engine | Folder recognised by | Containers | Compression | Oodle |
+| --- | --- | --- | --- | --- | --- |
+| DOOM (2016) | id Tech 6 | `DOOMx64vk.exe` / `DOOMx64.exe`, `base/*.index` | `.index` (table) + `.resources` + `.patch` / `_NNN.patch` | raw deflate (entry sizes differ) | not needed |
+| DOOM Eternal | id Tech 7 | `DOOMEternalx64vk.exe`, `base/packagemapspec.json` | `IDCL` v12 `.resources`, `.streamdb` | Oodle Kraken | `oo2core_8_win64.dll` beside the exe |
+| DOOM: The Dark Ages | id Tech 8 | `DOOMTheDarkAges.exe`, `base/packagemapspec.json` | `IDCL` v13 `.resources`, `.streamdb` | Oodle Kraken / Leviathan | none shipped (built into the exe): Eternal's `oo2core_8`, any `oo2core_9_win64.dll`, or Settings › Oodle |
+
+**Containers (Eternal, The Dark Ages).** `base/packagemapspec.json` lists every container
+(`files`), the maps (`maps`) and which files each map loads (`mapFileRefs`); `common`,
+`warehouse` (and `init` in The Dark Ages) hold what every map shares, each level's own files
+hold the rest. A `.resources` file starts with an `IDCL` header (version 12 or 13, one segment,
+counts of resources, dependencies, dependency indices and string indices, the string table size,
+and 64-bit offsets of the string table, meta entries, resource entries, dependencies, special
+hashes and data; version 12 adds a 64-bit meta size). Each 144-byte resource entry holds the
+index of its strings, the data's offset, stored and full size, checksum, time stamp, its
+`defaultHash` (which keys its streamed data, below), a version, flags, the compression mode
+(0 stored, 1 zlib, 2 Kraken, 4 Kraken behind a 12-byte chunk header, 5 Leviathan, 6 BCPack) and a
+platform variation. The string table is a count, 64-bit offsets and null-terminated strings;
+an entry's type is `strings[stringIndex[e.strings]]` and its name `strings[stringIndex[e.strings + 1]]`.
+Names are resource paths with options after `$` (`models/monsters/imp/imp_albedo.tga$bc7srgb$mtlkind=albedo`).
+The same resource sits in several containers (a copy per level, older copies in patches);
+`generated/buildgame/container.mask` in `meta.resources` gives, per container (keyed by the
+FarmHash64 fingerprint of its entry table), a bit per entry saying which copies are live. Dark
+STL indexes each game once (types, names, where each live copy is; kept in the importer's cache
+keyed by the containers' sizes and dates) and reads an entry when a model needs it.
+
+**StreamDB.** Large data is kept outside the containers, in `.streamdb` files (magic
+`0x61C7F32E29C2A550`, a header with the entry count and flags, then entries of a 64-bit id, a
+32-bit offset in 16-byte units and a 32-bit length): the full levels of detail of every model's
+geometry and the large mips of every texture. A piece is Oodle-compressed when its stored length
+differs from the size the resource expects. Ids are derived from the resource's `defaultHash`:
+in Eternal `defaultHash << 4 | n` (n = level of detail for geometry, `mipCount - mipLevel` for a
+texture mip); in The Dark Ages a boost-style `hash_combine` of the hash with MurmurHash3's
+`fmix64` of two small numbers (the stream's index, 0).
+
+**Textures (`image`, BIM).** Magic `BIM` and a version byte (21 in Eternal, 24 and later in The
+Dark Ages, which adds a byte), the texture type (2D, 3D, cube), its material kind (albedo,
+specular, normal, smoothness, cover, mask...), width, height, depth, mip count, the albedo
+specular scale and bias, the format (an enum: BC1/BC3/BC4/BC5/BC6H/BC7, their sRGB forms,
+RGBA8, RG8, R8, half and float formats), whether it is streamed and how many of its mips sit in
+the StreamDB; then a 36-byte record per mip (40 in The Dark Ages, with depth) and the mips kept
+in the container. Decoded through `texture2ddecoder` and wrapped as DDS for packages like the
+other importers. Albedo is sRGB; normal maps are two-channel BC5 (Z rebuilt), their green
+direction to be found on a known flat sample and set in the profile.
+
+**Static models (`model`, `.lwo` names: props, pickups, map pieces).** A header (reference
+point, level-of-detail count, surface count, deviations, streamable), per surface the material
+decl name and up to five levels of detail (vertex and index counts, a vertex mask naming the
+attributes, bounds, position offset and scale, UV offset and scale), lightmap settings and
+decal projections. Small models keep their one level inline; streamable ones keep, per level,
+memory layouts (one per combination of attributes: each attribute's stream offset and the index
+offset) and a disk layout (compression, sizes) of a StreamDB piece. Attributes: positions as
+three 16-bit unsigned normals times scale plus offset (or floats), normal and tangent as signed
+bytes with the tangent's sign in the last byte, UVs as 16-bit unsigned normals or floats with
+their own scale and offset, colour, lightmap UVs; 16-bit indices. Space is Z up, already
+right-handed; the unit (id units, taken as inches) is set in the profile and checked against a
+character of known height.
+
+**Skinned models (`baseModel`, `.md6mesh` names: monsters, characters, weapons).** A header
+naming the skeleton (`.md6skl`), a joint remap table, bounds, per mesh its name, material decl
+and five levels of detail (as above), material infos, decal data, and per level a memory and disk
+layout of its StreamDB piece. Skin weights for four joints are packed into the spare bits of the
+normal and tangent bytes, joint indices into the colour attribute (4, 6 and 8 joints have
+their own attributes), and indices go through the remap table plus the mesh's joint offset.
+**Skeletons (`skeleton`, `.md6skl`)**: a header of 16-bit offsets, then per joint (padded to a
+multiple of 8) a local rotation (quaternion), scale and translation, the parent table, the
+inverse bind matrices (3x4) and the names. **Animations (`anim`, `.md6anim`)**: the skeleton's
+name, bounds, frame count and rate, constant rotations, scales and translations for the joints
+that don't move, RLE joint lists, and frame sets, each holding every animated joint's first value,
+a bit per frame saying where a key is, and the keys; rotations are 48-bit "smallest three"
+quaternions. The Dark Ages streams long animations (a stream info and disk layout like geometry).
+Animations are matched to a model by skeleton name; the list is built once per game and cached.
+
+**Materials (`generated/decls/material2/<name>.decl`).** Text decls in id's syntax
+(`{ inherit = "...", edit = { RenderLayers = { item[0] = { parms = { albedo = { filePath = ... } } } }, Parms = {...} } }`),
+inheriting from parents that are merged in. Texture roles come from the parm names:
+`albedo`/`decalalbedo`/`hairalbedomap`... → albedo, `normal`/`decalnormal`... → normal,
+`specular`, `smoothness`, `bloommaskmap`. The image a parm names is found by its path, choosing
+among the resource's `$`-option variants the one whose `$mtlkind=` matches the role.
+
+**DOOM (2016).** `base/*.index` files start with `RES` and a version byte, then (big-endian)
+the entry count and per entry an id, three length-prefixed strings (type, name, path), the
+offset, size and stored size, and the number of the file the data is in (0 `.resources`,
+1 `.patch`, n `_00n.patch`); stored size ≠ size means raw deflate. Its models (`bmd6model`,
+`bmodel`), textures (`bimage`) and animations are earlier versions of the formats above, but no
+open reader for the retail game exists: Phase 2 starts from a handful of Jerred's files (one
+monster, one weapon, one prop, their textures) and pins the differences from Eternal's layouts.
+
+**Catalog.** Models are sorted by their resource path: `md6/monsters/<name>/...` and
+`md6/characters/...` → Characters, group by monster; `md6/player/...` → Characters › Player;
+`md6/weapons/<name>/...` (first-person) and `models/weapons/...` → Weapons, group by weapon;
+`models/pickups/...` → Objects › Pickups; `models/props/`, `models/mapobjects/` → Objects;
+architecture and level geometry → Map Pieces; gore, wound and lower-detail copies hidden by
+default. Paths not matching a rule fall back to their first folder. In-game names come from the
+`entityDef` decls (`generated/decls/entitydef/...`, whose render model names the md6) and the
+`.blang` string tables (`strings/english.blang`) through the names hook (R2).
+
+**Collect and packages.** Model packages (the default) hold the mesh, skeleton, weights,
+materials, textures (as DDS) and sampled animations, so nothing of the game is needed. *Game
+files* writes each resource a model reads, decompressed, under its resource name in
+`<library>/<game>/`, with its StreamDB pieces (decompressed, `streamdb/<id>.bin`) and a small
+index of the entries' types, hashes and sizes, so the copies open without the game and without
+Oodle; the importer reads such a folder like an install.
+
+**Layout.** `importers/idtech/`: `formats/` (`resources.py` IDCL containers and the container
+mask, `index6.py` DOOM 2016's `.index`, `streamdb.py`, `image.py`, `geometry.py` vertex masks
+and streams, `staticmodel.py`, `md6model.py`, `md6skel.py`, `md6anim.py`, `decl.py` the decl
+parser), `games.py` (the three profiles: executable, container version, hash scheme, unit,
+normal green, what is shared; read from R7's JSON profiles once those land), `store.py` (a
+game's index: names → live copies, streamed pieces, loose extracted files), `materials.py`,
+`catalog.py`, `animation.py` (poses for the Pose tab and packages) and `__init__.py`.
+
+**Phases.** 0.53.0 DOOM Eternal (containers, mask, StreamDB, images, static and skinned models,
+skeletons, animations, materials, catalog, names, Collect, packages); 0.54.0 DOOM (2016) (its
+`.index` and the older layouts, from Jerred's samples); 0.55.0 DOOM: The Dark Ages (version 13
+containers, new stream ids, the changed image, model and animation layouts; Valen reads them, so
+this is mostly a profile and the differences). Every format is tested on byte-built files.
+Risks: Oodle for The Dark Ages (no DLL in its folder; Eternal's or another `oo2core` needed, said
+in the app when missing); BCPack entries (consoles) are skipped; id's unit and the normal-map
+green direction are confirmed on the first real files; DOOM 2016 depends on samples.
+
 ### Step 1: even vertex spacing
 
 Two methods, both in the app and the command line:
@@ -564,6 +695,8 @@ differs:
 - [ ] Read Elden Ring MATBIN files for exact material maps
 - [ ] Dark Souls II (FLVER2 with its own texture layout)
 - [ ] Importers for other game families, added as they are needed
+- [ ] DOOM (2016), DOOM Eternal and DOOM: The Dark Ages (id Tech 6/7/8), one release per game
+      (0.53.0 Eternal, 0.54.0 DOOM 2016, 0.55.0 The Dark Ages); see "Reading id Tech 6/7/8 files"
 
 ### Phase 4: distribution
 
