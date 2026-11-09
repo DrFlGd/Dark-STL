@@ -103,15 +103,20 @@ export function usePageKeys(fn) {
 export const typing = (e) => !!e.target.closest?.("input, textarea, select, [contenteditable='true']");
 const onControl = (e) => !!e.target.closest?.("button, a[href], summary");
 
-/** The window's keys: "/" goes to the page's search box, the rest goes to the page. */
+/** The window's keys: "/" goes to the page's search box (on a page without one, to the menu's search across
+ *  every game, or its page when the menu is folded), the rest goes to the page. */
 export function onWindowKey(e) {
   const s = ui.get();
   if (s.menu && e.key === "Escape") { closeMenu(); return; }
   if (s.dialog || s.menu || e.defaultPrevented || typing(e)) return;
   const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   if (key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    const box = document.querySelector("[data-search]");
-    if (box) { e.preventDefault(); box.focus(); box.select?.(); }
+    const shown = (el) => el && el.offsetParent !== null;
+    const page = document.querySelector("#main-root [data-search]");
+    const menu = document.querySelector("[data-global-search]");
+    const box = shown(page) ? page : shown(menu) ? menu : null;
+    e.preventDefault();
+    if (box) { box.focus(); box.select?.(); } else location.hash = "#/search"; // nowhere to type: search every game
     return;
   }
   if ((key === "Enter" || key === " ") && onControl(e)) return;

@@ -10,7 +10,7 @@
 // fit it) has a Configure tab first, to choose its parts (configure.js).
 import { html, useState, useEffect, useLayoutEffect, useRef, useMemo } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
-import { ui, setPref, resolvedTheme } from "./state.js";
+import { ui, setPref, resolvedTheme, rememberOpened } from "./state.js";
 import { routeHash, placeRoute, modelOf } from "./context.js";
 import { Icon } from "./icons.js";
 import { collectModelItem, modelFilesItem, redrawModelItem, arrangeModel, combineModels } from "./games.js";
@@ -202,6 +202,7 @@ export function ModelPage({ route }) {
   // a configurable model opens on its Configure tab
   useEffect(() => { if (m?.configuration && m.id === id) ui.set({ inspectorAsk: { page: "model", tab: "configure" } }); }, [m?.id, !!m?.configuration]);
   const entry = m?.entry;
+  useEffect(() => { if (entry?.id) rememberOpened(entry.id); }, [entry?.id]);
   const placeKey = entry ? JSON.stringify([entry.game, entry.category, entry.group]) : null;
   useEffect(() => {
     ui.set({ modelPlace: entry ? { game: entry.game, category: entry.category, group: entry.group } : null });
