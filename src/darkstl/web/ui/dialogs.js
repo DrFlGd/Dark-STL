@@ -1,9 +1,9 @@
 // Dialogs: adding a game folder, changing a folder's game, opening one model
 // file, collecting models into the app, unpacking a game's archives, and confirming. Which one is open is
 // `ui.dialog` ({ type: "add-folder" | "change-game" | "open-file" | "collect" | "model-files" | "unpack" | "confirm" | "texture-picker" |
-// "arrange" | "arrange-folder" | "combine" | "collection-add" | "collection-name" | "tag", ... }); arrange, arrange-folder and
-// combine keep the user's own names, folders and combined models (the library overlay and the user's configurations);
-// the last three are in organise.js (collections and tags).
+// "arrange" | "arrange-folder" | "combine" | "attach" | "collection-add" | "collection-name" | "tag", ... }); arrange,
+// arrange-folder, combine and attach keep the user's own names, folders, combined models and attached models (the library
+// overlay and the user's configurations); the last three are in organise.js (collections and tags).
 import { html, useState, useLayoutEffect, useRef, useEffect } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui } from "./state.js";
@@ -707,6 +707,68 @@ function Combine({ model: base }) {
   <//>`;
 }
 
+/** The holder a newly attached model goes on: the first socket, else a hand (the right one first), else the origin. */
+function firstHolder(sockets, bones) {
+  if (sockets.length) return `socket:${sockets[0]}`;
+  const hands = bones.filter((b) => /hand/i.test(b));
+  const right = hands.find((b) => /(^|[^a-z])r(ight)?([^a-z]|$)|right/i.test(b));
+  const pick = right || hands[0];
+  return pick ? `bone:${pick}` : "";
+}
+
+/** Attach a model of the library to one of the open model's bones or sockets (a sword in a hand): it follows
+ * the pose and is part of the model from then on. Kept in the library overlay; its place is set on the Pose tab. */
+function Attach({ sid, game, model: base, items = [], bones = [], sockets = [] }) {
+  const [q, setQ] = useState("");
+  const [found, setFound] = useState(null);
+  const [picked, setPicked] = useState(null);
+  const [holder, setHolder] = useState(() => firstHolder(sockets, bones));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    let live = true;
+    const t = setTimeout(() => {
+      api("models_query", { game, q, limit: 80 }).then((r) => live && setFound(r), (e) => live && setError(String(e.message || e)));
+    }, 200);
+    return () => { live = false; clearTimeout(t); };
+  }, [q]);
+  const list = (found?.items || []).filter((i) => i.id !== base?.id && !i.configurable);
+  const submit = async () => {
+    if (!picked) { setError("Choose the model to attach first."); return; }
+    const [kind, ...rest] = holder.split(":");
+    const name = rest.join(":");
+    const place = { bone: kind === "bone" ? name : null, socket: kind === "socket" ? name : null, offset_mm: [0, 0, 0], rotate: [0, 0, 0], scale: 1 };
+    setBusy(true); setError(null);
+    try {
+      await api("attach_save", { sid, items: [...items, { file: picked.file, label: picked.label, place }] });
+      close();
+      ui.set({ attachRev: (ui.get().attachRev || 0) + 1 });
+      toast(`${picked.label} is attached: the Pose tab moves, turns and sizes it`, { ms: 5000 });
+    } catch (e) {
+      setBusy(false);
+      setError(String(e.message || e));
+    }
+  };
+  return html`<${Dialog} title=${`Attach a model to ${base?.label || "this model"}`} id="attach-dialog" onSubmit=${submit} busy=${busy} error=${error}
+      submitLabel=${busy ? "Attaching…" : picked ? `Attach ${picked.label}` : "Attach"}>
+    <p class="muted">A weapon in a hand, a shield on an arm: the model you choose goes on a bone or socket of this one, follows
+      its pose, and goes through Mesh, Displace and Export with it. Nothing of either model's files is changed.</p>
+    <label class="field-block"><span>Find models of ${game}</span>
+      <input type="search" id="attach-search" value=${q} disabled=${busy} placeholder="Part of a name: sword, shield, wp_a" onInput=${(e) => setQ(e.target.value)} /></label>
+    <ul class="picker-list" id="attach-results" aria-label="Models">${list.map((i) => html`<li key=${i.id}>
+      <label class=${picked?.id === i.id ? "picker-item selected" : "picker-item"} data-model=${i.stem}>
+        <input type="radio" name="attach-pick" checked=${picked?.id === i.id} disabled=${busy} onChange=${() => setPicked(i)} />
+        <span>${i.label}<small class="muted">${i.category}${i.group ? ` › ${i.group}` : ""} · ${i.name}</small></span></label></li>`)}
+      ${found && !list.length ? html`<li class="muted picker-empty">No models match.</li>` : null}</ul>
+    <label class="field-block" title="Where it goes: it follows that bone (or socket) through every pose. Sockets are the points the game fits parts to."><span>Held by</span>
+      <select id="attach-dialog-holder" value=${holder} disabled=${busy} onChange=${(e) => setHolder(e.target.value)}>
+        <option value="">The model's origin</option>
+        ${sockets.length ? html`<optgroup label="Sockets">${sockets.map((n) => html`<option key=${n} value=${`socket:${n}`}>${n}</option>`)}</optgroup>` : null}
+        ${bones.length ? html`<optgroup label="Bones">${bones.map((n) => html`<option key=${n} value=${`bone:${n}`}>${n}</option>`)}</optgroup>` : null}
+      </select></label>
+  <//>`;
+}
+
 export function Dialogs() {
   const dialog = useStore(ui, (s) => s.dialog);
   if (!dialog) return null;
@@ -718,6 +780,7 @@ export function Dialogs() {
   if (dialog.type === "model-files") return html`<${ModelFiles} key=${dialog.model.id} model=${dialog.model} variant=${dialog.variant} />`;
   if (dialog.type === "arrange") return html`<${Arrange} key=${dialog.model.id} model=${dialog.model} />`;
   if (dialog.type === "combine") return html`<${Combine} key=${dialog.model.id} model=${dialog.model} />`;
+  if (dialog.type === "attach") return html`<${Attach} key=${dialog.sid} ...${dialog} />`;
   if (dialog.type === "arrange-folder") return html`<${ArrangeFolder} key=${`${dialog.category}/${dialog.group || ""}`} ...${dialog} />`;
   if (dialog.type === "texture-picker") return html`<${TexturePicker} key=${`${dialog.sid}:${dialog.material}:${dialog.role}`} ...${dialog} />`;
   if (dialog.type === "unpack") return html`<${Unpack} key=${dialog.path} path=${dialog.path} game=${dialog.game} added=${dialog.added} />`;

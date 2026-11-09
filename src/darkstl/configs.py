@@ -712,7 +712,10 @@ def assemble(config: Configuration, choices: dict | None, load: Loader) -> Sourc
             own = {o.key for o in c.model.options}
             flags = {k: v for k, v in options.flags.items() if k in own}
             pose = options.pose if i == 0 or _poses(c.model, options.pose) else None
-            mesh = c.model.build_mesh(MeshOptions(sel, flags, pose))
+            # bone adjustments go by bone name: every part with those bones (a face and hair on the body's
+            # skeleton) takes them
+            bones = options.bones if i == 0 or _has_bones(c.model, options.bones) else None
+            mesh = c.model.build_mesh(MeshOptions(sel, flags, pose, bones))
             mesh = transform_mesh(mesh, c.matrix)
             if i:
                 mesh = mesh.copy()
@@ -738,7 +741,7 @@ def assemble(config: Configuration, choices: dict | None, load: Loader) -> Sourc
         name=config.label, path=Path(config.base.file), importer=base.importer, build=build, game=config.game or base.game,
         parts=parts, materials=materials, textures=textures,
         options=[o for o in base.options if o.key in flag_keys], info=info + base.info, notes=base.notes + notes,
-        animations=base.animations, sockets=dict(base.sockets),
+        animations=base.animations, sockets=dict(base.sockets), rig=base.rig, adjusts_bones=True,
     )
     model.configuration = configuration_json(config, chosen)
     return model
@@ -753,6 +756,13 @@ def _poses(model: SourceModel, pose: tuple[str, int] | None) -> bool:
         return pose[0] in model.animations
     except Exception:  # noqa: BLE001 - an unreadable archive leaves the part unposed
         return False
+
+
+def _has_bones(model: SourceModel, bones: dict | None) -> bool:
+    """Whether ``model``'s skeleton has any of the bones ``bones`` adjusts."""
+    if not bones or model.rig is None:
+        return False
+    return bool(set(bones) & set(model.rig.names))
 
 
 def _same_animations(base: SourceModel, other: SourceModel) -> bool:

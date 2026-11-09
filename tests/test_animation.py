@@ -334,8 +334,10 @@ def test_engine_poses_generates_and_exports(char_dir, tmp_path, monkeypatch):
         service.call("model_mesh", {"sid": m["sid"], "pose": "@3"})
     plain_model = service.call("model_open", {"path": str(char_dir / "chr" / "c2001.chrbnd.dcx")})
     assert plain_model["animated"] is False
-    assert service.call("model_animations", {"sid": plain_model["sid"]}) == {"animations": [], "bones": 0,
+    # no animations, but its bones can still be turned on the Pose tab (0.47)
+    assert service.call("model_animations", {"sid": plain_model["sid"]}) == {"animations": [], "bones": 3,
                                                                              "note": None}
+    assert plain_model["posable"] is True
 
 
 def test_the_pose_tab_steps_through_frames(char_dir, tmp_path, monkeypatch):

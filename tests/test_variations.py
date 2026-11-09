@@ -49,7 +49,7 @@ def test_a_variation_is_saved_shown_renamed_and_deleted(home, weapon_dir, tmp_pa
     saved = wait(s, s.call("variation_save", {"sid": m["sid"], "name": "Strong relief"})["job"])
     row = saved["variation"]
     assert row["name"] == "Strong relief" and row["settings"] == SETTINGS and row["thumb"]  # what it was made with
-    assert row["mesh"] == {"parts": None, "flags": {}, "pose": None} and row["step"] == "both"
+    assert row["mesh"] == {"parts": None, "flags": {}, "pose": None, "clean": None} and row["step"] == "both"
     assert row["result"]["stats"] == made["stats"] and [r["id"] for r in saved["items"]] == [row["id"]]
     # kept beside the model's package, which isn't written
     folder = home / "library" / "Dark Souls III packages" / "parts" / "wp_a_0300.partsbnd.dcx.darkpkg"

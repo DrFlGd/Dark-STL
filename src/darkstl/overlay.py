@@ -17,6 +17,10 @@ It holds:
 - per model and material, the texture to use for its colour, normal or height map, picked by name from
   the game's textures in the app (the texture picker). The texture itself is kept in the game's asset
   store (see :mod:`darkstl.package`), so the choice still works once the game is uninstalled.
+- per model, its saved poses: a name for an animation, a frame and the bone adjustments made on top
+  (``poses``), offered to every model of the game whose skeleton has the same bones (``skeleton``);
+- per model, the models attached to it (``attach``): each one's file (its path in the game), the model in
+  it, and the bone or socket it goes on with its offset, turn and scale (see :mod:`darkstl.attach`).
 
 Models combined into one (face, body and hair) are configurations the user saves (see
 :mod:`darkstl.configs`), filed like any other model.
@@ -105,6 +109,74 @@ class Overlay:
         else:
             models.pop(key, None)
 
+    def _set(self, key: str, field_name: str, value) -> None:
+        models = self.data["models"]
+        entry = dict(models.get(key) or {})
+        if value:
+            entry[field_name] = value
+        else:
+            entry.pop(field_name, None)
+        if entry:
+            models[key] = entry
+        else:
+            models.pop(key, None)
+
+    # ---------------------------------------------------------------- saved poses
+
+    def poses(self, key: str) -> dict[str, dict]:
+        """{name: {"animation", "frame", "bones", "skeleton", "label", "saved"}}: the model's saved poses."""
+        return dict(self.model(key).get("poses") or {})
+
+    def save_pose(self, key: str, name: str, pose: dict) -> str:
+        """Keep ``pose`` under ``name`` (in place of one of that name); the name it is kept under."""
+        name = clean_name(name)
+        if not name:
+            raise ValueError("A pose needs a name")
+        poses = self.poses(key)
+        poses[name] = {k: v for k, v in pose.items() if v is not None}
+        self._set(key, "poses", dict(sorted(poses.items(), key=lambda kv: kv[0].lower())))
+        return name
+
+    def rename_pose(self, key: str, old: str, new: str) -> str:
+        poses = self.poses(key)
+        if old not in poses:
+            raise KeyError(old)
+        new = clean_name(new)
+        if not new:
+            raise ValueError("A pose needs a name")
+        if new != old and new in poses:
+            raise ValueError(f"There is a pose called {new} already")
+        poses[new] = poses.pop(old)
+        self._set(key, "poses", dict(sorted(poses.items(), key=lambda kv: kv[0].lower())))
+        return new
+
+    def delete_pose(self, key: str, name: str) -> bool:
+        poses = self.poses(key)
+        if poses.pop(name, None) is None:
+            return False
+        self._set(key, "poses", poses)
+        return True
+
+    def poses_like(self, skeleton: str, but: str | None = None) -> list[tuple[str, str, dict]]:
+        """(model key, name, pose) of every pose saved on another model whose skeleton is ``skeleton``."""
+        out = []
+        for key, entry in sorted(self.data["models"].items()):
+            if key == but:
+                continue
+            for name, pose in (entry.get("poses") or {}).items():
+                if pose.get("skeleton") == skeleton:
+                    out.append((key, name, pose))
+        return out
+
+    # ---------------------------------------------------------------- attached models
+
+    def attachments(self, key: str) -> list[dict]:
+        """The models attached to the model: [{"id", "file", "variant", "label", "place"}]."""
+        return [dict(a) for a in self.model(key).get("attach") or [] if isinstance(a, dict)]
+
+    def set_attachments(self, key: str, items: list[dict]) -> None:
+        self._set(key, "attach", [dict(a) for a in items])
+
     def is_empty(self) -> bool:
         return not self.data["models"] and not self.data.get("folders") and not self.data.get("game_names")
 
@@ -173,12 +245,25 @@ class Overlay:
         return kind, rest.replace("/", " / "), name
 
     def signature_of_file(self, rel: str) -> str:
-        """Changes when the textures the overlay gives any model of the file at ``rel`` change (what is
-        open, and every result made from it, depends on them; a new name or folder changes neither)."""
+        """Changes when the textures the overlay gives any model of the file at ``rel`` change, or the models
+        attached to one (what is open, and every result made from it, depends on them; a new name or folder
+        changes neither, nor does moving an attached model, which the mesh options carry)."""
         rel = model_key(rel)
-        found = {k: v["textures"] for k, v in self.data["models"].items()
-                 if (k == rel or k.startswith(rel + "|")) and v.get("textures")}
+        found = {}
+        for k, v in self.data["models"].items():
+            if not (k == rel or k.startswith(rel + "|")):
+                continue
+            if v.get("textures"):
+                found[k] = v["textures"]
+            if v.get("attach"):
+                found[k + "#attach"] = [[a.get("id"), a.get("file"), a.get("variant"), a.get("label")]
+                                        for a in v["attach"] if isinstance(a, dict)]
         return json.dumps(found, sort_keys=True) if found else ""
+
+
+def clean_name(name: str | None) -> str:
+    """A pose's name as kept: one line, no padding, at most 80 characters."""
+    return " ".join(str(name or "").split())[:80]
 
 
 def clean_folder(path: str | None) -> str:
@@ -225,4 +310,4 @@ def apply(model: SourceModel, assigned: dict[str, dict[str, dict]], store_root: 
     return replace(model, materials=materials, textures=textures, notes=notes)
 
 
-__all__ = ["FORMAT", "Overlay", "ROLES", "apply", "clean_folder", "model_key"]
+__all__ = ["FORMAT", "Overlay", "ROLES", "apply", "clean_folder", "clean_name", "model_key"]

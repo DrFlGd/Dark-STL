@@ -30,6 +30,7 @@ from typing import Callable
 
 import numpy as np
 
+from .clean import boundary_loops, components, duplicate_faces, edge_components, edge_counts, fill_loops, signed_volume
 from .geometry.mesh import TriMesh, weld
 
 ProgressFn = Callable[[float, str], None]
@@ -161,98 +162,13 @@ def _from_manifold(solid) -> TriMesh:
     return TriMesh(v, np.asarray(mesh.tri_verts, np.int64))
 
 
-def _components(n_vertices: int, faces: np.ndarray) -> np.ndarray:
-    """The connected part (by shared vertices) each face belongs to."""
-    from scipy.sparse import coo_matrix
-    from scipy.sparse.csgraph import connected_components
-
-    a = np.concatenate([faces[:, 0], faces[:, 1]])
-    b = np.concatenate([faces[:, 1], faces[:, 2]])
-    g = coo_matrix((np.ones(len(a), np.int8), (a, b)), shape=(n_vertices, n_vertices))
-    _, labels = connected_components(g, directed=False)
-    return labels[faces[:, 0]]
-
-
-def _edge_components(faces: np.ndarray) -> np.ndarray:
-    """The connected part each face belongs to, faces joined only through a shared edge: two surfaces that
-    merely touch at a vertex (an armour plate's corner on a body) stay apart."""
-    from scipy.sparse import coo_matrix
-    from scipy.sparse.csgraph import connected_components
-
-    n = len(faces)
-    if not n:
-        return np.zeros(0, np.int64)
-    e = np.sort(np.stack([faces, np.roll(faces, -1, axis=1)], axis=2).reshape(-1, 2), axis=1)
-    _, edge = np.unique(e, axis=0, return_inverse=True)
-    edge = edge.reshape(-1)
-    face = np.repeat(np.arange(n), 3)
-    m = int(edge.max()) + 1
-    g = coo_matrix((np.ones(len(face), np.int8), (face, n + edge)), shape=(n + m, n + m))
-    _, labels = connected_components(g, directed=False)
-    return labels[:n]
-
-
-def _signed_volume(v: np.ndarray, f: np.ndarray) -> float:
-    t = v[f]
-    return float(np.einsum("ij,ij->i", t[:, 0], np.cross(t[:, 1], t[:, 2])).sum() / 6.0)
-
-
-def _edge_counts(f: np.ndarray):
-    """Directed half-edges (a, b) of the faces, and for each how often it and its reverse occur."""
-    he = np.stack([f, np.roll(f, -1, axis=1)], axis=2).reshape(-1, 2)
-    n = int(f.max()) + 1 if len(f) else 1
-    key = he[:, 0] * n + he[:, 1]
-    rkey = he[:, 1] * n + he[:, 0]
-    uniq, inv, counts = np.unique(key, return_inverse=True, return_counts=True)
-    same = counts[inv]
-    pos = np.searchsorted(uniq, rkey)
-    pos = np.minimum(pos, len(uniq) - 1)
-    reverse = np.where(uniq[pos] == rkey, counts[pos], 0)
-    return he, same, reverse
-
-
-def _boundary_loops(he: np.ndarray, boundary: np.ndarray) -> list[list[int]] | None:
-    """Walk the boundary half-edges into loops; None when a vertex starts two of them (not simple)."""
-    nxt: dict[int, int] = {}
-    for a, b in he[boundary]:
-        a, b = int(a), int(b)
-        if a in nxt:
-            return None
-        nxt[a] = b
-    loops, seen = [], set()
-    for start in nxt:
-        if start in seen:
-            continue
-        loop, v = [], start
-        while v not in seen:
-            seen.add(v)
-            loop.append(v)
-            v = nxt.get(v)
-            if v is None:
-                return None
-        if v != start:
-            return None
-        loops.append(loop)
-    return loops
-
-
-def _fill_loops(v: np.ndarray, f: np.ndarray, loops: list[list[int]]):
-    """Close each loop with a fan of triangles to a new vertex at its centre."""
-    verts, faces = [v], [f]
-    n = len(v)
-    area = 0.0
-    for loop in loops:
-        idx = np.asarray(loop, np.int64)
-        c = v[idx].mean(0)
-        verts.append(c[None])
-        a, b = idx, np.roll(idx, -1)
-        # the boundary half-edge a->b belongs to an existing face, so the new one runs b->a
-        fan = np.stack([b, a, np.full(len(idx), n)], axis=1)
-        faces.append(fan)
-        # (the centre is vertex n of the result; for the area the corners are taken from v and the centre itself)
-        area += float(0.5 * np.linalg.norm(np.cross(v[a] - v[b], c - v[b]), axis=1).sum())
-        n += 1
-    return np.concatenate(verts), np.concatenate(faces), area
+# the surface's topology: shared with clean.py (where it lives) and finish.py
+_components = components
+_edge_components = edge_components
+_signed_volume = signed_volume
+_edge_counts = edge_counts
+_boundary_loops = boundary_loops
+_fill_loops = fill_loops
 
 
 def _thicken(v: np.ndarray, f: np.ndarray, he: np.ndarray, boundary: np.ndarray, t: float):
@@ -380,8 +296,7 @@ def make_solid(mesh: TriMesh, sheet_mm: float = 1.2, progress: ProgressFn | None
     welded = weld(TriMesh(mesh.vertices * 1000.0, mesh.faces, face_group=mesh.face_group), 1e-4)
     v, f, g = welded.vertices, welded.faces, welded.face_group
     # the same triangle twice (two-sided cloth is often one side and its mirror) is kept once
-    _, first = np.unique(np.sort(f, axis=1), axis=0, return_index=True)
-    keep = np.sort(first)
+    keep = np.flatnonzero(~duplicate_faces(f))
     f, g = f[keep], g[keep]
     labels = _edge_components(f)
     order = np.argsort(labels, kind="stable")

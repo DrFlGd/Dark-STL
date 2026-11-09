@@ -30,10 +30,13 @@ from typing import Any, Callable
 import numpy as np
 
 from .. import __version__
+from .. import attach
+from .. import clean as cleanup
 from .. import collect
 from .. import configs
 from .. import overlay
 from .. import package
+from .. import posing
 from .. import variations
 from ..errors import FormatError
 from ..export import FORMATS, ExportOptions, export_mesh, write_palette_png
@@ -198,19 +201,56 @@ class Session:
     cut_id: str = ""
     finished: Any = None  # finish.FinishResult: the model last made watertight (Finish tab)
     finished_id: str = ""
+    used_bones: Any = None  # the bones whose turns move the mesh (and their parents), once worked out
+    raw: TriMesh | None = None  # the last mesh built, before its clean-up
+    raw_key: tuple | None = None
+    cleaned_now: Any = None  # clean.Cleaned: the last mesh built with its clean-up done (``mesh`` is its mesh)
+    graph: tuple | None = None  # (mesh_key, clean.FaceGraph of that mesh): to grow selections clicked in the 3D view
     lock: threading.Lock = field(default_factory=threading.Lock)
+    thick: dict = field(default_factory=dict)  # which -> (the mesh, its thickness per vertex in mm), for the 3D view
+
+    def thickness(self, which: str, mesh: TriMesh) -> np.ndarray:
+        """The thickness behind every vertex of ``mesh`` (mm), as the 3D view's Thickness shading shows it;
+        worked out once per mesh shown."""
+        from ..geometry.room import thickness
+
+        with self.lock:
+            kept = self.thick.get(which)
+        if kept is not None and kept[0] is mesh:
+            return kept[1]
+        values = thickness(mesh) * 1000.0
+        with self.lock:
+            self.thick[which] = (mesh, values)
+        return values
 
     def build(self, options: MeshOptions) -> TriMesh:
+        return self.cleaned(options).mesh
+
+    def cleaned(self, options: MeshOptions):
+        """The model built with ``options`` and its clean-up done (a clean.Cleaned: the mesh, each face's stable
+        id, what each operation did). The mesh before the clean-up is kept too, so changing the list only cleans."""
         key = _options_key(options)
         with self.lock:
-            if self.mesh is None or self.mesh_key != key:
-                self.mesh, self.mesh_key = self.model.build_mesh(options), key
-            return self.mesh
+            if self.cleaned_now is None or self.mesh_key != key:
+                rkey = _options_key(dataclasses.replace(options, clean=None))
+                if self.raw is None or self.raw_key != rkey:
+                    self.raw, self.raw_key = self.model.build_raw(options), rkey
+                self.cleaned_now = cleanup.apply(self.raw, options.clean)
+                self.mesh, self.mesh_key = self.cleaned_now.mesh, key
+            return self.cleaned_now
+
+    def face_graph(self, options: MeshOptions):
+        c = self.cleaned(options)
+        with self.lock:
+            if self.graph is None or self.graph[0] != self.mesh_key or self.graph[1] is not c:
+                self.graph = (self.mesh_key, c, cleanup.FaceGraph(c.mesh))
+            return self.graph[2]
 
 
 def _options_key(options: MeshOptions) -> tuple:
     return (None if options.parts is None else tuple(sorted(options.parts)), tuple(sorted(options.flags.items())),
-            options.pose)
+            options.pose, tuple(sorted((options.bones or {}).items())) or None, attach.places_key(options.attach),
+            options.clean.key if options.clean else None)
 
 
 def generated_key(session: Session, options: MeshOptions, settings: dict) -> tuple:
@@ -242,7 +282,75 @@ def mesh_options(args: dict) -> MeshOptions:
     parts = args.get("parts")
     flags = args.get("flags") or {}
     return MeshOptions(None if parts is None else {int(p) for p in parts}, {str(k): bool(v) for k, v in flags.items()},
-                       parse_pose(args.get("pose")))
+                       parse_pose(args.get("pose")), parse_bones(args.get("bones")), parse_places(args.get("attach")),
+                       clean_list(args))
+
+
+def _json_value(value, what: str):
+    """A value the page sends as JSON in a command, or as JSON text in a URL (blank when there is none: the
+    desktop app's engine:// requests keep blank parameters)."""
+    if isinstance(value, str):
+        if not value.strip():
+            return None
+        try:
+            return json.loads(value)
+        except ValueError:
+            raise AppError(f"{what} couldn't be read.") from None
+    return value
+
+
+def parse_bones(value) -> dict[str, tuple[float, float, float]] | None:
+    """Bone adjustments as the page sends them: ``{"L_Hand": [0, 0, 30]}`` (degrees), JSON or JSON text."""
+    value = _json_value(value, "The bone adjustments")
+    if value in (None, "", {}, []):
+        return None
+    if not isinstance(value, dict):
+        raise AppError("Bone adjustments are sent as {bone: [x, y, z]} in degrees.")
+    try:
+        return posing.clean_bones(value) or None
+    except FormatError as exc:
+        raise AppError(str(exc)) from None
+
+
+def parse_places(value) -> dict | None:
+    """Where the attached models sit, as the page sends it: ``{id: {bone, offset_mm, rotate, scale}}``."""
+    value = _json_value(value, "The attached models' places")
+    try:
+        return attach.parse_places(value if value not in ("", []) else None)
+    except FormatError as exc:
+        raise AppError(str(exc)) from None
+
+
+_CLEAN_LISTS: OrderedDict[str, Any] = OrderedDict()  # clean-up lists the page sent, by the name it gives them
+_CLEAN_LOCK = threading.Lock()
+KEEP_CLEAN_LISTS = 64
+UNKNOWN_CLEAN = "The clean-up list isn't known here yet"
+
+
+def clean_list(args: dict):
+    """The clean-up list (Clean tab) ``args`` give, or None: the operations themselves (``clean``, a list, kept
+    under the page's name for them, ``clean_id``, for the addresses of meshes and pictures), or the name of a
+    list sent before (in an address)."""
+    value = args.get("clean")
+    if value is None or value == "" or value == []:
+        return None
+    if isinstance(value, (list, tuple)):
+        try:
+            found = cleanup.CleanList.of(list(value))
+        except ValueError as exc:
+            raise AppError(f"The clean-up list can't be used: {exc}") from None
+        name = str(args.get("clean_id") or found.key)
+        with _CLEAN_LOCK:
+            _CLEAN_LISTS[name] = found
+            _CLEAN_LISTS.move_to_end(name)
+            while len(_CLEAN_LISTS) > KEEP_CLEAN_LISTS:
+                _CLEAN_LISTS.popitem(last=False)
+        return found or None
+    with _CLEAN_LOCK:
+        found = _CLEAN_LISTS.get(str(value))
+    if found is None:
+        raise AppError(f"{UNKNOWN_CLEAN} (send it to clean_check first).")
+    return found or None
 
 
 def parse_pose(value) -> tuple[str, int] | None:
@@ -259,6 +367,10 @@ def parse_pose(value) -> tuple[str, int] | None:
         return str(name), int(frame)
     except (TypeError, ValueError):
         raise AppError("A pose is an animation name and a frame number.") from None
+
+
+def _places_json(places: dict | None) -> dict | None:
+    return None if places is None else {k: attach.place_json(v) for k, v in places.items()}
 
 
 def entry_json(e: CatalogEntry) -> dict:
@@ -292,7 +404,37 @@ def model_json(m: SourceModel, mesh: TriMesh) -> dict:
         "textures": [{"key": k, "name": t.name, "source": t.source} for k, t in sorted(m.textures.items())],
         "info": m.info, "notes": m.notes, "stats": mesh_stats(mesh), "animated": m.animations is not None,
         "configuration": m.configuration,
+        # bones the Pose tab can adjust (a model with a skeleton, animated or not), and what is attached to it
+        "posable": _posable(m, mesh), "bones": len(m.rig.names) if m.rig is not None else 0,
+        "sockets": sorted(m.sockets), "attachments": list(m.attachments),
     }
+
+
+def _posable(m: SourceModel, mesh: TriMesh) -> bool:
+    """Whether the Pose tab has something to do: animations, or bones whose turns move the mesh."""
+    if m.animations is not None:
+        return True
+    if m.rig is None or len(m.rig.names) < 2:
+        return False
+    skin = mesh.metadata.get("skin")
+    if skin is None:
+        return m.adjusts_bones
+    joints, weights = skin
+    return bool(((np.asarray(joints) >= 0) & (np.asarray(weights) > 0)).any())
+
+
+def _clean_json(cleaned) -> dict:
+    """What a model's clean-up did, for the Clean tab: a row per operation, the scale its transform gave, and the
+    model's size before it (game millimetres)."""
+    return {"rows": cleaned.rows, "scale": cleaned.scale, "game_size_mm": cleaned.game_size_mm}
+
+
+def _shown_order(mesh: TriMesh) -> np.ndarray:
+    """For each face of ``mesh``, its triangle in the mesh as the 3D view gets it (meshpack sorts them by material)."""
+    order = np.argsort(mesh.face_material, kind="stable")
+    shown = np.empty(len(order), np.int64)
+    shown[order] = np.arange(len(order))
+    return shown
 
 
 def mesh_stats(mesh: TriMesh) -> dict:
@@ -1836,6 +1978,7 @@ class Service(OrganiseCommands, QueueCommands):
                 if rel is not None:
                     key = overlay.model_key(rel, model.variant if model.variants else None)
                     model = overlay.apply(model, self._overlay(entry.game).textures(key), self._store_root(entry.game))
+                    model = self._with_attachments(entry, model, self._overlay(entry.game).attachments(key))
             session = Session(sid, model, entry)
             self._show_kept(session)
             with self.lock:
@@ -1859,6 +2002,39 @@ class Service(OrganiseCommands, QueueCommands):
                     "configurable_as": self._configurable_as(path) if config is None else [],
                     "assigned": self._assigned_json(session)})
         return out
+
+    def _with_attachments(self, entry: CatalogEntry, model: SourceModel, items: list[dict]) -> SourceModel:
+        """``model`` with the models the overlay attaches to it (those found in the library)."""
+        if not items:
+            return model
+        held, notes = [], []
+        for raw in items[:attach.MAX_ATTACHMENTS]:
+            try:
+                spec = attach.parse_attachment(raw)
+            except FormatError:
+                continue
+            path = self._find_model(entry.game, spec.file)
+            if path is None:
+                notes.append(f"{spec.label or spec.file} is attached to this model, but it isn't in the library now.")
+                continue
+            try:
+                held.append((spec, self._part_model(str(path), spec.variant)))
+            except (FormatError, OSError) as exc:
+                notes.append(f"{spec.label or spec.file} couldn't be opened to attach it: {exc}")
+        if not held and not notes:
+            return model
+        return attach.attached(model, held, notes)
+
+    def _find_model(self, game: str, file: str) -> Path | None:
+        """A model file a configuration or an attachment names (its path in the game, or a whole path),
+        among the game's models: the game's file, a collected copy or its package."""
+        p = Path(file)
+        if p.is_absolute() and p.is_file():
+            return p
+        with self.lock:
+            roots = [r for r, g in self.library.roots.items() if g == game]
+            entries = [e for e in self.library.entries if e.game == game]
+        return configs.Resolver(entries, roots).find(configs.ModelRef(file))
 
     def _assigned_json(self, session: Session) -> dict:
         """The textures the overlay assigns to the open model's materials: {material: {role: name}}."""
@@ -2420,23 +2596,106 @@ class Service(OrganiseCommands, QueueCommands):
         return session
 
     def cmd_model_stats(self, args: dict) -> dict:
+        """The model's size and counts with these parts, options, pose and clean-up; with a clean-up, what each of its
+        operations did (``clean``)."""
         session = self._session(args)
-        return mesh_stats(session.build(mesh_options(args)))
+        options = mesh_options(args)
+        cleaned = session.cleaned(options)
+        out = mesh_stats(cleaned.mesh)
+        if options.clean:
+            out["clean"] = _clean_json(cleaned)
+        return out
+
+    def cmd_clean_check(self, args: dict) -> dict:
+        """The clean-up list sent (``clean``, named ``clean_id``) done on the model: what each operation did, and the
+        model's size after it. The list is kept under its name, for the addresses of the meshes shown."""
+        return self.cmd_model_stats(args)
+
+    # ------------------------------------------------------------ the Clean tab's finders
+
+    def cmd_clean_find(self, args: dict) -> dict:
+        """Find what to clean on the model as it is cleaned so far (a job): ``find`` is ``hidden_parts``,
+        ``hidden_faces`` (``depth_mm``) or ``sheets`` (``thickness_mm``). Faces are given as stable ids (to record
+        in an operation) and as the triangles of the mesh shown (``shown``, to highlight). Millimetres are those of
+        the model shown: print millimetres once a print height is set."""
+        session = self._session(args)
+        options = mesh_options(args)
+        what = str(args.get("find") or "")
+        if what not in ("hidden_parts", "hidden_faces", "sheets"):
+            raise AppError("Find hidden_parts, hidden_faces or sheets.")
+        depth = max(float(args.get("depth_mm") or 0.0), 0.0)
+        thickness = max(float(args.get("thickness_mm") or 0.5), 0.001)
+
+        def run(job: Job):
+            job.report(0.02, "Building the model")
+            cleaned = session.cleaned(options)
+            mesh = cleaned.mesh
+            shown = _shown_order(mesh)
+            progress = lambda f, m: (job.check(), job.report(0.05 + 0.9 * f, m))  # noqa: E731
+            if what == "hidden_parts":
+                found = cleanup.find_hidden_parts(mesh, progress)
+                faces = np.concatenate(found) if found else np.zeros(0, np.int64)
+                return {"find": what, "faces": cleanup.encode_ids(cleaned.ids[faces]), "count": int(len(faces)),
+                        "parts": len(found), "shown": shown[faces].tolist()}
+            if what == "hidden_faces":
+                faces = cleanup.find_hidden_faces(mesh, depth / 1000, progress)
+                return {"find": what, "faces": cleanup.encode_ids(cleaned.ids[faces]), "count": int(len(faces)),
+                        "depth_mm": depth, "shown": shown[faces].tolist()}
+            regions, more = cleanup.find_sheets(mesh, thickness / 1000, progress)
+            return {"find": what, "thickness_mm": thickness, "more": more, "regions": [
+                {**r.as_dict(), "index": i, "faces_ids": cleanup.encode_ids(cleaned.ids[r.faces]),
+                 "shown": np.sort(shown[r.faces]).tolist()} for i, r in enumerate(regions)]}
+
+        label = {"hidden_parts": "Looking for parts hidden inside others", "hidden_faces": "Looking for hidden faces",
+                 "sheets": "Looking for thin sheets"}[what]
+        return {"job": self.jobs.start(label, run, stoppable=True).id}
+
+    def cmd_clean_select(self, args: dict) -> dict:
+        """The faces a click on triangle ``face`` of the mesh shown selects: those reached across edges where the
+        surface bends less than ``angle`` degrees (as triangles of the mesh shown)."""
+        session = self._session(args)
+        options = mesh_options(args)
+        mesh = session.build(options)
+        try:
+            face = int(args.get("face"))
+        except (TypeError, ValueError):
+            raise AppError("Say which triangle was clicked.") from None
+        if not 0 <= face < mesh.n_faces:
+            raise AppError("That triangle isn't on the model shown.")
+        order = np.argsort(mesh.face_material, kind="stable")
+        faces = session.face_graph(options).flood(int(order[face]), float(args.get("angle", 30)))
+        shown = _shown_order(mesh)
+        return {"shown": np.sort(shown[faces]).tolist(), "count": int(len(faces))}
+
+    def cmd_clean_ids(self, args: dict) -> dict:
+        """Triangles of the mesh shown (``shown``) as the stable ids an operation records them by."""
+        session = self._session(args)
+        cleaned = session.cleaned(mesh_options(args))
+        try:
+            shown = np.asarray([int(i) for i in (args.get("shown") or [])], np.int64)
+        except (TypeError, ValueError):
+            raise AppError("Name the triangles by their numbers.") from None
+        shown = shown[(shown >= 0) & (shown < cleaned.mesh.n_faces)]
+        order = np.argsort(cleaned.mesh.face_material, kind="stable")
+        faces = order[shown]
+        return {"faces": cleanup.encode_ids(cleaned.ids[faces]), "count": int(len(np.unique(faces)))}
 
     def cmd_model_animations(self, args: dict) -> dict:
         """The animations that can pose the model: name, frames, duration and frame rate of each."""
         session = self._session(args)
         anims = session.model.animations
         if anims is None:
-            return {"animations": [], "bones": 0, "note": getattr(session.model, "pose_note", None)}
+            rig = getattr(session.model, "rig", None)
+            return {"animations": [], "bones": len(rig.names) if rig is not None else 0,
+                    "note": getattr(session.model, "pose_note", None)}
         try:
             infos = anims.list()
             bones = len(anims.skeleton)
         except Exception as exc:  # noqa: BLE001 - a broken archive is reported, not fatal
             if session.model.variant is None or not session.model.variants:
-                self._note_problem(session.entry, anim_error=_problem_text(exc))
+                self._note_problem(getattr(session, "entry", None), anim_error=_problem_text(exc))
             raise AppError(f"The animations couldn't be read: {exc}") from exc
-        entry = session.entry
+        entry = getattr(session, "entry", None)
         if entry is not None and entry.config is None and (self.index.stats(entry.game, entry.id) or {}).get("anim_error"):
             known = dict(self.index.stats(entry.game, entry.id))
             known.pop("anim_error", None)
@@ -2444,23 +2703,220 @@ class Service(OrganiseCommands, QueueCommands):
             self._index_dirty.setdefault(entry.game, time.monotonic())
         return {"animations": [i.as_dict() for i in infos], "bones": bones, "note": getattr(anims, "note", None)}
 
+    # ------------------------------------------------------------ bones, saved poses, attached models
+
+    def _used_bones(self, session: Session) -> set[int] | None:
+        """The bones the model's vertices are weighted to, and their parents (whose turns move them too)."""
+        if session.used_bones is None:
+            rig = session.model.rig
+            used: set[int] | None = None
+            skin = session.build(MeshOptions()).metadata.get("skin")
+            if skin is not None and rig is not None:
+                joints, weights = (np.asarray(a) for a in skin)
+                found = {int(b) for b in np.unique(joints[(weights > 0) & (joints >= 0)])}
+                used = set()
+                for b in found:
+                    while 0 <= b < len(rig.names) and b not in used:
+                        used.add(b)
+                        b = int(rig.parents[b])
+            session.used_bones = used if used is not None else set(range(len(rig.names) if rig else 0))
+        return session.used_bones
+
+    def cmd_model_bones(self, args: dict) -> dict:
+        """The model's bones in the pose shown (``pose`` and ``bones`` as the mesh commands take them): each
+        one's name, parent, depth in the tree, place (millimetres) and axes (a quaternion), its partner on the
+        other side of the body, and whether turning it moves the mesh."""
+        session = self._session(args)
+        rig = session.model.rig
+        if rig is None:
+            return {"bones": [], "skeleton": None,
+                    "why": session.model.pose_note or "This model has no skeleton whose bones can be turned."}
+        options = mesh_options(_parse_lists(args))
+        try:
+            world = posing.bone_world(rig, options.pose, options.bones)
+        except FormatError as exc:
+            raise AppError(str(exc)) from exc
+        world = self._cleaned_frame(session, options, world)
+        used = self._used_bones(session)
+        names = list(rig.names)
+        known = set(names)
+        parents = [int(p) if 0 <= int(p) < len(names) and int(p) != i else -1 for i, p in enumerate(rig.parents)]
+        depth = [0] * len(names)
+        for i in range(len(names)):
+            d, j, seen = 0, parents[i], set()
+            while j >= 0 and j not in seen and d < 256:
+                seen.add(j)
+                d, j = d + 1, parents[j]
+            depth[i] = d
+        out = []
+        for i, name in enumerate(names):
+            q, flip = posing.quaternion(world[i])
+            out.append({"name": name, "parent": parents[i], "depth": depth[i],
+                        "pos": [round(float(x) * 1000, 3) for x in world[i][:3, 3]], "quat": q, "flip": flip,
+                        "used": i in used, "partner": posing.mirror_name(name, known),
+                        "side": posing.side_of(name, known)})
+        return {"bones": out, "skeleton": posing.skeleton_signature(names),
+                "adjusted": {k: list(v) for k, v in (options.bones or {}).items()}}
+
+    def cmd_pose_mirror(self, args: dict) -> dict:
+        """The bone adjustments ``bones`` with those of ``names`` (or of every bone on one ``side``, "left" or
+        "right") copied, mirrored, onto their partners on the other side."""
+        session = self._session(args)
+        rig = session.model.rig
+        if rig is None:
+            raise AppError("This model has no skeleton.")
+        bones = parse_bones(args.get("bones")) or {}
+        side = str(args.get("side") or "")
+        if side:
+            known = set(rig.names)
+            names = [n for n in rig.names if posing.side_of(n, known) == side]
+        else:
+            names = [str(n) for n in args.get("names") or []]
+        if not any(posing.mirror_name(n, set(rig.names)) for n in names):
+            raise AppError("No bone with a partner on the other side was chosen (bones pair up by their names: "
+                           "L_ and R_, _l and _r, Left and Right).")
+        return {"bones": {k: list(v) for k, v in posing.mirror_bones(rig, bones, names).items()}}
+
+    def _model_place(self, session: Session, what: str) -> tuple[overlay.Overlay, str]:
+        """The overlay and key the open model's own things (saved poses, attached models) are kept under."""
+        entry = session.entry
+        if entry is None:
+            raise AppError(f"{what} are kept for models in the library (not for files opened on their own).")
+        if entry.config is not None:
+            return self._overlay(entry.game), f"config:{entry.config.id}"
+        rel = self._overlay_rel(entry)
+        if rel is None:
+            raise AppError("That model isn't in one of the game's folders.")
+        m = session.model
+        return self._overlay(entry.game), overlay.model_key(rel, m.variant if m.variants else None)
+
+    def _poses_json(self, session: Session) -> dict:
+        try:
+            ov, key = self._model_place(session, "Saved poses")
+        except AppError as exc:
+            return {"own": [], "shared": [], "why": str(exc)}
+        rig = session.model.rig
+        sig = posing.skeleton_signature(rig.names) if rig is not None else None
+        names = set(rig.names) if rig is not None else set()
+
+        def row(name: str, p: dict, **extra) -> dict:
+            bones = {k: v for k, v in (p.get("bones") or {}).items() if k in names}
+            return {"name": name, "animation": p.get("animation"), "frame": int(p.get("frame") or 0),
+                    "bones": bones, "saved": p.get("saved"), **extra}
+
+        own = [row(n, p) for n, p in ov.poses(key).items()]
+        shared = []
+        if sig:
+            for other, name, p in ov.poses_like(sig, but=key):
+                shared.append(row(name, p, model=p.get("label") or other.split("|")[0].rsplit("/", 1)[-1], key=other))
+        return {"own": own, "shared": shared, "skeleton": sig}
+
+    def cmd_poses(self, args: dict) -> dict:
+        """The model's saved poses, and those saved on other models of the game with the same skeleton."""
+        return self._poses_json(self._session(args))
+
+    def cmd_pose_save(self, args: dict) -> dict:
+        """Keep the pose shown (``pose``: animation and frame, ``bones``: adjustments) as ``name``."""
+        session = self._session(args)
+        ov, key = self._model_place(session, "Saved poses")
+        options = mesh_options(_parse_lists(args))
+        rig = session.model.rig
+        if options.pose is None and not options.bones:
+            raise AppError("Choose an animation's frame or turn a bone first: the bind pose needs no saving.")
+        label = session.entry.label if session.entry is not None else session.model.name
+        pose = {"animation": options.pose[0] if options.pose else None, "frame": options.pose[1] if options.pose else 0,
+                "bones": {k: list(v) for k, v in (options.bones or {}).items()},
+                "skeleton": posing.skeleton_signature(rig.names) if rig is not None else None,
+                "label": label, "saved": time.strftime("%Y-%m-%d %H:%M")}
+        try:
+            name = ov.save_pose(key, str(args.get("name") or ""), pose)
+        except ValueError as exc:
+            raise AppError(str(exc)) from None
+        ov.save()
+        return {**self._poses_json(session), "saved": name}
+
+    def cmd_pose_rename(self, args: dict) -> dict:
+        session = self._session(args)
+        ov, key = self._model_place(session, "Saved poses")
+        try:
+            name = ov.rename_pose(key, str(args.get("name") or ""), str(args.get("to") or ""))
+        except KeyError:
+            raise AppError("That pose isn't saved any more.") from None
+        except ValueError as exc:
+            raise AppError(str(exc)) from None
+        ov.save()
+        return {**self._poses_json(session), "renamed": name}
+
+    def cmd_pose_delete(self, args: dict) -> dict:
+        session = self._session(args)
+        ov, key = self._model_place(session, "Saved poses")
+        ov.delete_pose(key, str(args.get("name") or ""))
+        ov.save()
+        return self._poses_json(session)
+
+    def cmd_attach_save(self, args: dict) -> dict:
+        """Keep the models attached to the open model: ``items`` [{id (none for a new one), file, variant,
+        label, place}]. ``reopen`` says the set changed, so the page opens the model again to show it."""
+        session = self._session(args)
+        entry = session.entry
+        if entry is None or entry.config is not None:
+            raise AppError("Models can be attached to models in the library (not to files opened on their own or "
+                           "configurable models) for now.")
+        ov, key = self._model_place(session, "Attached models")
+        raw = args.get("items")
+        if not isinstance(raw, list):
+            raise AppError("No attached models were sent.")
+        if len(raw) > attach.MAX_ATTACHMENTS:
+            raise AppError(f"At most {attach.MAX_ATTACHMENTS} models can be attached to one.")
+        before = [[a.get("id"), a.get("file"), a.get("variant"), a.get("label")] for a in ov.attachments(key)]
+        items = []
+        for r in raw:
+            if not isinstance(r, dict) or not r.get("file"):
+                raise AppError("Each attached model names its file.")
+            file = str(r["file"])
+            if Path(file).is_absolute():
+                file = self._relative(file)
+            try:
+                place = attach.parse_place(r.get("place") or {})
+            except FormatError as exc:
+                raise AppError(str(exc)) from None
+            spec = attach.Attachment(str(r.get("id") or uuid.uuid4().hex[:8]), file, str(r.get("variant") or "") or None,
+                                     str(r.get("label") or "").strip()[:120], place)
+            items.append(attach.attachment_json(spec))
+        if any(a["file"] == self._relative(str(entry.path)) for a in items):
+            raise AppError("A model can't be attached to itself.")
+        with self.lock:
+            ov.set_attachments(key, items)
+            ov.save()
+        after = [[a.get("id"), a.get("file"), a.get("variant"), a.get("label")] for a in items]
+        return {"items": items, "reopen": after != before}
+
     def cmd_model_mesh(self, args: dict) -> bytes:
+        """A mesh for the 3D view (``which``: original, enhanced, finished or pieces); ``thickness=1`` sends the
+        thickness behind each vertex along, for the Thickness shading."""
         session = self._session(args)
         uv = str(args.get("uv", "1")) not in ("0", "false", "")
-        if args.get("which") == "enhanced":
+        thick = str(args.get("thickness", "0")) not in ("0", "false", "")
+        which = str(args.get("which") or "original")
+
+        def pack(mesh: TriMesh, with_uv: bool, extra: dict) -> bytes:
+            scalar = ("thickness", session.thickness(which, mesh)) if thick else None
+            return pack_mesh(mesh, with_uv, extra=extra, scalar=scalar)
+
+        if which == "enhanced":
             if session.result is None:
                 raise AppError("This model hasn't been generated yet.")
-            return pack_mesh(session.result.displaced, uv, extra={"which": "enhanced"})
-        if args.get("which") == "finished":
+            return pack(session.result.displaced, uv, {"which": "enhanced"})
+        if which == "finished":
             if session.finished is None:
                 raise AppError("This model hasn't been made watertight yet.")
-            return pack_mesh(session.finished.mesh, False, extra={"which": "finished"})
-        if args.get("which") == "pieces":
+            return pack(session.finished.mesh, False, {"which": "finished"})
+        if which == "pieces":
             if session.cut is None:
                 raise AppError("This model hasn't been cut yet.")
             pieces = [{"name": p.name, "kind": p.kind, "center": p.stats()["center_mm"]} for p in session.cut.pieces]
-            return pack_mesh(session.cut.combined(), False, extra={"which": "pieces", "pieces": pieces})
-        return pack_mesh(session.build(mesh_options(_parse_lists(args))), uv, extra={"which": "original"})
+            return pack(session.cut.combined(), False, {"which": "pieces", "pieces": pieces})
+        return pack(session.build(mesh_options(_parse_lists(args))), uv, {"which": "original"})
 
     def cmd_texture(self, args: dict) -> bytes:
         session = self._session(args)
@@ -2586,6 +3042,8 @@ class Service(OrganiseCommands, QueueCommands):
             albedo_detail_mm=float(s.get("albedo_detail_mm") or 0.0),
             detail_normals=bool(s.get("detail_normals", defaults.detail_normals)),
             detail_strength=float(s.get("detail_strength", defaults.detail_strength)),
+            thin_parts=bool(s.get("thin_parts", defaults.thin_parts)),
+            thin_room=min(max(float(s.get("thin_room", defaults.thin_room)), 0.05), 1.0),
         )
         if settings.target_vertices < 1000:
             raise AppError("Choose at least 1,000 vertices.")
@@ -2632,7 +3090,10 @@ class Service(OrganiseCommands, QueueCommands):
             job.check()  # stopped in its last step: not kept
             if getattr(result, "made_with", None) is None:  # what it was made with, kept with it as a variation
                 result.made_with = {"settings": dict(args.get("settings") or {}), "step": args.get("step") or "both",
-                                    "parts": args.get("parts"), "flags": args.get("flags") or {}, "pose": args.get("pose")}
+                                    "parts": args.get("parts"), "flags": args.get("flags") or {}, "pose": args.get("pose"),
+                                    "bones": {k: list(v) for k, v in (options.bones or {}).items()} or None,
+                                    "attach": _places_json(options.attach),
+                                    "clean": args.get("clean") if isinstance(args.get("clean"), list) and options.clean else None}
             self._keep(key, result)
             session.result, session.result_id = result, _key_id(key)
             return {**self._result_json(session), "kept": kept is not None, "mesh_reused": mesh is not None}
@@ -2863,7 +3324,8 @@ class Service(OrganiseCommands, QueueCommands):
         made = getattr(result, "made_with", None) or {}
         info = {"variant": variant, "model": {"label": session.entry.label, "stem": session.entry.stem},
                 "settings": made.get("settings") or {}, "step": made.get("step") or "both",
-                "mesh": {"parts": made.get("parts"), "flags": made.get("flags") or {}, "pose": made.get("pose")},
+                "mesh": {"parts": made.get("parts"), "flags": made.get("flags") or {}, "pose": made.get("pose"),
+                         **{k: made[k] for k in ("bones", "attach") if made.get(k)}, "clean": made.get("clean") or None},
                 "result": {k: shown[k] for k in ("stats", "size_mm", "fields", "warnings", "displaced")},
                 "from": getattr(result, "variation", None)}
 
@@ -2901,7 +3363,7 @@ class Service(OrganiseCommands, QueueCommands):
                                bool(made.get("displaced", True)))
         result.saved, result.variation = made, vid
         result.made_with = {"settings": row.get("settings") or {}, "step": row.get("step") or "both",
-                            **{k: (row.get("mesh") or {}).get(k) for k in ("parts", "flags", "pose")}}
+                            **{k: (row.get("mesh") or {}).get(k) for k in ("parts", "flags", "pose", "bones", "attach", "clean")}}
         session.result, session.result_id = result, f"var-{vid}"
         return {**self._result_json(session), "saved": row}
 
@@ -2984,14 +3446,59 @@ class Service(OrganiseCommands, QueueCommands):
                 opts.textures = _paint_textures(model, mesh, paint)
             elif args.get("textures", True) and ext in (".obj", ".glb"):
                 opts.textures = _albedo(model, mesh)
+            out_mesh = mesh
+            if ext == ".glb":  # the skeleton too, standing in the pose the mesh is in
+                out_mesh, opts.skeleton, opts.skin = self._export_skeleton(session, which, args, mesh)
             job.report(0.2, "Writing")
-            path = export_mesh(mesh, _free_name(folder / f"{base}{ext}"), opts)
+            path = export_mesh(out_mesh, _free_name(folder / f"{base}{ext}"), opts)
             out = {"path": str(path), "bytes": path.stat().st_size}
             if opts.painting is not None:
                 out["paint"] = {**opts.painting.stats(), "palette_file": str(path.with_name(f"{path.stem}_palette.png"))}
             return out
 
         return {"job": self.jobs.start(f"Exporting {base}{ext}", run, stoppable=True).id}
+
+    def _cleaned_frame(self, session: Session, options: MeshOptions, world: np.ndarray) -> np.ndarray:
+        """Bone matrices ``world`` moved, turned and scaled as the Clean tab's transform moves the model."""
+        if not options.clean or not options.clean.transform():
+            return world
+        affine = session.cleaned(options).affine
+        return world if affine is None else affine @ world
+
+    def _export_skeleton(self, session: Session, which: str, args: dict, mesh: TriMesh):
+        """(mesh, skeleton, skin) for a GLB: the model's bones in the pose the mesh shows, and for the original
+        model its weights, so the glTF's skeleton stands in that pose with the mesh bound to it. An enhanced
+        model's vertices are new, so it gets the skeleton without weights."""
+        model = session.model
+        rig = model.rig
+        if rig is None or which not in ("original", "enhanced"):
+            return mesh, None, None
+        if which == "enhanced":
+            made = getattr(session.result, "made_with", None) or {}
+            if any(isinstance(op, dict) and op.get("op") == "transform" for op in made.get("clean") or []):
+                return mesh, None, None
+            try:
+                world = posing.bone_world(rig, parse_pose(made.get("pose")), parse_bones(made.get("bones")))
+            except (FormatError, AppError):
+                return mesh, None, None
+            return mesh, (list(rig.names), rig.parents, world), None
+        options = mesh_options(_parse_lists(args))
+        affine = session.cleaned(options).affine if options.clean else None
+        if "pose" not in mesh.metadata and mesh.metadata.get("skin") is None and not model.adjusts_bones:
+            try:  # posed by its importer: the same pose from its skeleton, which keeps the weights
+                posed = posing.pose_adjusted(model, dataclasses.replace(options, flags={
+                    **{o.key: o.default for o in model.options}, **options.flags}))
+            except FormatError:
+                return mesh, None, None
+            mesh = cleanup.apply(posed, options.clean).mesh if options.clean else posed
+        world = mesh.metadata.get("pose")
+        if world is None:
+            world = rig.bind_world if options.pose is None and not options.bones else \
+                posing.bone_world(rig, options.pose, options.bones)
+        if affine is not None:  # moved, turned or sized on the Clean tab: the bones with it
+            world = affine @ world
+        skin = mesh.metadata.get("skin")
+        return mesh, (list(rig.names), rig.parents, world), skin
 
     # ------------------------------------------------------------ painting (3MF)
 

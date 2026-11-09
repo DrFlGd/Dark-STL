@@ -106,4 +106,5 @@ export const Icon = {
   queue: (s) => svg(html`<path d="M4 6h11M4 12h11M4 18h7" /><path d="M16 15l5 3-5 3z" />`, s),
   sparkle: (s) => svg(html`<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" /><path d="M19 16l.7 1.8 1.8.7-1.8.7L19 21l-.7-1.8-1.8-.7 1.8-.7z" />`, s),
   play: (s) => svg(html`<path d="M7 4.5v15l12-7.5z" />`, s),
+  brush: (s) => svg(html`<path d="M14.5 4.5 19.5 9.5 11 18l-5-5z" /><path d="M6 13c-2 0-3 1.6-3 3.5V20h3.5c1.9 0 3.5-1 3.5-3" /><path d="M16.5 2.5l5 5" />`, s),
 };

@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -103,6 +103,14 @@ class MeshOptions:
     parts: set[int] | None = None  # part indices to include (None = all)
     flags: dict[str, bool] = field(default_factory=dict)  # BuildOption values by key
     pose: tuple[str, int] | None = None  # (animation name, frame) to pose the model in; None = bind pose
+    # bone adjustments on top of the pose: bone name -> (x, y, z) degrees, a turn about the bone's own axes
+    # (X, then Y, then Z, as three.js's "XYZ" order), applied after the animation and before skinning
+    # (see :mod:`darkstl.posing`). Works on the bind pose too. None or {} = none.
+    bones: dict[str, tuple[float, float, float]] | None = None
+    # where the models attached to this one sit (see :mod:`darkstl.attach`): attachment id -> its place
+    # (an :class:`darkstl.attach.Place`); None = as the model keeps them
+    attach: dict | None = None
+    clean: Any = None  # a clean.CleanList: the Clean tab's operations, done on the model as built and posed
 
 
 @dataclass
@@ -152,16 +160,38 @@ class SourceModel:
     paint_for: Callable[["SourceModel"], Texture | None] | None = field(default=None, repr=False)
     paint: PaintRecipe | None = field(default=None, repr=False)  # how ``paint_for`` mixes, for model packages
     paint_uvs: PaintUVs | None = field(default=None, repr=False)  # what such a paint is mixed from on this model
-    rig: Rig | None = field(default=None, repr=False)  # the skeleton animations pose, for model packages
+    # the skeleton animations pose (model packages keep it), and bone adjustments turn (the Pose tab's bones)
+    rig: Rig | None = field(default=None, repr=False)
+    # its ``build`` applies ``MeshOptions.bones`` itself (a model made of others passes them on to each);
+    # otherwise :meth:`build_mesh` does, from ``rig`` and the bind-pose mesh's skin weights
+    adjusts_bones: bool = field(default=False, repr=False)
+    # the models attached to it (see :mod:`darkstl.attach`), for the page
+    attachments: list = field(default_factory=list, repr=False)
     # the textures the model's materials name that weren't found (in its files or the game's folder): listed on
     # the game's Problems, with Find textures… and Choose texture…
     missing_textures: list[str] = field(default_factory=list, repr=False)
 
     def build_mesh(self, options: MeshOptions | None = None) -> TriMesh:
+        """The model's mesh with ``options``: its parts, switches and pose, then its clean-up (Clean tab), last."""
+        options = options or MeshOptions()
+        mesh = self.build_raw(options)
+        if options.clean:
+            from .clean import apply
+
+            mesh = apply(mesh, options.clean).mesh
+        return mesh
+
+    def build_raw(self, options: MeshOptions | None = None) -> TriMesh:
+        """The model's mesh as the importer builds it with ``options`` (parts, switches, pose), before any clean-up."""
         options = options or MeshOptions()
         flags = {o.key: o.default for o in self.options}
         flags.update(options.flags)
-        return self.build(MeshOptions(options.parts, flags, options.pose))
+        options = replace(options, flags=flags)
+        if options.bones and self.rig is not None and not self.adjusts_bones:
+            from .posing import pose_adjusted
+
+            return pose_adjusted(self, options)
+        return self.build(options)
 
 
 @dataclass
@@ -179,7 +209,8 @@ class Rig:
     parents: np.ndarray  # (B,) int, -1 for a root
     bind_local: np.ndarray  # (B, 4, 4)
     bind_world: np.ndarray  # (B, 4, 4): where the bind-pose mesh was placed with
-    # (animation, frame) -> (bone names, (n, 4, 4) local matrices of those bones at that frame)
+    # (animation, frame) -> (bone names, (n, 4, 4) local matrices of those bones at that frame); for a model
+    # with bones but no animations it raises (bone adjustments still turn its bind pose)
     pose_locals: Callable[[str, int], tuple[list[str], np.ndarray]] = field(repr=False)
     # animation -> (bone names, (frames, n, 4, 4)): every frame at once, when the importer can do it faster
     pose_all: Callable[[str], tuple[list[str], np.ndarray]] | None = field(default=None, repr=False)
