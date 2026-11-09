@@ -108,7 +108,7 @@ function Engine({ part }) {
     </section>` : null}
     ${shown("tools") ? html`<section class="ls-section" id="settings-oodle">
       <h2>Oodle</h2>
-      <p class="muted">Sekiro, Elden Ring and Cyberpunk 2077 compress their files with Oodle. Dark STL uses the game's own copy of it (oo2core_6_win64.dll in the game's folder; bin\\x64\\oo2ext_7_win64.dll for Cyberpunk) and finds it by itself when a model comes from there.</p>
+      <p class="muted">Sekiro, Elden Ring, Cyberpunk 2077 and DOOM Eternal compress their files with Oodle. Dark STL uses the game's own copy of it (oo2core_6_win64.dll in the game's folder; bin\\x64\\oo2ext_7_win64.dll for Cyberpunk; oo2core_8_win64.dll beside DOOMEternalx64vk.exe) and finds it by itself when a model comes from there. The game's copy is a Windows DLL; on Linux or macOS, point this at a liboo2corelinux64.so or libkraken build instead.</p>
       <p id="oodle-status">${s.oodle_found ? html`${Icon.check(14)} Found: <span class="note-path">${s.oodle_found}</span>` : html`<span class="warn-text">Not found yet.</span> Dark Souls, Dark Souls II, Dark Souls III and Bloodborne don't need it.`}</p>
       <${PathRow} id="oodle-path" value=${s.oodle} placeholder="The DLL, or the game folder it's in" busy=${busy} browse=${pickFile}
         onSave=${(p) => save({ oodle: p }, p ? "Saved where Oodle is." : "Cleared.")} />

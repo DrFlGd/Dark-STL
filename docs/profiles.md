@@ -48,7 +48,7 @@ from then on and its sorting can be changed in that file.
 |------------|------------|
 | `format`   | 1. A file made for a newer Dark STL (a higher number) is left out and listed as a problem. |
 | `name`     | The game's name, as the library lists it. Required. |
-| `engine`   | Which backend reads it: `unreal4`, `unreal5`, `unreal3`, `fromsoft`, `reengine`, `redengine`, `renderware`, `rage`. Required unless the profile `extends` another. |
+| `engine`   | Which backend reads it: `unreal4`, `unreal5`, `unreal3`, `fromsoft`, `reengine`, `redengine`, `renderware`, `rage`, `idtech`. Required unless the profile `extends` another. |
 | `importer` | The importer that reads it, when not the engine's usual one (`unreal` for Unreal 4/5). The shipped Returnal and Borderlands profiles name their own importers (`returnal`, `borderlands`). |
 | `extends`  | Another profile's name: that profile's settings are taken first and this file's go over them (each section is merged key by key, one level down). |
 | `defaults` | `true` only in `unreal-defaults.json`: the settings every Unreal 4/5 game starts from (its own file's settings go over them, and its `models` keys replace the defaults' one by one). |
@@ -200,6 +200,10 @@ that engine:
   `reengine.lists` names bundled pak file lists (`RE4_STM_Release`).
 * `redengine` (Cyberpunk 2077): `recognise.files` and `recognise.folder_pattern` add to the ways its folder is
   recognised.
+* `idtech` (DOOM Eternal): a profile with the game's `name` changes what isn't confirmed on the real game yet:
+  `idtech.unit` (metres per id unit, 0.0254 as shipped: inches), `textures.normal_green` (`directx` or
+  `opengl`), and `recognise.files` (executables beside `base`, added to `DOOMEternalx64vk.exe`). For example
+  `{"format": 1, "name": "DOOM Eternal", "engine": "idtech", "idtech": {"unit": 0.01}}`.
 
 ### `renderware`: Grand Theft Auto III, Vice City, San Andreas
 

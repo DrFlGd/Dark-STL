@@ -40,7 +40,7 @@ importer and registering it in `importers/__init__.py`:
 | ActorX PSK/PSKX | UModel's and FModel's exports of Unreal models: points, wedges, faces and materials, mirrored from Unreal's frame like the Unreal games' own models; each material's textures found by name beside the model, from UModel's `.mat`, FModel's `.json` and UModel's `.props.txt` material files, then from texture names like the material's. The skeleton isn't read | Synthetic files (0.35.0) |
 | RenderWare (GTA III, Vice City, San Andreas) | `.img` archives (with `.dir`, or `VER2`) read in place, `.dff` models (parts placed by frames, skins, vehicles with their wheels copied to every axle and their colours from `carcols.dat` as variants), `.txd` textures (DXT, paletted and raw rasters), `.ifp` animations for peds, `.ide`/`.ipl`/`.gxt` for kinds, areas and vehicle names. Per-game differences are JSON profiles in `importers/profiles/` (`gta3`, `gtavc`, `gtasa`), read by the shared profile loader. See Reading Grand Theft Auto files | Synthetic files (0.50.0) |
 | RAGE (GTA V, then GTA IV) | GTA V: `.rpf` v7 archives (open, AES, NG, nested) with keys found in the user's `GTA5.exe`, RSC7 resources in the original and the Enhanced layouts: `.ydr` drawables, `.ydd` ped components (each ped an outfit), `.yft` vehicles with their wheels, `.ytd` textures, `.ycd` animations, names from `.gxt2` and the `.meta` lists. GTA IV (and its episodes): IMG3 archives with the key found in `GTAIV.exe`, RSC5 `.wdr`, `.wdd` (outfits), `.wft` (vehicles with their wheels), `.wtd`, names from the `.ide` files and `.gxt` | Synthetic files (0.51.0 GTA V, 0.52.0 GTA IV) |
-| id Tech 6/7/8 (DOOM, DOOM Eternal, DOOM: The Dark Ages) | `.resources` containers (IDCL; DOOM 2016's `.index`) and `.streamdb` with the game's Oodle, BIM textures, `.lwo` static and `.md6mesh` skinned models, `.md6skl` skeletons, `.md6anim` animations, `material2` decls. See Reading id Tech 6/7/8 files | Planned (0.53.0 Eternal, 0.54.0 DOOM 2016, 0.55.0 The Dark Ages) |
+| id Tech 6/7/8 (DOOM, DOOM Eternal, DOOM: The Dark Ages) | `.resources` containers (IDCL; DOOM 2016's `.index`) and `.streamdb` with the game's Oodle, BIM textures, `.lwo` static and `.md6mesh` skinned models, `.md6skl` skeletons, `.md6anim` animations, `material2` decls. See Reading id Tech 6/7/8 files | DOOM Eternal built (0.53.0, synthetic files only); DOOM 2016 (0.54.0) and The Dark Ages (0.55.0) planned |
 
 An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
 folder), `detect_game`, `variants` (files holding several models) and `describe`.
@@ -664,8 +664,8 @@ Everything is first built and tested on byte-built files (`tests/synth_rw.py`,
 `tests/synth_rage.py`); each PR says what has only been checked that way.
 ### Reading id Tech 6/7/8 files (DOOM, DOOM Eternal, DOOM: The Dark Ages)
 
-Planned (requested by Jerred on 2026-11-09); built in three releases, one per game, by a single
-importer, `importers/idtech/`, with a profile per game. The layouts below were worked out from
+Requested by Jerred on 2026-11-09; built in three releases, one per game, by a single importer
+(DOOM Eternal in 0.53.0, checked only on synthetic files so far), `importers/idtech/`, with a profile per game. The layouts below were worked out from
 [Valen](https://github.com/jandk/valen) (Jan De Kock, MIT: DOOM Eternal and The Dark Ages, the
 most complete reader of these games' models, textures and animations), EntityAtlan
 (FlavorfulGecko5, MIT: The Dark Ages' containers, StreamDB and Oodle use), EternalResourceExtractor
@@ -712,10 +712,11 @@ Dark Ages, which adds a byte), the texture type (2D, 3D, cube), its material kin
 specular, normal, smoothness, cover, mask...), width, height, depth, mip count, the albedo
 specular scale and bias, the format (an enum: BC1/BC3/BC4/BC5/BC6H/BC7, their sRGB forms,
 RGBA8, RG8, R8, half and float formats), whether it is streamed and how many of its mips sit in
-the StreamDB; then a 36-byte record per mip (40 in The Dark Ages, with depth) and the mips kept
+the StreamDB; then a 36-byte record per mip (the same size in The Dark Ages) and the mips kept
 in the container. Decoded through `texture2ddecoder` and wrapped as DDS for packages like the
-other importers. Albedo is sRGB; normal maps are two-channel BC5 (Z rebuilt), their green
-direction to be found on a known flat sample and set in the profile.
+other importers. Albedo is sRGB; normal maps are two-channel BC5, decoded with an empty blue channel as every
+game's are (the height step works Z out, and a package's DDS copy shows the same picture); their
+green direction is to be found on a known flat sample and set in the profile.
 
 **Static models (`model`, `.lwo` names: props, pickups, map pieces).** A header (reference
 point, level-of-detail count, surface count, deviations, streamable), per surface the material
@@ -764,23 +765,27 @@ monster, one weapon, one prop, their textures) and pins the differences from Ete
 `md6/characters/...` → Characters, group by monster; `md6/player/...` → Characters › Player;
 `md6/weapons/<name>/...` (first-person) and `models/weapons/...` → Weapons, group by weapon;
 `models/pickups/...` → Objects › Pickups; `models/props/`, `models/mapobjects/` → Objects;
-architecture and level geometry → Map Pieces; gore, wound and lower-detail copies hidden by
-default. Paths not matching a rule fall back to their first folder. In-game names come from the
-`entityDef` decls (`generated/decls/entitydef/...`, whose render model names the md6) and the
-`.blang` string tables (`strings/english.blang`) through the names hook (R2).
+architecture and level geometry → Map Pieces; gore, wound and damage copies get their own
+"(damage)" group beside the model's, lower-detail copies are hidden by default. Paths not matching
+a rule fall back to their first folder. Not built yet: in-game names from the `entityDef` decls
+(`generated/decls/entitydef/...`, whose render model names the md6) and the `.blang` string
+tables (`strings/english.blang`) through the names hook (R2); 0.53.0 labels models by file name.
 
 **Collect and packages.** Model packages (the default) hold the mesh, skeleton, weights,
 materials, textures (as DDS) and sampled animations, so nothing of the game is needed. *Game
-files* writes each resource a model reads, decompressed, under its resource name in
-`<library>/<game>/`, with its StreamDB pieces (decompressed, `streamdb/<id>.bin`) and a small
-index of the entries' types, hashes and sizes, so the copies open without the game and without
-Oodle; the importer reads such a folder like an install.
+files* writes each resource a model reads (its model, skeleton, animations, decl chain and
+images), decompressed, under `base/<container>.resources/<resource name>` in `<library>/<game>/`,
+each with a `.idmeta` sidecar (type, hash, version, sizes), and its StreamDB pieces decompressed as
+`base/streamdb/<id>.bin`, so the copies open without the game and without Oodle; the importer
+reads such a folder like an install, and the copies keep the install's paths, so library names
+and folders carry over.
 
 **Layout.** `importers/idtech/`: `formats/` (`resources.py` IDCL containers and the container
-mask, `index6.py` DOOM 2016's `.index`, `streamdb.py`, `image.py`, `geometry.py` vertex masks
+mask, `farmhash.py` the fingerprint the mask is keyed by, `index6.py` DOOM 2016's `.index` (0.54.0), `streamdb.py`, `image.py`, `geometry.py` vertex masks
 and streams, `staticmodel.py`, `md6model.py`, `md6skel.py`, `md6anim.py`, `decl.py` the decl
 parser), `games.py` (the three profiles: executable, container version, hash scheme, unit,
-normal green, what is shared; read from R7's JSON profiles once those land), `store.py` (a
+normal green, what is shared; a game profile in the settings folder with `"engine": "idtech"`
+changes the unit, normal green and executables, see docs/profiles.md), `store.py` (a
 game's index: names → live copies, streamed pieces, loose extracted files), `materials.py`,
 `catalog.py`, `animation.py` (poses for the Pose tab and packages) and `__init__.py`.
 
@@ -1097,6 +1102,10 @@ src/darkstl/
     psk.py      ActorX .psk/.pskx from UModel and FModel, and their material files
     loose.py    the loose pictures in a folder of other tools' models, listed for the texture picker
     package.py  model packages (see package.py), listed and opened like any game's models
+    idtech/     formats/ (IDCL .resources + container mask, StreamDB, BIM images, static and md6
+                models, skeletons, animations, decls), games.py (per-game profiles), store.py (a
+                game's index of live resources, or a collected copy), materials.py (material2 decls
+                -> texture roles), catalog.py, animation.py (poses), DOOM Eternal so far
   geometry/     TriMesh, subdivision, isotropic remesh, UV seam matching, closest-point queries,
                 displacement, room.py (room around thin parts, thickness, keeping thin parts from
                 clipping), intersect.py (triangles passing through each other)
@@ -1278,8 +1287,9 @@ The plan is in Reading Grand Theft Auto files above.
 The plan is in Reading id Tech 6/7/8 files above.
 
 - [x] Plan: containers, StreamDB, formats per game, importer layout, kinds and names, Collect, phases
-- [ ] DOOM Eternal: `.resources` and `.streamdb` with the game's Oodle, textures, static and skinned
-      models, skeletons, animations on the Pose tab, materials from decls (0.53.0)
+- [x] DOOM Eternal: `.resources` and `.streamdb` with the game's Oodle, textures, static and skinned
+      models, skeletons, animations on the Pose tab, materials from decls (0.53.0; synthetic files
+      only, in-game names still to come)
 - [ ] DOOM (2016): its `.index`/`.resources`/`.patch` and the older layouts, from Jerred's samples (0.54.0)
 - [ ] DOOM: The Dark Ages: version 13 containers, its stream ids and changed layouts (0.55.0)
 - [ ] Check each on Jerred's installs

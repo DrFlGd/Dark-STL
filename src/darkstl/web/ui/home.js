@@ -174,6 +174,7 @@ export const GAME_NOTES = {
   "Grand Theft Auto III": GTA_RW, "Grand Theft Auto: Vice City": GTA_RW, "Grand Theft Auto: San Andreas": GTA_RW,
   "Grand Theft Auto IV": "Choose the install folder as it is (the one with GTAIV.exe): the models are read from its .img archives, with the archive key found once in GTAIV.exe and kept in Dark STL's settings. The models of The Lost and Damned and The Ballad of Gay Tony come along. Files exported with OpenIV or SparkIV (.wdr, .wdd, .wft with their .wtd) work too.",
   "Grand Theft Auto V": "Choose the install folder as it is (the one with GTA5.exe): the models are read from its .rpf archives. The first time, Dark STL looks for the archive keys in GTA5.exe (this takes a while, once) and keeps them in its settings. Files exported with OpenIV or CodeWalker (.ydr, .ydd, .yft with their .ytd) work too.",
+  "DOOM Eternal": "Choose its install folder as it is: the models are read from the .resources and .streamdb files in base (the first scan reads through them once). Its files are compressed with Oodle: Dark STL uses the game's own copy (oo2core_8_win64.dll beside DOOMEternalx64vk.exe).",
 };
 
 /** First start: no game folders yet. Each game Dark STL reads is a tile; clicking one says what to choose for it. */

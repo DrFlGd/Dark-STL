@@ -33,7 +33,7 @@ Importing is modular: each game family has its own importer, and everything afte
 Dark Souls III, Sekiro, Elden Ring), Cyberpunk 2077 files, Capcom RE Engine files (Resident Evil
 2, 3, 4, 7 and Village, Devil May Cry 5), Borderlands (Borderlands, Borderlands 2, The
 Pre-Sequel, Borderlands 3, Tiny Tina's Wonderlands, Borderlands 4), Returnal, Grand Theft Auto III,
-Vice City, San Andreas, IV and V, and Wavefront OBJ are supported today.
+Vice City, San Andreas, IV and V, DOOM Eternal, and Wavefront OBJ are supported today.
 
 ## Install
 
@@ -168,6 +168,19 @@ neither.
   outfits of their components, as in GTA V; the episodes' models are listed with the base game's,
   their groups named after the episode. GTA IV's animations aren't read yet, so its characters
   can't be posed. Files exported with OpenIV or SparkIV open too.
+
+- **DOOM Eternal (id Tech 7):** add the game's install folder as it is. Models are read from the
+  `.resources` containers and `.streamdb` files in `base` (the first scan reads through them once;
+  the game's `meta.resources` says which copy of a file is the current one): skinned models
+  (`.md6mesh`: demons, the Slayer, weapons) with their skeletons and animations for the Pose tab,
+  and static models (`.lwo`: props, pickups, map pieces), with the textures their `material2` decls
+  name. They're sorted into characters, weapons, objects and map pieces by their folders. The game
+  compresses its files with Oodle: Dark STL uses the game's own `oo2core_8_win64.dll`, which is
+  beside `DOOMEternalx64vk.exe`, and finds it by itself (or point to it in *Settings › Game tools › Oodle*; on
+  Linux or macOS use a `liboo2corelinux64.so` or `libkraken` build). Collect writes each model's
+  files decompressed, so the collected copy needs neither the game nor Oodle. Checked only on
+  synthetic files built to Valen's description of the formats so far: the size (id units taken as
+  inches) and the normal maps' green direction are still to be confirmed on the real game.
 
 - **Posing Unreal 4/5 models** (Returnal, Borderlands 3, Wonderlands, Borderlands 4): a skeletal
   mesh can be posed on the Pose tab with every `AnimSequence` made for its `Skeleton` asset. The
@@ -342,7 +355,9 @@ archive format as BinderTool (Atvaark), UXM (TKGP) and
 [UXM Selective Unpacker](https://github.com/Nordgaren/UXM-Selective-Unpack) (Nordgaren)
 read it; the archive keys and the bundled file lists are copied from
 [Smithbox](https://github.com/vawser/Smithbox) (MIT, see
-`src/darkstl/importers/fromsoft/filelists/LICENSE.txt`). Dark STL is an independent
+`src/darkstl/importers/fromsoft/filelists/LICENSE.txt`). The id Tech 7 formats (DOOM Eternal) follow
+[Valen](https://github.com/jandk/valen) by jandk (MIT) and
+[EntityAtlan](https://github.com/FlavorfulGecko5/EntityAtlan) by FlavorfulGecko5 (MIT). Dark STL is an independent
 reimplementation and contains no code or data from the games; you need your own copies.
 
 The page bundles [Preact](https://preactjs.com) (MIT), [htm](https://github.com/developit/htm)
