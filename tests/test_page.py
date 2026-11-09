@@ -425,7 +425,8 @@ def test_previews_stay_shown_and_a_job_stops_from_the_status_bar(page, app, weap
     weapons = page.eval_on_selector_all(".results [data-model]", "els => els.map((e) => e.dataset.model)")
     # back to the game's page and into the kind again (or another view): shown at once, not asked for again
     asked = []
-    page.on("request", lambda r: "/bin/thumb" in r.url and asked.append(r.url))
+    # (only previews: the mouse rests on a card after the clicks, and a hovered card asks for its turntable, turn=1)
+    page.on("request", lambda r: "/bin/thumb" in r.url and "turn=1" not in r.url and asked.append(r.url))
     page.goto(app.url + "#/browse/Dark%20Souls%20III")
     page.wait_for_selector('#kind-tiles [data-sub="Weapons"]')
     page.click('[data-sub="Weapons"]')
