@@ -18,7 +18,7 @@ import { api, binUrl, info, plural, bytesText, followJob, stopJob, toast, showIn
 import { CommandBar } from "./layout.js";
 import { openMenu } from "./actions.js";
 import { Inspector, useWidth } from "./inspector.js";
-import { Viewer, PIECE_COLORS } from "../viewer.js";
+import { Viewer, PIECE_COLORS, THICKNESS_COLORS } from "../viewer.js";
 import { ConfigureTab } from "./configure.js";
 
 const ENHANCE = { target_vertices: 1_000_000, method: "subdivide", smooth: true, source: "normal", strength: 1, height_range_mm: 1,
@@ -57,7 +57,7 @@ function usePaint(m) {
   };
   return [paint, set];
 }
-const VIEW = { shading: "textured", edges: false };
+const VIEW = { shading: "textured", edges: false, print_height_mm: 0, min_wall_mm: 0.8 };
 /** A material's texture roles, as the Materials list names them. */
 const ROLES = [["albedo", "Colour"], ["normal", "Normals"], ["height", "Height"]];
 const JOINT = { kind: "pegs", clearance_mm: 0.2, count: 0, diameter_mm: 5, depth_mm: 6, magnet_diameter_mm: 6, magnet_height_mm: 3, flip: false, print_dowels: true };
@@ -393,7 +393,13 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
     });
     return out;
   }, [m.sid, paint, paint ? args.key : "", draped]);
-  const key = JSON.stringify([which, which === "enhanced" ? result?.id || result?.rev : which === "pieces" ? cutting.pieces?.id : which === "finished" ? finished?.id : args.key]);
+  const thick = view.shading === "thickness";
+  /** The Thickness shading's wall and scale: the print height over the model's own height (game size if none). */
+  const thickOpts = (header) => {
+    const tall = header ? header.max[2] - header.min[2] : 0;
+    return { wall: view.min_wall_mm > 0 ? view.min_wall_mm : 0.8, scale: view.print_height_mm > 0 && tall > 0 ? view.print_height_mm / tall : 1 };
+  };
+  const key = JSON.stringify([which, which === "enhanced" ? result?.id || result?.rev : which === "pieces" ? cutting.pieces?.id : which === "finished" ? finished?.id : args.key, thick]);
   useEffect(() => {
     let live = true;
     (async () => {
@@ -402,7 +408,7 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
       if (!built) {
         setState((s) => ({ ...s, loading: true, error: null }));
         onBusy?.(true);
-        const url = () => binUrl("model_mesh", { sid: m.sid, which, uv: 1, ...args.url });
+        const url = () => binUrl("model_mesh", { sid: m.sid, which, uv: 1, thickness: thick ? 1 : 0, ...args.url });
         let res = await fetch(url());
         if (res.status === 400) {
           const text = await res.text();
@@ -424,12 +430,13 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
         b.dispose();
       }
       if (!live) return;
-      const size = viewer.current.show(built, { textures: view.shading === "textured" && which !== "pieces" && which !== "finished" ? textures : null, wireframe: view.shading === "wire", keepView: shown.current });
+      const size = viewer.current.show(built, { textures: view.shading === "textured" && which !== "pieces" && which !== "finished" ? textures : null, wireframe: view.shading === "wire", keepView: shown.current,
+        thickness: thick ? thickOpts(built.header) : null });
       viewer.current.setEdges(view.edges);
       shown.current = true;
       if (which === "pieces") viewer.current.setExplode(cutting.explode);
       onBounds?.({ min: built.header.min, max: built.header.max, which });
-      setState({ loading: false, error: null, size, key });
+      setState({ loading: false, error: null, size, key, thin: viewer.current.thinShare });
       onBusy?.(false);
     })().catch((e) => { if (live) { setState({ loading: false, error: msg(e), size: null, key }); onBusy?.(false); } });
     return () => { live = false; };
@@ -450,6 +457,13 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
     v.setCuts(showCuts && which !== "pieces" ? cuts.map((c) => ({ ...c })) : [], cutSel);
   }, [cuts, cutSel, showCuts, which, state.key]);
   useEffect(() => { if (which === "pieces") viewer.current?.setExplode(explode); }, [explode]);
+  // the Thickness shading recoloured at once for another print height or wall
+  useEffect(() => {
+    const v = viewer.current;
+    if (!thick || !v?.shown?.thickness) return;
+    const thin = v.setThickness(thickOpts(v.shown.header));
+    setState((st) => ({ ...st, thin }));
+  }, [view.print_height_mm, view.min_wall_mm]);
   const setView = (patch) => setPref({ view: { ...view, ...patch } });
   const edges = (on) => { setView({ edges: on }); viewer.current?.setEdges(on); };
   const seg = (id, label, options, value, onChange) => html`<div class="seg" role="group" aria-label=${label} id=${id}>${options.map(([k, l, title, disabled]) =>
@@ -461,6 +475,8 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
       <div class="stage-canvas" id="stage-canvas" data-loading=${state.loading || state.key !== key ? "1" : null} data-texture=${draped || null}>
         <canvas ref=${canvas} tabindex="0" aria-label="The model in 3D: drag to turn it, right-drag to move, wheel to zoom"></canvas>
         ${state.loading && !shown.current ? html`<div class="stage-note muted">Loading the model…</div>` : null}
+        ${state.loading && shown.current && thick ? html`<div class="stage-note muted" id="thickness-measuring">Measuring how thick the model is…</div>` : null}
+        ${thick ? html`<${ThicknessPanel} view=${view} setView=${setView} thin=${state.key === key ? state.thin : null} />` : null}
         ${state.error ? html`<div class="stage-note"><p class="warn-note" role="alert" id="stage-error">${state.error}</p></div>` : null}
         ${!state.loading && !state.error && size && !size.triangles ? html`<div class="stage-note muted">No parts are switched on (Model tab).</div>` : null}
       </div>
@@ -470,13 +486,34 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
           ${seg("show-which", "Show", [["original", "Original"], ["enhanced", "Enhanced", result ? "The enhanced model" : "Make it first (Mesh or Displace tab)", !result],
             ["finished", "Finished", finished ? "The model made watertight, without its textures" : "Make it watertight first (Finish tab)", !finished],
             ["pieces", "Pieces", cutting.pieces ? "The model cut into pieces" : "Cut it first (Cut tab)", !cutting.pieces]], which, setWhich)}
-          ${seg("shading", "Shading", [["textured", "Textured", noTextures ? "No colour textures were found for this model" : "With the game's colour textures"], ["clay", "Clay"], ["wire", "Wireframe"]], view.shading, (v) => setView({ shading: v }))}
+          ${seg("shading", "Shading", [["textured", "Textured", noTextures ? "No colour textures were found for this model" : "With the game's colour textures"], ["clay", "Clay"], ["wire", "Wireframe"],
+            ["thickness", "Thickness", "Colours the model by how thick it is behind each point: red is thinner than the thinnest wall your printer makes at the size you print it"]], view.shading, (v) => setView({ shading: v }))}
           <button type="button" class="ghost" id="edges-toggle" aria-pressed=${view.edges ? "true" : "false"} title="Show the triangles' sharp edges" onClick=${() => edges(!view.edges)}>Edges</button>
           ${seg("views", "View", [["iso", "3/4", "Three-quarter view"], ["top", "Top"], ["front", "Front"]], null, (v) => viewer.current?.view(v))}
         </span>
       </div>
     </div>
   </section>`;
+}
+
+/** The Thickness shading's small panel over the 3D view: the print height and thinnest wall it measures against,
+ *  what the colours mean, and how much of the model is too thin. */
+function ThicknessPanel({ view, setView, thin }) {
+  const num = (e) => { const v = parseFloat(e.target.value); return Number.isFinite(v) && v > 0 ? v : 0; };
+  const swatch = (c) => html`<span class="thick-swatch" style=${`background:${c}`}></span>`;
+  return html`<div class="thickness-panel" id="thickness-panel" role="group" aria-label="Thickness">
+    <label class="field-block" title="How tall you will print the model. Empty: the size it is in the game, one game metre to 1000 mm."><span>Print height</span>
+      <span class="field-row"><input type="number" id="print-height" min="0" step="10" placeholder="game size" value=${view.print_height_mm || ""}
+        onChange=${(e) => setView({ print_height_mm: num(e) })} /><span class="muted unit">mm</span></span></label>
+    <label class="field-block" title="The thinnest wall your printer makes well at that size (0.8 mm suits most resin and fine filament printers)."><span>Thinnest wall</span>
+      <span class="field-row"><input type="number" id="min-wall" min="0.05" step="0.1" value=${view.min_wall_mm || 0.8}
+        onChange=${(e) => setView({ min_wall_mm: num(e) || 0.8 })} /><span class="muted unit">mm</span></span></label>
+    <ul class="thick-legend">
+      <li>${swatch(THICKNESS_COLORS.thin)} Thinner than that, or a single sheet with no thickness (a cape, a banner)</li>
+      <li>${swatch(THICKNESS_COLORS.near)} Up to twice as thick</li>
+      <li>${swatch(THICKNESS_COLORS.thick)} Thick enough</li></ul>
+    ${thin != null ? html`<small class="muted" id="thin-share">${thin > 0 ? `${(thin * 100).toFixed(thin < 0.1 ? 1 : 0)} % of the surface is too thin` : "Nothing is too thin"}${view.print_height_mm ? ` at ${Math.round(view.print_height_mm)} mm tall` : " at game size"}.</small>` : null}
+  </div>`;
 }
 
 /** Model: its parts (each can be left out), the importer's options, its size and its file. */

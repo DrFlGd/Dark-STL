@@ -185,6 +185,21 @@ class Session:
     finished: Any = None  # finish.FinishResult: the model last made watertight (Finish tab)
     finished_id: str = ""
     lock: threading.Lock = field(default_factory=threading.Lock)
+    thick: dict = field(default_factory=dict)  # which -> (the mesh, its thickness per vertex in mm), for the 3D view
+
+    def thickness(self, which: str, mesh: TriMesh) -> np.ndarray:
+        """The thickness behind every vertex of ``mesh`` (mm), as the 3D view's Thickness shading shows it;
+        worked out once per mesh shown."""
+        from ..geometry.room import thickness
+
+        with self.lock:
+            kept = self.thick.get(which)
+        if kept is not None and kept[0] is mesh:
+            return kept[1]
+        values = thickness(mesh) * 1000.0
+        with self.lock:
+            self.thick[which] = (mesh, values)
+        return values
 
     def build(self, options: MeshOptions) -> TriMesh:
         key = _options_key(options)
@@ -2042,22 +2057,31 @@ class Service:
         return {"animations": [i.as_dict() for i in infos], "bones": bones, "note": getattr(anims, "note", None)}
 
     def cmd_model_mesh(self, args: dict) -> bytes:
+        """A mesh for the 3D view (``which``: original, enhanced, finished or pieces); ``thickness=1`` sends the
+        thickness behind each vertex along, for the Thickness shading."""
         session = self._session(args)
         uv = str(args.get("uv", "1")) not in ("0", "false", "")
-        if args.get("which") == "enhanced":
+        thick = str(args.get("thickness", "0")) not in ("0", "false", "")
+        which = str(args.get("which") or "original")
+
+        def pack(mesh: TriMesh, with_uv: bool, extra: dict) -> bytes:
+            scalar = ("thickness", session.thickness(which, mesh)) if thick else None
+            return pack_mesh(mesh, with_uv, extra=extra, scalar=scalar)
+
+        if which == "enhanced":
             if session.result is None:
                 raise AppError("This model hasn't been generated yet.")
-            return pack_mesh(session.result.displaced, uv, extra={"which": "enhanced"})
-        if args.get("which") == "finished":
+            return pack(session.result.displaced, uv, {"which": "enhanced"})
+        if which == "finished":
             if session.finished is None:
                 raise AppError("This model hasn't been made watertight yet.")
-            return pack_mesh(session.finished.mesh, False, extra={"which": "finished"})
-        if args.get("which") == "pieces":
+            return pack(session.finished.mesh, False, {"which": "finished"})
+        if which == "pieces":
             if session.cut is None:
                 raise AppError("This model hasn't been cut yet.")
             pieces = [{"name": p.name, "kind": p.kind, "center": p.stats()["center_mm"]} for p in session.cut.pieces]
-            return pack_mesh(session.cut.combined(), False, extra={"which": "pieces", "pieces": pieces})
-        return pack_mesh(session.build(mesh_options(_parse_lists(args))), uv, extra={"which": "original"})
+            return pack(session.cut.combined(), False, {"which": "pieces", "pieces": pieces})
+        return pack(session.build(mesh_options(_parse_lists(args))), uv, {"which": "original"})
 
     def cmd_texture(self, args: dict) -> bytes:
         session = self._session(args)
@@ -2171,6 +2195,8 @@ class Service:
             albedo_detail_mm=float(s.get("albedo_detail_mm") or 0.0),
             detail_normals=bool(s.get("detail_normals", defaults.detail_normals)),
             detail_strength=float(s.get("detail_strength", defaults.detail_strength)),
+            thin_parts=bool(s.get("thin_parts", defaults.thin_parts)),
+            thin_room=min(max(float(s.get("thin_room", defaults.thin_room)), 0.05), 1.0),
         )
         if settings.target_vertices < 1000:
             raise AppError("Choose at least 1,000 vertices.")

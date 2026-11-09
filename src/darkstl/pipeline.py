@@ -18,6 +18,9 @@ displacement settings are tried on it.
    specular/metallic mask. Fine extras can be layered on: relief guessed from
    the albedo, and the material's tiled detail normal map. A grayscale height
    map is sampled directly.
+4. Keep thin parts from passing through themselves: every vertex's room on
+   either side (half the thickness behind it, half the gap in front of it) is
+   measured, and heights near it are bent away from it (geometry/room.py).
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from .geometry.displace import corner_heights, displace
 from .geometry.integrate import SlopeLayer, integrate_on_mesh
 from .geometry.mesh import TriMesh
 from .geometry.remesh import acvd_available, isotropic_remesh
+from .geometry.room import keep_thin_parts
 from .geometry.seams import seam_consistent_heights
 from .geometry.subdivide import edge_length_for_vertex_count, subdivide_to_vertex_count
 from .model import Material, MeshOptions, SourceModel
@@ -87,6 +91,8 @@ class EnhanceSettings:
     albedo_detail_mm: float = 0.0  # depth of the finest albedo-derived relief (0 = off)
     detail_normals: bool = False  # layer the material's tiled detail normal map on top
     detail_strength: float = 1.0
+    thin_parts: bool = True  # keep thin parts (claw tips, blades, capes) from being pushed through themselves
+    thin_room: float = 0.8  # 0.05..1: how much of the room inside thin parts and between close parts relief may use
 
 
 @dataclass
@@ -110,16 +116,22 @@ class EnhanceResult:
     materials: list[Material]
     warnings: list[str] = field(default_factory=list)
     displaced_by_textures: bool = True  # False: step 1 alone (or nothing to displace by chosen)
+    thin: dict | None = None  # what keeping thin parts did (geometry.room.keep_thin_parts), None when it was off
 
     def stats(self) -> dict:
         h = self.displaced.metadata.get("displacement")
-        return {
+        out = {
             "source_vertices": self.source.n_vertices,
             "source_faces": self.source.n_faces,
             "vertices": self.displaced.n_vertices,
             "faces": self.displaced.n_faces,
             "max_displacement_mm": float(np.abs(h).max() * 1000) if h is not None and len(h) else 0.0,
         }
+        if self.thin is not None:
+            out["thin_capped"] = int(self.thin["capped"])
+            out["thin_max_reduction_mm"] = float(self.thin["max_reduction"] * 1000)
+            out["thin_kept_percent"] = float(self.thin["kept"] * 100)
+        return out
 
 
 def _report(progress: ProgressFn | None, frac: float, msg: str) -> None:
@@ -641,12 +653,23 @@ def displace_resampled(model: SourceModel, mesh: Resampled, settings: EnhanceSet
         if mesh.projection is not None:
             face, bary = mesh.projection
             heights = np.einsum("ij,ij->i", bary, heights[mesh.carrier.faces[face]])
-    _report(progress, 0.9, "Displacing vertices")
     max_disp = settings.max_displacement_mm / 1000.0 if settings.max_displacement_mm else None
-    displaced = displace(mesh.resampled, heights, max_disp)
+    if max_disp:
+        heights = np.clip(heights, -max_disp, max_disp)
+    normals = mesh.resampled.vertex_normals()
+    thin = None
+    if settings.thin_parts and settings.source != SOURCE_NONE and np.any(heights):
+        heights, normals, thin = keep_thin_parts(mesh.resampled, heights, normals, settings.thin_room,
+                                                 _sub(progress, 0.9, 0.98))
+        if thin["capped"]:
+            warnings.append(f"Thin parts: the relief of {thin['capped']:,} vertices was lowered (by up to "
+                            f"{thin['max_reduction'] * 1000:.2f} mm) to keep it from passing through the surface behind "
+                            "or beside it. 'Room the relief may use' in More settings sets how close it may come.")
+    _report(progress, 0.98, "Displacing vertices")
+    displaced = displace(mesh.resampled, heights, None, normals)
     _report(progress, 1.0, "Done")
     return EnhanceResult(mesh.source, mesh.resampled, displaced, fields, materials, warnings,
-                         displaced_by_textures=settings.source != SOURCE_NONE)
+                         displaced_by_textures=settings.source != SOURCE_NONE, thin=thin)
 
 
 def enhance(model: SourceModel, settings: EnhanceSettings | None = None,
