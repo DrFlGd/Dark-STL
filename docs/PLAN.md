@@ -36,7 +36,7 @@ importer and registering it in `importers/__init__.py`:
 | Wavefront OBJ | OBJ + MTL with PNG/JPG/TGA/DDS textures, from any other tool | Done |
 | glTF | `.gltf` (with its `.bin` and pictures) and `.glb`, as Blender, FModel and most tools export: each mesh a part placed by its node, base colour and normal textures (green up), Y up turned to Z up; a model too big to be in metres read as centimetres. Skinned meshes in their bind pose | Synthetic files (0.35.0) |
 | ActorX PSK/PSKX | UModel's and FModel's exports of Unreal models: points, wedges, faces and materials, mirrored from Unreal's frame like the Unreal games' own models; each material's textures found by name beside the model, from UModel's `.mat`, FModel's `.json` and UModel's `.props.txt` material files, then from texture names like the material's. The skeleton isn't read | Synthetic files (0.35.0) |
-| RenderWare (GTA III, Vice City, San Andreas) | `.img` archives, `.dff` models (parts, skins, vehicle frames), `.txd` textures, `.ifp` animations, `.ide`/`.ipl`/`.gxt` for kinds, areas and names. See Reading Grand Theft Auto files | Planned (0.50.0) |
+| RenderWare (GTA III, Vice City, San Andreas) | `.img` archives (with `.dir`, or `VER2`) read in place, `.dff` models (parts placed by frames, skins, vehicles with their wheels copied to every axle and their colours from `carcols.dat` as variants), `.txd` textures (DXT, paletted and raw rasters), `.ifp` animations for peds, `.ide`/`.ipl`/`.gxt` for kinds, areas and vehicle names. Per-game differences are JSON profiles in `importers/renderware/profiles/`. See Reading Grand Theft Auto files | Synthetic files (0.50.0) |
 | RAGE (GTA V, then GTA IV) | `.rpf` v7 and IMG3 archives with keys found in the user's executable, RSC7/RSC5 resources: `.ydr`/`.wdr`, `.ydd` ped components, `.yft` vehicles, `.ytd` textures, `.ycd` animations | Planned (0.51.0 GTA V, 0.52.0 GTA IV) |
 
 An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
@@ -343,8 +343,8 @@ scan time and kept in the settings folder, as the Oodle library is.
   special and cutscene characters), `cars` → Vehicles (group from the type: car, bike, boat,
   heli, plane, trailer), `weap` → Weapons, `objs`/`tobj`/`anim` → Map pieces and props, grouped
   by the `.ide` file's area (`data/maps/LA/...`, `SF`, `vegas`, `generic`), `hier` →
-  Cutscene objects. The `.ipl` files say where each map object is placed; the scan uses them to
-  list the objects each map area places. A `.dff` no `.ide` names (SA's `player.img` clothes,
+  Cutscene objects. The `.ipl` files (text, and San Andreas' binary `bnry` streams in `gta3.img`)
+  say where each map object is placed; a map object's information names the area that places it. A `.dff` no `.ide` names (SA's `player.img` clothes,
   upgrades, `_l` LODs) goes under Other, low-detail copies hidden as for other games.
 - **Vehicles.** A car's frames name its pieces (`chassis`, `door_lf_hi_ok`, `bonnet_dummy`,
   `wheel_rf_dummy`...). Each atomic is a part placed by its frame; `_dam` (damaged) and `_vlo`
@@ -362,13 +362,14 @@ scan time and kept in the settings folder, as the Oodle library is.
   them (the `.ide`'s animation file).
 - **Names.** Vehicles' `.ide` lines carry a text key resolved through the game's `.gxt`
   (III: `TKEY`/`TDAT` UTF-16; VC: tables; SA: version 8 tables keyed by the CRC32 of the key),
-  so `landstal` shows as "Landstalker". Weapons get their names from the `.gxt` weapon keys
-  where there is one; peds and map pieces keep their model names.
+  so `landstal` shows as "Landstalker". Weapons, peds and map pieces keep their model names (the
+  games' text names weapons by slot, not by model).
 - **Differences between the three games** (archive version, IFP and GXT format, colour
   placeholders, executable and folder layout, where `ped.ifp` lives) are a game profile each.
-  They are written as JSON in the format of the game profiles from 0.49.0 (`importers/profiles/`,
-  engine backend `renderware`), so a profile override in the settings folder works for them
-  too. Bully: Scholarship Edition and Manhunt are RenderWare games that could follow with a
+  They are JSON files in `importers/renderware/profiles/` naming their engine backend
+  (`renderware`), and a file of the same name in the settings folder's `profiles/` folder
+  replaces one, as 0.49.0's game profiles do. When those land, the RenderWare profiles move into
+  the shared profile folder and loader. Bully: Scholarship Edition and Manhunt are RenderWare games that could follow with a
   profile and their own archive readers.
 - **Collect.** A package keeps the mesh with its parts and skeleton, the baked paint variants,
   every texture the model reads (its dictionary, parents, `vehicle.txd` and `generic.txd`
@@ -789,7 +790,7 @@ The plan in the backlog entry below, built in stages:
 The plan is in Reading Grand Theft Auto files above.
 
 - [x] Plan: formats, importer layout, kinds and names, Collect, phases
-- [ ] RenderWare trilogy: GTA III, Vice City, San Andreas (0.50.0)
+- [x] RenderWare trilogy: GTA III, Vice City, San Andreas (0.50.0), on synthetic files
 - [ ] GTA V: RPF7 with keys from the executable, peds as configurable models, vehicles, posing (0.51.0)
 - [ ] GTA IV and Episodes from Liberty City on the shared RAGE reader (0.52.0)
 - [ ] Trilogy Definitive Edition as a profile on the generic Unreal importer
@@ -838,6 +839,11 @@ The plan is in Reading Grand Theft Auto files above.
 
 ## Known limits today
 
+- GTA III, Vice City and San Andreas have only been read from synthetic files so far. Not read
+  yet: a car's wheels kept in the shared `wheels.dff` (when its own file has none; most cars carry
+  their own), San Andreas' player clothes put together as one figure (they are listed one by one
+  under Characters / Player clothes), night vertex colours, reflection and specular maps, and
+  console (PS2, Xbox) files. Cutscene animations (`cuts.img`) aren't offered on the Pose tab.
 - Of the real game files, Dark Souls Remastered weapons and Bloodborne characters, objects and
   armour have been loaded so far (Phase 1). The RE Engine importer has only seen synthetic files.
 - RE Engine: `.pak` archives with an encrypted table of contents (Monster Hunter Wilds and later)

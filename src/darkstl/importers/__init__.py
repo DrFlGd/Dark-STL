@@ -19,11 +19,12 @@ from .package import PackageImporter
 from .psk import PskImporter
 from .redengine import RedEngineImporter
 from .reengine import REEngineImporter
+from .renderware import RenderWareImporter
 from .returnal import ReturnalImporter
 from .wavefront import WavefrontImporter
 
 IMPORTERS: list[Importer] = [PackageImporter(), FromSoftwareImporter(), RedEngineImporter(), REEngineImporter(),
-                             ReturnalImporter(), BorderlandsImporter(), GltfImporter(), PskImporter(),
+                             RenderWareImporter(), ReturnalImporter(), BorderlandsImporter(), GltfImporter(), PskImporter(),
                              WavefrontImporter()]
 
 

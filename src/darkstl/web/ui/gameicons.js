@@ -9,6 +9,7 @@ const SHORT = {
   "Resident Evil Village": "RE8", "Resident Evil Requiem": "RE9", "Devil May Cry 5": "DMC",
   "Borderlands": "BL1", "Borderlands 2": "BL2", "Borderlands: The Pre-Sequel": "TPS", "Borderlands 3": "BL3",
   "Tiny Tina's Wonderlands": "TTW", "Borderlands 4": "BL4", "Returnal": "RET",
+  "Grand Theft Auto III": "GTA3", "Grand Theft Auto: Vice City": "GTVC", "Grand Theft Auto: San Andreas": "GTSA",
 };
 
 export const gameShort = (name) => SHORT[name] || (name || "?").split(/\s+/).filter(Boolean).map((w) => w[0]).join("").slice(0, 3).toUpperCase();
@@ -29,6 +30,7 @@ const DRAW = {
   Objects: null,
   "Map Pieces": html`<path d="M3.5 6.5 9 4l6 2.5L20.5 4v13.5L15 20l-6-2.5-5.5 2.5z" /><path d="M9 4v13.5M15 6.5V20" />`,
   Models: null,
+  Vehicles: html`<path d="M3.5 15.5v-3l2-4.5h11l3 4.5v3z" /><path d="M3.5 12.5h17" /><circle cx="7.5" cy="16.5" r="1.8" /><circle cx="16.5" cy="16.5" r="1.8" />`,
 };
 
 /** The icon of a kind of model (a category). */

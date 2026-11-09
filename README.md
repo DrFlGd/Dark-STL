@@ -32,8 +32,8 @@ Importing is modular: each game family has its own importer, and everything afte
 (the explorer, the three steps, export) is shared. FromSoftware files (Dark Souls, Bloodborne,
 Dark Souls III, Sekiro, Elden Ring), Cyberpunk 2077 files, Capcom RE Engine files (Resident Evil
 2, 3, 4, 7 and Village, Devil May Cry 5), Borderlands (Borderlands, Borderlands 2, The
-Pre-Sequel, Borderlands 3, Tiny Tina's Wonderlands, Borderlands 4), Returnal and Wavefront OBJ are
-supported today.
+Pre-Sequel, Borderlands 3, Tiny Tina's Wonderlands, Borderlands 4), Returnal, Grand Theft Auto III,
+Vice City and San Andreas, and Wavefront OBJ are supported today.
 
 ## Install
 
@@ -132,6 +132,18 @@ neither.
   names. A `.usmap` type mappings file for the installed version, if you have one, lets it read the
   materials' settings instead (game folder or *Settings > Unreal games*). Dark STL doesn't include
   Returnal's AES key: if the paks are encrypted, paste the key there too and rescan.
+
+- **Grand Theft Auto III, Vice City, San Andreas (RenderWare, PC):** add the game's install
+  folder as it is. Models (`.dff`) and their texture dictionaries (`.txd`) are read straight from
+  the `.img` archives (`models\gta3.img` with its `gta3.dir` in III and Vice City, the single-file
+  `VER2` archives in San Andreas) or loose. The game's own lists (`data\gta.dat`, `default.dat`
+  and the `.ide` files they name) sort them into characters, vehicles, weapons, map pieces and
+  objects, and say which dictionary each model's textures are in; vehicles are named as in the game
+  (from `text\american.gxt`). Cars are built with their wheels on every axle, without their damaged
+  and low-detail panels (both can be turned on), and painted in each colour pair from
+  `data\carcols.dat` (a variant each). Characters are posed on the Pose tab with `anim\ped.ifp`.
+  A folder of `.dff` and `.txd` files exported with another tool opens too, its textures looked
+  up by name. The Definitive Edition (Unreal Engine 4) isn't read by this importer.
 
 - **Posing Unreal 4/5 models** (Returnal, Borderlands 3, Wonderlands, Borderlands 4): a skeletal
   mesh can be posed on the Pose tab with every `AnimSequence` made for its `Skeleton` asset. The

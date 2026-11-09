@@ -1,0 +1,14 @@
+{
+  "name": "Grand Theft Auto III",
+  "short": "GTA3",
+  "engine": "renderware",
+  "recognise": {"files": ["gta3.exe", "data/gta3.dat"], "folder_names": ["gta3", "gta iii", "grand theft auto 3", "grand theft auto iii"]},
+  "level_files": ["data/default.dat", "data/gta3.dat"],
+  "text": "text/american.gxt",
+  "car_colours": "data/carcols.dat",
+  "ped_animations": "ped.ifp",
+  "paint": [[60, 255, 0], [255, 0, 175]],
+  "lights": [],
+  "shared_textures": {"vehicles": ["vehicle"], "all": ["generic"]},
+  "bone_match": "name"
+}
