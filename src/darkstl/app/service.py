@@ -41,6 +41,7 @@ from ..errors import FormatError
 from ..export import FORMATS, ExportOptions, export_mesh, write_palette_png
 from ..geometry.mesh import TriMesh
 from ..library import Library, Snapshot, detect_game, folder_relation, known_games
+from ..library_index import LibraryIndex, clean_stats, longest, model_stats
 from ..model import CatalogEntry, MeshOptions, SourceModel, path_id
 from ..thumbnails import ThumbnailCache
 from . import painter
@@ -303,8 +304,14 @@ def entry_json(e: CatalogEntry) -> dict:
         out["configurable"] = {"slots": len(e.config.slots), "options": sum(len(s.options) for s in e.config.slots),
                                "guessed": e.config.guessed}
     original = e.__dict__.get("_original")
-    if original and original != (e.category, e.group, e.label):  # renamed or moved by the user
-        out["original"] = {"category": original[0], "group": original[1], "label": original[2]}
+    game_name = e.__dict__.get("_game_name")
+    if game_name:
+        out["game_name"] = game_name
+    if original:
+        out["file_label"] = original[2]
+    named = e.__dict__.get("_user_named")
+    if original and (named or original[:2] != (e.category, e.group)):  # renamed or moved by the user
+        out["original"] = {"category": original[0], "group": original[1], "label": game_name or original[2]}
     return out
 
 
@@ -391,6 +398,12 @@ class Service:
         self.overlays: dict[str, overlay.Overlay] = {}  # each game's library overlay, by game
         self.library.arrange = self._arrange  # models filed under the user's own names and folders
         self.texture_lists: dict[str, tuple[float, list]] = {}  # each game's textures for the picker, by game
+        self.index = LibraryIndex(self.snapshots)  # each game's library index: names, places, sizes and counts
+        self.thumbs.on_model = self._learnt_from_preview
+        self._stats_thread: threading.Thread | None = None
+        self._stats_again = False
+        self._stats_tried: set[str] = set()  # models the quick look couldn't read: not tried again this run
+        self._index_dirty: dict[str, float] = {}  # games whose index has stats not written yet: since when
         if config.oodle:
             self._use_oodle(config.oodle)
 
@@ -653,6 +666,7 @@ class Service:
                     lib.roots[path] = game or path.name  # listed in order, filled in when scanned below
             with self.lock:
                 self.library.merge(lib)  # keeps a folder added while this ran
+            scanned = []
             for i, (path, game) in enumerate(folders):
                 if not path.is_dir():
                     continue
@@ -661,14 +675,20 @@ class Service:
                 if snap is not None and snap.unchanged():
                     job.report(i / len(folders), f"Getting {path.name} ready")
                     snap.kept.restore(path)  # listed already: nothing to scan
+                    if not self.index.file(snap.game).is_file():
+                        scanned.append(snap.game)
                 else:
                     job.report(i / len(folders), f"Reading {path.name}")
                     one = Library()
                     self._scan_folder(one, path, game, job)
                     with self.lock:
                         self.library.merge(one)
+                    scanned.append(one.roots.get(path, game or path.name))
                 if _is_under(path, self.config.library_folder) and collect.read_manifest(path) is None:
                     collect.write_manifest(path, game or path.name)  # collected before version 0.5.1
+            job.report(0.99, "Writing the library index")
+            self._write_indexes(scanned)  # a game's index follows its folders, written when one was scanned
+            self._start_stats()
             with self.lock:
                 self.collect_plans.clear()
                 return {"games": len(self.library.games()), "models": len(self.library.entries)}
@@ -680,6 +700,9 @@ class Service:
         report = (lambda i, name: job.report(job.progress, name if i < 0 else f"{i:,} files: {name}")) if job else None
         found = lib.add_root(path, game, report)
         g = lib.roots[path]
+        kept = lib.kept.get(path)
+        if kept is not None and kept.names:
+            self._keep_game_names(g, kept.names)
         Snapshot(path, g, found, lib.notes.get(path, []), lib.found_configs.get(path, []), __version__,
                  lib.kept.get(path)).save(self.snapshots)
 
@@ -772,8 +795,11 @@ class Service:
         job.check()
         if redraw:
             with self.lock:
-                before = [e.path for e in self.library.entries if any(_is_under(e.path, p) for p, _g in folders)]
-            self.thumbs.forget(set(before) | {e.path for e in lib.entries})
+                old = [e for e in self.library.entries if any(_is_under(e.path, p) for p, _g in folders)]
+            self.thumbs.forget({e.path for e in old} | {e.path for e in lib.entries})
+            for e in old + lib.entries:  # sizes and counts are read again too
+                self.index.forget(e.game, [e.id])
+                self._stats_tried.discard(e.id)
         with self.lock:
             self.collect_plans.clear()
             for old in replace or []:
@@ -783,6 +809,8 @@ class Service:
                     self.library.remove_root(inner)
             self.library.merge(lib)
             self._save_folders()
+        self._write_indexes([g for _p, g in folders] + list(lib.roots.values()))
+        self._start_stats()
         count = sum(1 for e in lib.entries if not lib.hides(e))  # as the library lists them
         path, game = folders[0]
         return {"game": game, "games": list(dict.fromkeys(g for _p, g in folders)), "path": str(path),
@@ -1654,16 +1682,107 @@ class Service:
             label = f"{label} and its textures" if count else f"Keeping the textures of {game}"
         return {"job": self._scan_job(label, run).id}
 
+    SORTS = ("kind", "file", "name", "game", "size", "vertices", "triangles", "parts", "textures", "animated",
+             "collected")
+
     def cmd_models_query(self, args: dict) -> dict:
+        """The library's models, as a page lists them: of a game (``game``; every game without one), a kind
+        (``category``) and group in it, whose names, in-game names, file names or tags hold every word of ``q``.
+        Filters: ``games`` and ``kinds`` (lists), ``animated`` and ``textured`` (true or false), ``tri_min`` /
+        ``tri_max``, ``collected`` (true or false); a filter on a size or count leaves out models whose sizes
+        and counts aren't known yet. ``sort``: one of SORTS (``kind``, the library's order, by default), ``desc``
+        to reverse it (models not known yet stay last); ``by_game`` keeps each game's models together. With
+        ``facets``, also how many models each game and kind has among those found."""
+        games = [str(g) for g in args.get("games") or [] if g]
+        kinds = [str(k) for k in args.get("kinds") or [] if k]
+        tri_min, tri_max = _number(args.get("tri_min")), _number(args.get("tri_max"))
+        flags = {k: _flag(args.get(k)) for k in ("animated", "textured", "collected")}
         with self.lock:
             items = self.library.query(args.get("game") or None, args.get("category") or None,
                                        args.get("group") if args.get("group") is not None else None,
                                        str(args.get("q") or ""), bool(args.get("lod")))
-        if args.get("sort") == "file":
-            items = sorted(items, key=lambda e: e.path.name.lower())
-        offset = max(int(args.get("offset") or 0), 0)
-        limit = int(args.get("limit") or 500)
-        return {"total": len(items), "items": [entry_json(e) for e in items[offset:offset + limit]]}
+            collected = self._collected_roots()
+            stats = {e.id: self._entry_stats(e) for e in items}
+            order = {g: i for i, g in enumerate(self.library.games())}
+
+            def keep(e: CatalogEntry) -> bool:
+                st = stats.get(e.id)
+                if flags["collected"] is not None and self._is_collected(e, collected) != flags["collected"]:
+                    return False
+                if flags["animated"] is not None and (st is None or "animated" not in st or st["animated"] != flags["animated"]):
+                    return False
+                if flags["textured"] is not None and (st is None or "textures" not in st or (st["textures"] > 0) != flags["textured"]):
+                    return False
+                if tri_min is not None or tri_max is not None:
+                    t = (st or {}).get("triangles")
+                    if t is None or (tri_min is not None and t < tri_min) or (tri_max is not None and t > tri_max):
+                        return False
+                return True
+
+            items = [e for e in items if keep(e)]
+            facets = None
+            if args.get("facets"):
+                by_game: dict[str, int] = {}
+                by_kind: dict[str, int] = {}
+                for e in items:
+                    if not kinds or e.category in kinds:
+                        by_game[e.game] = by_game.get(e.game, 0) + 1
+                    if not games or e.game in games:
+                        by_kind[e.category] = by_kind.get(e.category, 0) + 1
+                facets = {"games": [{"name": g, "count": by_game[g]} for g in sorted(by_game, key=lambda g: order.get(g, 1e9))],
+                          "kinds": [{"name": k, "count": n} for k, n in sorted(by_kind.items(), key=lambda kv: (-kv[1], kv[0]))]}
+            items = [e for e in items if (not games or e.game in games) and (not kinds or e.category in kinds)]
+            sort = str(args.get("sort") or "kind")
+            items = self._sorted(items, sort if sort in self.SORTS else "kind", bool(args.get("desc")), stats, collected,
+                                 order if args.get("by_game") else None)
+            offset = max(int(args.get("offset") or 0), 0)
+            limit = int(args.get("limit") or 500)
+            page = [self._entry_json(e, collected) for e in items[offset:offset + limit]]
+        out = {"total": len(items), "items": page}
+        if facets is not None:
+            out["facets"] = facets
+            out["unknown"] = sum(1 for e in items if stats.get(e.id) is None and e.config is None)
+        return out
+
+    def _sorted(self, items: list[CatalogEntry], sort: str, desc: bool, stats: dict, collected: dict,
+                game_order: dict | None) -> list[CatalogEntry]:
+        """``items`` in the order ``sort`` names (see cmd_models_query); models whose value isn't known last."""
+        if sort == "kind" and not desc and game_order is None:
+            return items  # the library's own order
+        def value(e: CatalogEntry):
+            st = stats.get(e.id) or {}
+            if sort == "file":
+                return e.path.name.lower()
+            if sort == "name":
+                return e.label.lower()
+            if sort == "game":
+                return e.game.lower()
+            if sort == "kind":
+                return e.sort_key[1:]
+            if sort == "size":
+                return longest(st)
+            if sort == "collected":
+                return self._is_collected(e, collected)
+            if sort == "animated":
+                return st.get("animated")
+            return st.get(sort)
+
+        known = [(value(e), e) for e in items]
+        have = [(v, e) for v, e in known if v is not None]
+        missing = [e for v, e in known if v is None]
+        have.sort(key=lambda ve: (ve[0], ve[1].sort_key), reverse=desc)
+        out = [e for _v, e in have] + missing
+        if game_order is not None:  # each game's models together, the games in the library's order
+            rank = {e.id: i for i, e in enumerate(out)}
+            out.sort(key=lambda e: (game_order.get(e.game, 1e9), rank[e.id]))
+        return out
+
+    def cmd_models_get(self, args: dict) -> dict:
+        """The library models ``ids`` (the ones still there, in that order): for the Home page's Recent row."""
+        with self.lock:
+            collected = self._collected_roots()
+            found = [self.library.find(str(i)) for i in args.get("ids") or []]
+            return {"items": [self._entry_json(e, collected) for e in found if e is not None]}
 
     def cmd_model_entry(self, args: dict) -> dict:
         entry = self._entry(str(args.get("id") or ""))
@@ -1673,7 +1792,7 @@ class Service:
                 raise AppError("That model isn't in the library any more.")
             return {"id": path_id(path), "label": path.name, "stem": path.stem, "game": None, "category": None,
                     "group": None, "packed": True, "lod": False, "importer": "", "file": str(path), "name": path.name}
-        return entry_json(entry)
+        return self._entry_json(entry)
 
     def _entry(self, entry_id: str) -> CatalogEntry | None:
         with self.lock:
@@ -1734,7 +1853,12 @@ class Service:
                 self.sessions.move_to_end(sid)
         mesh = session.build(MeshOptions())
         out = model_json(session.model, mesh)
-        out.update({"sid": sid, "id": model_id, "entry": entry_json(entry) if entry else None,
+        if entry is not None and entry.config is None and variant is None:
+            try:
+                self._learn([entry], model_stats(session.model, mesh))
+            except Exception:  # noqa: BLE001 - only the stats lost
+                log.debug("stats of %s", entry.path, exc_info=True)
+        out.update({"sid": sid, "id": model_id, "entry": self._entry_json(entry) if entry else None,
                     "enhanced": self._result_json(session) if session.result is not None else None,
                     "cut": self._cut_json(session) if session.cut is not None else None,
                     "finished": self._finished_json(session) if session.finished is not None else None,
@@ -1821,6 +1945,8 @@ class Service:
 
         ov = self._overlay(e.game)
         if ov.is_empty():
+            e.__dict__.pop("_game_name", None)
+            e.__dict__.pop("_user_named", None)
             if "_original" in e.__dict__:
                 place_entry(e, None, None, None)
             return
@@ -1829,7 +1955,171 @@ class Service:
             rel = self._overlay_rel(e, lib) or ""
             e.__dict__["_overlay_rel"] = rel
         category, group, _label = original_place(e)
-        place_entry(e, *ov.place(overlay.model_key(rel) if rel else "", category, group))
+        key = overlay.model_key(rel) if rel else ""
+        e.__dict__["_game_name"] = ov.game_name(key) if key else None
+        e.__dict__["_user_named"] = bool(key and ov.model(key).get("name"))
+        place_entry(e, *ov.place(key, category, group))
+
+    def _keep_game_names(self, game: str, names: dict[str, str]) -> int:
+        """Keep the names the game gives its models in its library overlay (see Importer.names)."""
+        ov = self._overlay(game)
+        with self.lock:
+            changed = ov.set_game_names(names)
+            if changed:
+                ov.save()
+        return changed
+
+    def cmd_names_read(self, args: dict) -> dict:
+        """Read the names a game gives its models from its files again (its text and item tables), for every
+        folder of the game, and file its models under them (a job)."""
+        game = str(args.get("game") or "")
+        with self.lock:
+            roots = [r for r, g in self.library.roots.items() if g == game and r.is_dir()]
+        if not roots:
+            raise AppError(f"{game} has no folder to read names from." if game else "Choose a game first.")
+        from ..library import folder_names
+
+        def run(job: Job):
+            named = changed = 0
+            for i, root in enumerate(roots):
+                job.report(i / len(roots), f"Reading names in {root.name}")
+                with self.lock:
+                    found = [e for e in self.library.entries if self.library.root_of(e) == root]
+                names = folder_names(root, game, found, fresh=True)
+                named += len(names)
+                changed += self._keep_game_names(game, names)
+            with self.lock:
+                self.library.rearrange()
+            self._write_index(game)
+            return {"game": game, "named": named, "changed": changed}
+
+        return {"job": self.jobs.start(f"Reading {game}'s names", run).id}
+
+    # ------------------------------------------------------------ the library index: search, filters, columns
+
+    def _entry_stats(self, e: CatalogEntry) -> dict | None:
+        if e.config is not None:
+            return None
+        return self.index.stats(e.game, e.id) or clean_stats(e.stats)
+
+    def _collected_roots(self) -> dict:
+        """{game folder: whether it holds copies collected into the app}."""
+        return {r: self._is_collection(r) for r in list(self.library.roots)}
+
+    def _is_collected(self, e: CatalogEntry, collected: dict | None = None) -> bool:
+        root = self.library.root_of(e)
+        return bool((collected if collected is not None else self._collected_roots()).get(root)) if root else False
+
+    def _entry_json(self, e: CatalogEntry, collected: dict | None = None) -> dict:
+        """What the page shows of a library model: entry_json, with its size and counts once known, and whether
+        it's a copy collected into the app."""
+        out = entry_json(e)
+        st = self._entry_stats(e)
+        if st:
+            out["stats"] = st
+        out["collected"] = self._is_collected(e, collected)
+        return out
+
+    def _index_rows(self, game: str) -> list[dict]:
+        with self.lock:
+            collected = self._collected_roots()
+            entries = [e for e in self.library.entries if e.game == game and e.config is None]
+            rows = []
+            for e in entries:
+                if e.stats and not self.index.stats(game, e.id):  # what the importer knew when it listed it
+                    self.index.put(game, e.id, e.stats)
+                original = e.__dict__.get("_original")
+                rows.append({"id": e.id, "label": e.label, "game_name": e.__dict__.get("_game_name") or None,
+                             "file_label": original[2] if original else e.label, "kind": e.category, "group": e.group,
+                             "file": e.path.name, "stem": e.stem, "lod": e.is_lod,
+                             "collected": self._is_collected(e, collected)})
+        return rows
+
+    def _write_index(self, game: str) -> None:
+        """Write a game's library index (at each scan; and as sizes and counts are learnt)."""
+        self.index.write(game, self._index_rows(game))
+        self._index_dirty.pop(game, None)
+
+    def _write_indexes(self, games) -> None:
+        for g in dict.fromkeys(games):
+            try:
+                self._write_index(g)
+            except Exception:  # noqa: BLE001 - only the index file lost: written again next scan
+                log.warning("The library index of %s couldn't be written", g, exc_info=True)
+
+    def _learn(self, entries: list[CatalogEntry], stats: dict) -> None:
+        """Keep what was learnt of these models' size and counts (opened, or drawn for a preview)."""
+        stats = dict(stats, **{"from": "model"})
+        for e in entries:
+            if e.config is None and self.index.put(e.game, e.id, stats):
+                self._index_dirty.setdefault(e.game, time.monotonic())
+
+    def _learnt_from_preview(self, path: Path, variant, model, mesh) -> None:
+        if variant:
+            return
+        with self.lock:
+            entries = self.library.with_path(path)
+        if entries:
+            try:
+                self._learn(entries, model_stats(model, mesh))
+            except Exception:  # noqa: BLE001 - only the stats lost
+                log.debug("stats of %s", path, exc_info=True)
+            self._flush_index(10.0)
+
+    def _flush_index(self, after: float) -> None:
+        """Write the indexes holding stats learnt more than ``after`` seconds ago."""
+        now = time.monotonic()
+        due = [g for g, since in list(self._index_dirty.items()) if now - since >= after]
+        if due:
+            self._write_indexes(due)
+
+    def _start_stats(self) -> None:
+        """Fill in, in the background, the sizes and counts of the library's models not known yet, from a quick
+        look at each file where its importer can do that (see Importer.stats). Holds back while the user
+        waits on something (as previews do)."""
+        with self.lock:
+            self._stats_again = True
+            if self._stats_thread is not None and self._stats_thread.is_alive():
+                return
+            self._stats_thread = threading.Thread(target=self._stats_pass, name="library-stats", daemon=True)
+            self._stats_thread.start()
+
+    def _stats_pass(self) -> None:
+        from ..importers import IMPORTERS
+        from ..importers.base import Importer
+
+        quick = {imp.key: imp for imp in IMPORTERS if type(imp).stats is not Importer.stats}
+        while True:
+            with self.lock:
+                self._stats_again = False
+                todo = [e for e in self.library.entries if e.config is None and e.importer in quick
+                        and e.id not in self._stats_tried and not self.library.hides(e)]
+            last = time.monotonic()
+            for e in todo:
+                if self.index.stats(e.game, e.id) is not None:
+                    continue
+                if e.stats:
+                    if self.index.put(e.game, e.id, e.stats):
+                        self._index_dirty.setdefault(e.game, time.monotonic())
+                    continue
+                self.thumbs.wait_idle()
+                try:
+                    st = quick[e.importer].stats(e.path)
+                except Exception:  # noqa: BLE001 - learnt when it's opened or its preview drawn instead
+                    st = None
+                if st:
+                    if self.index.put(e.game, e.id, dict(st, **{"from": "file"})):
+                        self._index_dirty.setdefault(e.game, time.monotonic())
+                else:
+                    self._stats_tried.add(e.id)
+                if time.monotonic() - last > 5.0:
+                    last = time.monotonic()
+                    self._flush_index(0.0)
+            self._flush_index(0.0)
+            with self.lock:
+                if not self._stats_again:
+                    self._stats_thread = None
+                    return
 
     def _overlay_key(self, session: Session) -> tuple[overlay.Overlay, str]:
         entry = session.entry
@@ -1918,7 +2208,8 @@ class Service:
             ov.set_place(key, name, folder)
             ov.save()
             self.library.rearrange()
-        return {"entry": entry_json(entry)}
+            self._index_dirty.setdefault(entry.game, 0.0)
+        return {"entry": self._entry_json(entry)}
 
     def cmd_folder_arrange(self, args: dict) -> dict:
         """Rename or move one of a game's kinds (``category``) or a group in it (``group``) as a whole, to
@@ -3221,6 +3512,22 @@ def _is_under(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _number(value) -> float | None:
+    try:
+        return None if value is None or value == "" else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _flag(value) -> bool | None:
+    """A filter that's on (True), off (False) or not set (None), as the page sends it."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        return value.lower() in ("1", "true", "yes")
+    return bool(value)
 
 
 def _key_id(key: tuple) -> str:

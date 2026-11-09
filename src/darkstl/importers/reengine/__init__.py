@@ -67,6 +67,11 @@ class REEngineImporter(Importer):
         files.build_index(Path(folder), paths, self.cache / "index" if self.cache else None)
         return catalog.scan(Path(folder), game, paths, self.key)
 
+    def names(self, folder: Path, game: str, entries: list[CatalogEntry], fresh: bool = False) -> dict[str, str]:
+        """None yet: the RE Engine games keep their item names in .msg text files, which aren't joined to
+        the meshes yet. The models keep their file names."""
+        return {}
+
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
         return list(getattr(self, "_notes", {}).get(str(folder), []))
 

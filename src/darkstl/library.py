@@ -63,6 +63,7 @@ class Kept:
     it changed) and what each importer readied for opening models (:meth:`Importer.scan_state`)."""
     fingerprint: Fingerprint | None = None
     state: dict = field(default_factory=dict)  # importer key -> its state
+    names: dict = field(default_factory=dict)  # overlay key -> the model's name in the game (Importer.names)
 
     def restore(self, root: Path) -> None:
         from .importers import IMPORTERS
@@ -91,6 +92,7 @@ def scan_folder_kept(root: str | os.PathLike, game: str | None = None,
             found += imp.scan(root, game, progress)
         notes = [n for imp in IMPORTERS for n in imp.folder_notes(root, found)]
         kept = Kept(listed.fingerprint())
+        kept.names = folder_names(root, game, found)
         for imp in IMPORTERS:
             try:
                 state = imp.scan_state(root)
@@ -103,6 +105,23 @@ def scan_folder_kept(root: str | os.PathLike, game: str | None = None,
         notes.append("No models were found in this folder. Choose the game's folder (unpacked), or a folder of "
                      "extracted model files such as .partsbnd, .chrbnd, .objbnd, .flver or .obj.")
     return sorted(found, key=lambda e: e.sort_key), notes, kept
+
+
+def folder_names(root: Path, game: str, found: list[CatalogEntry], fresh: bool = False) -> dict[str, str]:
+    """The names the game gives the models a scan of ``root`` found (each importer's :meth:`Importer.names`):
+    {overlay key: name}. ``fresh``: read the game's files again."""
+    from .importers import IMPORTERS
+
+    out: dict[str, str] = {}
+    for imp in IMPORTERS:
+        mine = [e for e in found if e.importer == imp.key]
+        if not mine:
+            continue
+        try:
+            out.update(imp.names(Path(root), game, mine, fresh))
+        except Exception:  # noqa: BLE001 - the models keep the names their files give them
+            logging.getLogger(__name__).warning("Names of %s from %s failed", root, imp.key, exc_info=True)
+    return out
 
 
 def folder_configurations(root: Path, game: str, found: list[CatalogEntry]) -> list:
@@ -193,6 +212,7 @@ class Library:
     _full: set[tuple[str, str]] | None = field(default=None, repr=False)  # (game, stem) of every full model
     _first: dict[tuple[str, str], str] | None = field(default=None, repr=False)  # (game, stem) -> the entry shown
     _root: dict[str, Path | None] | None = field(default=None, repr=False)  # entry id -> the folder holding it
+    _by_path: dict[str, list[CatalogEntry]] | None = field(default=None, repr=False)  # file -> its entries
     found_configs: dict[Path, list] = field(default_factory=dict)  # folder -> configurations its scan found
     kept: dict[Path, Kept] = field(default_factory=dict)  # folder -> what its last scan here left (scan_folder_kept)
     config_notes: dict[str, list[str]] = field(default_factory=dict)  # game -> what couldn't be found for them
@@ -204,7 +224,7 @@ class Library:
     arrange: Callable[["Library", CatalogEntry], None] | None = field(default=None, repr=False, compare=False)
 
     def _changed(self) -> None:
-        self._by_id = self._full = self._first = self._configs = self._all = self._root = None
+        self._by_id = self._full = self._first = self._configs = self._all = self._root = self._by_path = None
         self._overview = {}
         if self.arrange is not None and self.entries:
             for e in self.entries:
@@ -346,6 +366,15 @@ class Library:
             self._first = {k: v[1] for k, v in best.items()}
         return self._first.get((entry.game, entry.stem.lower()), entry.id) != entry.id
 
+    def with_path(self, path: Path) -> list[CatalogEntry]:
+        """The models listed from the file ``path`` (not the configurable ones built on it)."""
+        if self._by_path is None:
+            by: dict[str, list[CatalogEntry]] = {}
+            for e in self.entries:
+                by.setdefault(os.path.normcase(os.fspath(e.path)), []).append(e)
+            self._by_path = by
+        return list(self._by_path.get(os.path.normcase(os.fspath(path)), []))
+
     def root_of(self, entry: CatalogEntry) -> Path | None:
         if self._root is None:
             self._root = {}
@@ -363,7 +392,8 @@ class Library:
 
     def query(self, game: str | None = None, category: str | None = None, group: str | None = None,
               text: str = "", include_lod: bool = False) -> list[CatalogEntry]:
-        """The models of a game (and category, group) whose names contain every word of ``text``."""
+        """The models of a game (every game when None; and category, group) whose name, name in the game, file
+        name, kind, group or tags contain every word of ``text``."""
         words = text.lower().split()
         out = []
         for e in self.all_entries():
@@ -372,7 +402,7 @@ class Library:
             if group is not None and e.group != group:
                 continue
             if words:
-                hay = f"{e.label} {e.stem} {e.group} {e.category}{' configurable' if e.config else ''}".lower()
+                hay = _haystack(e)
                 if not all(w in hay for w in words):
                     continue
             out.append(e)
@@ -417,6 +447,20 @@ class Library:
             games.append({"name": game, "count": sum(c["count"] for c in categories),
                           "folders": folders, "categories": categories})
         return games
+
+
+def _haystack(e: CatalogEntry) -> str:
+    """What a search looks through for a model, in lower case (worked out once per name and place)."""
+    key = (e.label, e.category, e.group, e.__dict__.get("_game_name"), e.__dict__.get("_tags"))
+    kept = e.__dict__.get("_hay")
+    if kept is None or kept[0] != key:
+        original = e.__dict__.get("_original")
+        tags = " ".join(e.__dict__.get("_tags") or ())  # the user's tags (a later version adds them)
+        text = " ".join(filter(None, (e.label, e.__dict__.get("_game_name"), original[2] if original else "", e.stem,
+                                      e.path.name, e.group, e.category, "configurable" if e.config else "", tags)))
+        kept = (key, text.lower())
+        e.__dict__["_hay"] = kept
+    return kept[1]
 
 
 def original_place(entry: CatalogEntry) -> tuple[str, str, str]:

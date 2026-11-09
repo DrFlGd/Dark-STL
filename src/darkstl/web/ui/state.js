@@ -9,7 +9,11 @@ export const ui = createStore({
   overview: null,          // { scanning, total, games: [{ name, count, folders, categories }] }
   q: "",                   // search text on the browse pages
   layout: "grid",          // grid | list
-  sort: "kind",            // kind (category, group, file) | file (file name)
+  sort: "kind",            // kind (category, group, file) | file (file name): the sort before 0.44, as a fallback
+  sorts: {},               // per page (its route, or "search"): { by, desc } (see models.js usePageSort)
+  recent: [],              // the ids of the models opened last, newest first (Home's Recent row)
+  searchQ: "",             // the search across every game (route "search")
+  searchFilters: {},       // its filters: { games, kinds, animated, textured, tris, collected }
   lod: false,              // show the low-detail (_l) copies too
   cardSize: 172,
   dialog: null,            // { type: "add-folder" | "confirm" | ..., ... }
@@ -45,9 +49,9 @@ export const ui = createStore({
 
 let prefs = null;
 const KEY = "ds-ui";
-const KEPT = ["skin", "theme", "layout", "sort", "lod", "cardSize", "open", "navCollapsed", "inspector", "inspectorTab",
+const KEPT = ["skin", "theme", "layout", "sort", "sorts", "recent", "lod", "cardSize", "open", "navCollapsed", "inspector", "inspectorTab",
   "inspectorWidth", "catPanel", "catPanelWidth", "catPanelModel", "tipsOpen", "enhance", "exportOpts", "view", "cutOpts", "cutPlans", "configChoices",
-  "paintOpts", "paintSources"];
+  "paintOpts", "paintSources", "showBones"];
 
 /** Load saved preferences (call once the platform store exists). */
 export function initState(store) {
@@ -71,6 +75,16 @@ function savePrefs() {
 export function setPref(patch) {
   ui.set(patch);
   savePrefs();
+}
+
+const RECENT = 8;
+
+/** Remember that a library model was opened, for Home's Recent row (the last 8). */
+export function rememberOpened(id) {
+  if (!id) return;
+  const was = ui.get().recent || [];
+  if (was[0] === id) return;
+  setPref({ recent: [id, ...was.filter((x) => x !== id)].slice(0, RECENT) });
 }
 
 /** The skins, shared with Model Library: data-skin on the page's root, read by styles.css and the icons. */
