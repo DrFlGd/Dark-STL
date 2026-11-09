@@ -220,3 +220,6 @@ def test_cli_commands(tmp_path, weapon_dir, capsys):
                  "--save-heights", str(tmp_path / "h")]) == 0
     assert (tmp_path / "hi.stl").stat().st_size > 84
     assert (tmp_path / "h" / "WP_A_0300_n_height.png").exists()
+    assert "thin parts: 0 vertices lowered" in capsys.readouterr().out
+    assert main(["enhance", model, "-o", str(tmp_path / "hi2.stl"), "-n", "5000", "--no-thin-parts"]) == 0
+    assert "thin parts" not in capsys.readouterr().out

@@ -23,7 +23,8 @@ import { ConfigureTab } from "./configure.js";
 
 const ENHANCE = { target_vertices: 1_000_000, method: "subdivide", smooth: true, source: "normal", strength: 1, height_range_mm: 1,
   green: "auto", detail_fraction: 0.0625, max_displacement_mm: 0, integration: "mesh", edge_keeping: 0, deblock: "off", edge_smoothing: 1,
-  upsample: "off", upsample_factor: 0, ai_model: "", deblock_model: "", edge_hints: false, albedo_detail_mm: 0, detail_normals: false, detail_strength: 1 };
+  upsample: "off", upsample_factor: 0, ai_model: "", deblock_model: "", edge_hints: false, albedo_detail_mm: 0, detail_normals: false, detail_strength: 1,
+  thin_parts: true, thin_room: 0.8 };
 const IMAGE_PATTERN = "Images (*.png;*.tga;*.tif;*.tiff;*.dds;*.jpg;*.jpeg;*.webp;*.bmp)";
 const EXPORT = { format: ".stl", units: "mm", textures: true, folder: "", paint: null };
 /** The painted 3MF's settings: the palette's size (chosen from the textures) or its colours (chosen by hand). */
@@ -513,7 +514,7 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
       shown.current = true;
       if (which === "pieces") viewer.current.setExplode(cutting.explode);
       onBounds?.({ min: built.header.min, max: built.header.max, which });
-      setState({ loading: false, error: null, size, key, thin: viewer.current.thinShare });
+      setState({ loading: false, error: null, size, key, thin: viewer.current.thinShare, thinAt: view.print_height_mm });
       onBusy?.(false);
     })().catch((e) => { if (live) { setState({ loading: false, error: msg(e), size: null, key }); onBusy?.(false); } });
     return () => { live = false; };
@@ -539,7 +540,7 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
     const v = viewer.current;
     if (!thick || !v?.shown?.thickness) return;
     const thin = v.setThickness(thickOpts(v.shown.header));
-    setState((st) => ({ ...st, thin }));
+    setState((st) => ({ ...st, thin, thinAt: view.print_height_mm }));
   }, [view.print_height_mm, view.min_wall_mm]);
   const setView = (patch) => setPref({ view: { ...view, ...patch } });
   const edges = (on) => { setView({ edges: on }); viewer.current?.setEdges(on); };
@@ -568,7 +569,7 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
         <canvas ref=${canvas} tabindex="0" aria-label="The model in 3D: drag to turn it, right-drag to move, wheel to zoom"></canvas>
         ${state.loading && !shown.current ? html`<div class="stage-note muted">Loading the model…</div>` : null}
         ${state.loading && shown.current && thick ? html`<div class="stage-note muted" id="thickness-measuring">Measuring how thick the model is…</div>` : null}
-        ${thick ? html`<${ThicknessPanel} view=${view} setView=${setView} thin=${state.key === key ? state.thin : null} />` : null}
+        ${thick ? html`<${ThicknessPanel} view=${view} setView=${setView} thin=${state.key === key ? state.thin : null} at=${state.thinAt} />` : null}
         ${state.error ? html`<div class="stage-note"><p class="warn-note" role="alert" id="stage-error">${state.error}</p></div>` : null}
         ${!state.loading && !state.error && size && !size.triangles ? html`<div class="stage-note muted">No parts are switched on (Model tab).</div>` : null}
       </div>
@@ -592,7 +593,7 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
 
 /** The Thickness shading's small panel over the 3D view: the print height and thinnest wall it measures against,
  *  what the colours mean, and how much of the model is too thin. */
-function ThicknessPanel({ view, setView, thin }) {
+function ThicknessPanel({ view, setView, thin, at }) {
   const num = (e) => { const v = parseFloat(e.target.value); return Number.isFinite(v) && v > 0 ? v : 0; };
   const swatch = (c) => html`<span class="thick-swatch" style=${`background:${c}`}></span>`;
   return html`<div class="thickness-panel" id="thickness-panel" role="group" aria-label="Thickness">
@@ -605,8 +606,9 @@ function ThicknessPanel({ view, setView, thin }) {
     <ul class="thick-legend">
       <li>${swatch(THICKNESS_COLORS.thin)} Thinner than that, or a single sheet with no thickness (a cape, a banner)</li>
       <li>${swatch(THICKNESS_COLORS.near)} Up to twice as thick</li>
+      <li>${swatch(THICKNESS_COLORS.fair)} Up to four times</li>
       <li>${swatch(THICKNESS_COLORS.thick)} Thick enough</li></ul>
-    ${thin != null ? html`<small class="muted" id="thin-share">${thin > 0 ? `${(thin * 100).toFixed(thin < 0.1 ? 1 : 0)} % of the surface is too thin` : "Nothing is too thin"}${view.print_height_mm ? ` at ${Math.round(view.print_height_mm)} mm tall` : " at game size"}.</small>` : null}
+    ${thin != null ? html`<small class="muted" id="thin-share">${thin > 0 ? `${(thin * 100).toFixed(thin < 0.1 ? 1 : 0)} % of the model's points are too thin` : "Nothing is too thin"}${at ? ` at ${Math.round(at)} mm tall` : " at game size"}.</small>` : null}
   </div>`;
 }
 
@@ -1067,6 +1069,11 @@ function DisplaceTab({ m, args, stats, s, set, run, setRun, call, sendSettings, 
           onChange=${(v) => set({ detail_strength: v })} />` : null}` : null}
         <${NumberField} id="clamp" label="Most displacement" value=${s.max_displacement_mm} step=${0.1} min=${0} max=${100} unit="mm (0: no limit)"
           title="No vertex moves further than this." onChange=${(v) => set({ max_displacement_mm: v })} />
+        <label class="check-row" title="Where a part is thin (a blade's edge, a claw's tip, a cape hanging close to the body), its relief is lowered smoothly so it can't push through the surface behind or beside it. Thick parts and open areas keep all their relief.">
+          <input type="checkbox" id="thin-parts" checked=${s.thin_parts} onChange=${(e) => set({ thin_parts: e.target.checked })} /><span>Keep thin parts from clipping</span></label>
+        ${s.thin_parts ? html`<${NumberField} id="thin-room" label="Room the relief may use" value=${Math.round((s.thin_room ?? 0.8) * 100)} step=${5} min=${10} max=${100} unit="% of the room"
+          title="How close relief may come to the surface behind or beside it. 80 % leaves a fifth of the gap or thickness free; lower keeps thin parts thicker, 100 lets relief come right up to it."
+          onChange=${(v) => set({ thin_room: Math.min(Math.max(v, 10), 100) / 100 })} />` : null}
         <p class="muted">Cleaning up and upsampling the normal maps is on the <a href="#" onClick=${(e) => { e.preventDefault(); ui.set({ inspectorAsk: { page: "model", tab: "textures" } }); }}>Textures tab</a>.</p>
       </details>` : null}
     </section>
@@ -1085,7 +1092,10 @@ function DisplaceTab({ m, args, stats, s, set, run, setRun, call, sendSettings, 
         <dt>Vertices</dt><dd>${num(result.stats.vertices)} <span class="muted">from ${num(result.stats.source_vertices)}</span></dd>
         <dt>Triangles</dt><dd>${num(result.stats.faces)}</dd>
         <dt>Size</dt><dd>${sizeText(result.size_mm)}</dd>
-        <dt>Relief</dt><dd>up to ${result.stats.max_displacement_mm.toFixed(2)} mm</dd></dl>
+        <dt>Relief</dt><dd>up to ${result.stats.max_displacement_mm.toFixed(2)} mm</dd>
+        ${result.stats.thin_capped != null ? html`<dt title="Relief lowered where a part is thin or close to another, so it doesn't push through it (More settings)">Thin parts</dt>
+          <dd id="thin-result">${result.stats.thin_capped ? html`${plural(result.stats.thin_capped, "vertex", "vertices")} lowered, by up to ${result.stats.thin_max_reduction_mm.toFixed(2)} mm
+            <span class="muted">(${Math.round(result.stats.thin_kept_percent)} % of the relief kept)</span>` : "nothing needed lowering"}</dd>` : null}</dl>
       ${result.fields.length ? html`<ul class="ls-list field-list">${result.fields.map((f, i) => html`<li key=${i}><span>${f.material}<small class="muted">${[f.texture, f.convention, ...(f.steps || [])].filter(Boolean).join(" · ")}</small></span>
         <span class="muted" title="One texture pixel covers this much of the model">${f.texel_mm.toFixed(2)} mm/px</span></li>`)}</ul>` : null}
       ${result.warnings.map((w, i) => html`<p class="insp-note" key=${i}>${w}</p>`)}
