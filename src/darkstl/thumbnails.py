@@ -170,6 +170,9 @@ class ThumbnailCache:
         self._locks_guard = threading.Lock()
         self._busy = 0  # foreground work under way (a model being opened)
         self._idle = threading.Condition()
+        # called with (file, variant, model, mesh) of each model opened to draw its preview: what was learnt of it
+        # (its size and counts) is kept for the library's search and columns
+        self.on_model: Callable | None = None
 
     @contextmanager
     def foreground(self):
@@ -276,6 +279,11 @@ class ThumbnailCache:
         model = open_model(path, variant, texture_dirs)
         self.wait_idle()
         mesh = model.build_mesh()
+        if self.on_model is not None:
+            try:
+                self.on_model(Path(path), variant, model, mesh)
+            except Exception:  # noqa: BLE001 - only what was learnt is lost
+                pass
         if mesh.n_faces == 0:
             return None
         self.wait_idle()

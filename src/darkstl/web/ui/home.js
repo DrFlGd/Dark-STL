@@ -4,7 +4,7 @@
 import { html, useState, useEffect } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui } from "./state.js";
-import { routeHash, placeRoute } from "./context.js";
+import { routeHash, placeRoute, searchHash } from "./context.js";
 import { api, info, plural } from "./api.js";
 import { CommandBar } from "./layout.js";
 import { Icon } from "./icons.js";
@@ -12,6 +12,7 @@ import { Thumb } from "./thumbs.js";
 import { GameBadge, CategoryIcon } from "./gameicons.js";
 import { gameMenu, unpackFolder } from "./games.js";
 import { openMenu } from "./actions.js";
+import { statsLine, statsTitle } from "./models.js";
 
 const addFolder = () => ui.set({ dialog: { type: "add-folder" } });
 export const openFile = () => ui.set({ dialog: { type: "open-file" } });
@@ -34,6 +35,38 @@ function GameTile({ game, total }) {
     <span class="subcat-name"><${GameBadge} name=${game.name} /><span>${game.name}</span></span>
     <span class="subcat-meta">${plural(game.count, "model")}${cats ? ` · ${plural(cats, "kind")}` : ""}</span>
   </a>`;
+}
+
+/** The search across every game, from Home: Enter (or the button) shows what it finds. */
+function HomeSearch() {
+  const [text, setText] = useState("");
+  const go = (e) => { e.preventDefault(); location.hash = searchHash(text.trim()); };
+  return html`<form class="home-search" id="home-search-form" role="search" onSubmit=${go}>
+    <label class="search small toolbar-search"><span class="visually-hidden">Search every game</span>
+      <input id="home-search" data-search type="search" value=${text} placeholder="Search every game…" autocomplete="off" spellcheck="false"
+        title="Search every game's models by name, name in the game or file name; Enter shows what's found (/)" onInput=${(e) => setText(e.target.value)} /></label>
+  </form>`;
+}
+
+/** The models opened last (newest first), each a link back to it. */
+function Recent({ ids }) {
+  const [models, setModels] = useState(null);
+  const key = ids.join(",");
+  useEffect(() => {
+    let live = true;
+    if (!ids.length) { setModels([]); return; }
+    api("models_get", { ids }).then((r) => { if (live) setModels(r.items); }, () => { if (live) setModels([]); });
+    return () => { live = false; };
+  }, [key]);
+  if (!models?.length) return null;
+  return html`<section class="home-card home-recent" id="home-recent">
+    <div class="home-card-head"><h2>Recent</h2><span class="muted">The models you opened last</span></div>
+    <div class="home-strip" id="recent-models">${models.map((m) => html`<a key=${m.id} class="home-model" href=${routeHash(`model:${m.id}`)} data-model=${m.id} title=${`${m.label} (${m.game})`}>
+      <${Thumb} id=${m.id} category=${m.category} />
+      <span class="card-name">${m.label}</span>
+      <span class="card-location"><${GameBadge} name=${m.game} size=${12} /> ${statsLine(m.stats) ? html`<span title=${statsTitle(m.stats)}>${statsLine(m.stats)}</span>` : m.category}</span>
+    </a>`)}</div>
+  </section>`;
 }
 
 /** Folders with something to say: still packed, gone, nothing found. */
@@ -81,14 +114,17 @@ function HowItWorks() {
 
 export function Home() {
   const ov = useStore(ui, (s) => s.overview);
+  const recent = useStore(ui, (s) => s.recent || []);
   if (!ov) return html`<${CommandBar} id="home-head" title="Dark STL" /><div class="home"><p class="muted">Reading the library…</p></div>`;
   if (!ov.games.length && !ov.scanning) return html`<${CommandBar} id="home-head" title="Dark STL" /><${FirstRun} error=${ov.error} />`;
   return html`<${CommandBar} id="home-head" title="Your games"
       count=${html`<span class="page-count" id="home-counts">${plural(ov.games.length, "game")} · ${plural(ov.total, "model")}</span>`}
+      search=${ov.games.length ? html`<${HomeSearch} />` : null}
       primary=${html`<button type="button" class="primary compact" id="home-add-folder" onClick=${addFolder}>${Icon.plus(15)} Add game folder…</button>`}
       more=${{ id: "home-more", items: [{ id: "open-file", label: "Open a model file…", sub: "one file, without adding its folder", icon: "file", run: openFile }] }} />
     <div class="home">
       ${ov.error ? html`<p class="warn-note" role="alert">${ov.error}</p>` : null}
+      <${Recent} ids=${recent} />
       <div class="subcat-tiles game-tiles" id="game-tiles">${ov.games.map((g) => html`<${GameTile} key=${g.name} game=${g} total=${ov.total} />`)}
         ${ov.scanning ? html`<div class="subcat-tile game-tile scanning" aria-busy="true"><span class="subcat-pics"><span class="subcat-empty thumb-wait">${Icon.refresh(30)}</span></span>
           <span class="subcat-name">Reading folders…</span></div>` : null}</div>
