@@ -1443,7 +1443,7 @@ function DisplaceTab({ m, args, stats, s, set, run, setRun, call, sendSettings, 
         <dt>Size</dt><dd>${sizeText(result.size_mm)}${result.size_mm ? gameMm(result.size_mm[2], printScale) : null}</dd>
         <dt>Relief</dt><dd id="relief">up to ${result.stats.max_displacement_mm.toFixed(2)} mm${gameMm(result.stats.max_displacement_mm, printScale)}</dd>
         ${result.stats.thin_capped != null ? html`<dt title="Relief lowered where a part is thin or close to another, so it doesn't push through it (More settings)">Thin parts</dt>
-          <dd id="thin-result">${result.stats.thin_capped ? html`${plural(result.stats.thin_capped, "vertex", "vertices")} lowered, by up to ${result.stats.thin_max_reduction_mm.toFixed(2)} mm
+          <dd id="thin-result">${result.stats.thin_capped ? html`${plural(result.stats.thin_capped, "vertex", "vertices")} lowered, by up to ${result.stats.thin_max_reduction_mm.toFixed(2)} mm${" "}
             <span class="muted">(${Math.round(result.stats.thin_kept_percent)} % of the relief kept)</span>` : "nothing needed lowering"}</dd>` : null}</dl>
       ${result.fields.length ? html`<ul class="ls-list field-list">${result.fields.map((f, i) => html`<li key=${i}><span>${f.material}<small class="muted">${[f.texture, f.convention, ...(f.steps || [])].filter(Boolean).join(" · ")}</small></span>
         <span class="muted" title="One texture pixel covers this much of the model">${f.texel_mm.toFixed(2)} mm/px${gameMm(f.texel_mm, printScale)}</span></li>`)}</ul>` : null}
