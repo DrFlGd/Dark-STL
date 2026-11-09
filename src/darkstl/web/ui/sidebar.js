@@ -3,10 +3,10 @@
 // groups in a panel beside the menu (as Model Library shows a category's
 // subcategories), which folds to a strip; in narrow windows the menu is a
 // drawer and the categories unfold in it instead.
-import { html, useRef, useEffect } from "../lib/html.js";
+import { html, useRef, useEffect, useState } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui, setPref } from "./state.js";
-import { routeHash, placeOf, placeRoute } from "./context.js";
+import { routeHash, placeOf, placeRoute, searchHash } from "./context.js";
 import { Icon } from "./icons.js";
 import { NavHead, ThemeButton, useMedia, useNavFolded } from "./chrome.js";
 import { GameBadge, CategoryIcon } from "./gameicons.js";
@@ -92,6 +92,25 @@ function GamePanel({ game, place, route, open }) {
   </aside>`;
 }
 
+/** The search across every game, at the head of the menu on every page: Enter shows what it finds. (Folded,
+ *  the menu has its link instead.) */
+function NavSearch({ current }) {
+  const [text, setText] = useState("");
+  const go = (e) => {
+    e.preventDefault();
+    location.hash = searchHash(text.trim());
+    setText("");
+    ui.set({ navOpen: false });
+  };
+  return html`<form class="nav-search" id="nav-search-form" role="search" onSubmit=${go}>
+    <label class="search small"><span class="visually-hidden">Search every game</span>
+      <input id="nav-search-box" data-global-search type="search" value=${text} placeholder="Search every game…  /" autocomplete="off" spellcheck="false"
+        title="Search every game's models by name, name in the game or file name; Enter shows what's found (/ comes here)"
+        onInput=${(e) => setText(e.target.value)} /></label>
+    <ul class="nav-list nav-search-link"><${NavLink} route="search" label="Search every game" icon="search" current=${current} id="nav-search" /></ul>
+  </form>`;
+}
+
 export function Sidebar() {
   const s = useStore(ui, (st) => ({ route: st.route, navOpen: st.navOpen, overview: st.overview, open: st.open, modelPlace: st.modelPlace }));
   const narrow = useMedia(NARROW);
@@ -102,6 +121,7 @@ export function Sidebar() {
   return html`${s.navOpen ? html`<div class="nav-backdrop" onClick=${() => ui.set({ navOpen: false })}></div>` : null}
     <nav class=${`sidebar${s.navOpen ? " open" : ""}${folded ? " collapsed" : ""}`} aria-label="Library">
       <${NavHead} />
+      <${NavSearch} current=${s.route} />
       <ul class="nav-list">
         <${NavLink} route="home" label="Home" icon="home" current=${s.route} />
       </ul>

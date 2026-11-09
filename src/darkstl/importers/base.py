@@ -62,6 +62,21 @@ class Importer:
     def restore_state(self, folder: Path, state: Any) -> None:
         """Ready ``folder`` for opening its models from what :meth:`scan_state` gave after its last scan."""
 
+    def names(self, folder: Path, game: str, entries: list[CatalogEntry], fresh: bool = False) -> dict[str, str]:
+        """The names the game gives the models it scanned in ``folder`` (``entries``), from the game's own
+        text and item tables: {overlay key (see :func:`darkstl.overlay.model_key`, the model's path in the
+        folder): name}. Called after each scan; kept in the game's library overlay, under the names the user
+        gives. ``fresh``: read the game's files again rather than what was kept from them. Empty when the
+        importer can't tell (the default)."""
+        return {}
+
+    def stats(self, path: Path) -> dict | None:
+        """A quick look at the model in ``path`` without opening it fully, for the library's search and
+        columns: {"size_mm": [x, y, z], "vertices", "triangles", "parts", "textures", "animated"}, any
+        of them left out when not known. None when the importer can't tell without opening the model (it's
+        then learnt when the model's preview is drawn or it's opened)."""
+        return None
+
     def configurations(self, folder: Path, game: str, entries: list[CatalogEntry]) -> list:
         """Models in ``folder`` that are built from parts chosen per slot (a weapon and its magazines,
         sights, barrels), as :class:`~darkstl.configs.Configuration` objects. Called after the folder is

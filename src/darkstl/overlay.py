@@ -7,8 +7,12 @@ library, and importing the game as packages.
 
 It holds:
 
-- per model, its name (the one it has in the game, say) and its folder (``Kind/Group``, the user's own:
-  "Bosses", "Weapons/Long swords"), in place of what the importer made of its file names;
+- per model, its name and its folder (``Kind/Group``, the user's own: "Bosses", "Weapons/Long swords"), in
+  place of what the importer made of its file names;
+- the names the game itself gives its models (``game_names``: read from the game's text and item tables at
+  each scan, see :meth:`Importer.names`), under the user's own: a model is called by the name the user gave
+  it, else the game's, else what the importer made of its file name. Kept here, so they stay once the
+  game is uninstalled;
 - folder renames: a kind or group of the game's renamed or moved as a whole ("Characters" -> "Bosses");
 - per model and material, the texture to use for its colour, normal or height map, picked by name from
   the game's textures in the app (the texture picker). The texture itself is kept in the game's asset
@@ -102,7 +106,24 @@ class Overlay:
             models.pop(key, None)
 
     def is_empty(self) -> bool:
-        return not self.data["models"] and not self.data.get("folders")
+        return not self.data["models"] and not self.data.get("folders") and not self.data.get("game_names")
+
+    def game_name(self, key: str) -> str | None:
+        """The model's name in the game, if it's known."""
+        return (self.data.get("game_names") or {}).get(key) or None
+
+    def set_game_names(self, names: dict[str, str]) -> int:
+        """Keep the names the game gives these models (others stay as they were). How many changed."""
+        known = dict(self.data.get("game_names") or {})
+        changed = 0
+        for key, name in names.items():
+            name = " ".join(str(name or "").split())
+            if name and known.get(key) != name:
+                known[key] = name
+                changed += 1
+        if known:
+            self.data["game_names"] = known
+        return changed
 
     def set_place(self, key: str, name: str | None = None, folder: str | None = None) -> None:
         """Name and file a model as the user says; "" or None for either goes back to the game's own."""
@@ -136,10 +157,10 @@ class Overlay:
             self.data.pop("folders", None)
 
     def place(self, key: str, category: str, group: str) -> tuple[str | None, str | None, str | None]:
-        """(category, group, label) the user gives a model filed by the game under ``category``/``group``;
-        None where the game's own stays."""
+        """(category, group, label) the user gives a model filed by the game under ``category``/``group``
+        (the label: the user's name for it, else the game's); None where the file's own stays."""
         entry = self.model(key)
-        name = entry.get("name") or None
+        name = entry.get("name") or self.game_name(key)
         folder = entry.get("folder")
         if not folder:
             folders = self.data.get("folders") or {}

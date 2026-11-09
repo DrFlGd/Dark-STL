@@ -3,7 +3,7 @@
 // reached through platform.js.
 import { createPlatform } from "./platform.js";
 import { mountShell, ui } from "./ui/shell.js";
-import { routeFromHash } from "./ui/context.js";
+import { routeFromHash, searchOf } from "./ui/context.js";
 import { loadOverview } from "./ui/api.js";
 
 // errors the page tests read back (tests/test_page.py)
@@ -12,7 +12,8 @@ window.addEventListener("error", (e) => window.__errors.push(String(e.message)))
 window.addEventListener("unhandledrejection", (e) => window.__errors.push(String(e.reason?.message || e.reason)));
 
 function route() {
-  ui.set({ route: routeFromHash(location.hash), navOpen: false, menu: null });
+  const q = searchOf(location.hash);
+  ui.set({ route: routeFromHash(location.hash), navOpen: false, menu: null, ...(q != null ? { searchQ: q } : {}) });
 }
 
 async function start() {
