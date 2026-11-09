@@ -2,15 +2,15 @@
 // engine behind it (`darkstl engine`, frozen into engine/ beside the app). The page's
 // commands go to the engine over its stdin and stdout (src/darkstl/app/engine.py), so
 // nothing listens on a port; meshes and pictures come through the engine:// protocol
-// (http://engine.localhost/ on Windows). The window adds what needs it: the open dialogs
-// and web links opened in the browser.
+// (http://engine.localhost/ on Windows). The window adds what needs it: the open dialogs,
+// web links opened in the browser, and exported models opened in Model Painter.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -162,18 +162,43 @@ fn engine_command(app: &AppHandle) -> Command {
 }
 
 /// One of the engine's commands (src/darkstl/app/service.py), answered as JSON. The open dialogs
-/// are the window's, so pick_folder and pick_file are answered here.
+/// are the window's, so pick_folder and pick_file are answered here, and so is painter_open
+/// (Model Painter is started by the window, not by the engine).
 #[tauri::command]
 async fn api(app: AppHandle, engine: State<'_, Arc<Engine>>, cmd: String, args: Value) -> Result<Value, String> {
     match cmd.as_str() {
         "pick_folder" => return Ok(json!({ "path": pick_folder(&app, &args) })),
         "pick_file" => return Ok(json!({ "path": pick_file(&app, &args) })),
+        "painter_open" => return open_in_painter(&engine, args).await,
         _ => {}
     }
     match engine.call(&cmd, args, false).await {
         Answer::Json(v) => Ok(v),
         Answer::Error(_, e) => Err(e),
         Answer::Bytes(..) => Err(format!("{cmd} answers with bytes: read it from engine://")),
+    }
+}
+
+/// Open an exported model in Model Painter (the Export tab's Open in Model Painter): the engine says
+/// which program (Settings, or where it's installed) and checks the file is there (painter_target);
+/// the window starts Model Painter with the file, on its own, so it stays open when Dark STL closes.
+async fn open_in_painter(engine: &Engine, args: Value) -> Result<Value, String> {
+    let target = match engine.call("painter_target", args, false).await {
+        Answer::Json(v) => v,
+        Answer::Error(_, e) => return Err(e),
+        Answer::Bytes(..) => return Err("painter_target answered with bytes".into()),
+    };
+    let (Some(exe), Some(path)) = (target["exe"].as_str(), target["path"].as_str()) else {
+        return Err("Model Painter wasn't found. Say where it is in Settings › Model Painter.".into());
+    };
+    let mut command = Command::new(exe);
+    command.arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    if let Some(dir) = Path::new(exe).parent().filter(|d| d.is_dir()) {
+        command.current_dir(dir);
+    }
+    match command.spawn() {
+        Ok(_) => Ok(target), // not waited for: Model Painter runs on its own
+        Err(e) => Err(format!("Model Painter didn't start ({exe}: {e}).")),
     }
 }
 

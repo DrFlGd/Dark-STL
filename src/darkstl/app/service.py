@@ -42,6 +42,7 @@ from ..library import Library, Snapshot, detect_game, folder_relation, known_gam
 from ..library_index import LibraryIndex, clean_stats, longest, model_stats
 from ..model import CatalogEntry, MeshOptions, SourceModel, path_id
 from ..thumbnails import ThumbnailCache
+from . import painter
 from .config import Config, config_dir, filelists_dir, models_dir
 from .meshpack import pack_mesh
 
@@ -55,7 +56,9 @@ class AppError(Exception):
 
 
 class Host:
-    """What the window around the page can do: native dialogs, showing files. Overridden by desktop.py."""
+    """What the window around the page can do: native dialogs, showing files, starting another app with a file.
+    Overridden by desktop.py. (The desktop app's window answers the dialogs and starts Model Painter itself:
+    desktop/src/main.rs.)"""
 
     dialogs = False
 
@@ -67,6 +70,10 @@ class Host:
 
     def open_path(self, path: str) -> None:
         reveal(path)
+
+    def open_with(self, program: str, path: str) -> None:
+        """Start another app (Model Painter) with a file, on its own."""
+        painter.launch(program, path)
 
 
 def reveal(path: str) -> None:
@@ -393,7 +400,14 @@ class Service:
                 "oodle_found": str(found) if found else None, "export_dir": str(self.config.export_folder),
                 "library_dir": str(lib), "library_files": files, "library_bytes": size,
                 "previews": str(self.thumbs.folder), "settings_file": str(self.config.path or ""),
-                **self._unreal_settings()}
+                **self._painter_settings(), **self._unreal_settings()}
+
+    def _painter_settings(self) -> dict:
+        """Where Model Painter is: as set in Settings, and as found (the one set, else where it's installed)."""
+        set_to = self.config.model_painter
+        found = painter.find(set_to)
+        return {"model_painter": set_to, "model_painter_found": str(found) if found else None,
+                "model_painter_missing": bool(set_to) and found is None}
 
     def _unreal_settings(self) -> dict:
         """The AES keys and type mappings (.usmap) the Unreal games' importer reads from the settings folder."""
@@ -472,6 +486,12 @@ class Service:
             self.config.export_dir = str(args["export_dir"] or "").strip()
         if "library_dir" in args:
             self.config.library_dir = str(args["library_dir"] or "").strip()
+        if "model_painter" in args:
+            path = str(args["model_painter"] or "").strip().strip('"')
+            if path and painter.find(path) is None:
+                raise AppError(f"There is no program at {path}: choose Model Painter.exe where Model Painter is "
+                               "installed.")
+            self.config.model_painter = path
         self._set_unreal(args)
         self.config.save()
         return self.cmd_settings_get({})
@@ -519,6 +539,28 @@ class Service:
             raise AppError(f"{path or 'That file'} isn't there any more.")
         self.host.open_path(path)
         return {}
+
+    def cmd_painter_target(self, args: dict) -> dict:
+        """The program and file for Open in Model Painter: Model Painter where Settings says (or where it's
+        installed) and the exported file, checked. The desktop app's window starts it (desktop/src/main.rs)."""
+        path = Path(str(args.get("path") or ""))
+        if not str(path) or not path.is_file():
+            raise AppError(f"{path.name or 'That file'} isn't there any more: export it again.")
+        exe = painter.find(self.config.model_painter)
+        if exe is None:
+            raise AppError("Model Painter wasn't found. Install it (github.com/DrFlGd/Model-Painter), or say where it "
+                           "is in Settings › Model Painter.")
+        return {"exe": str(exe), "path": str(path)}
+
+    def cmd_painter_open(self, args: dict) -> dict:
+        """Open an exported model in Model Painter (``darkstl gui`` and the local server; the desktop app's window
+        answers this itself)."""
+        target = self.cmd_painter_target(args)
+        try:
+            self.host.open_with(target["exe"], target["path"])
+        except OSError as exc:
+            raise AppError(f"Model Painter didn't start ({target['exe']}: {exc}).") from None
+        return target
 
     def cmd_job(self, args: dict) -> dict:
         job = self.jobs.get(str(args.get("id")))
@@ -2804,9 +2846,23 @@ class Service:
             return None
         return variations.thumb_of(folder, str(args.get("id") or ""))
 
+    PRESETS = {"painter": "For Model Painter"}  # one-click exports: what each writes is set in cmd_export
+
     def cmd_export(self, args: dict) -> dict:
+        """Export the model shown (``which``) in a ``format`` and ``units``, or as a ``preset``: "painter" writes a
+        GLB with the textures and materials (Y up, in metres as glTF is), named ``<name>_for_painter.glb``, for
+        Model Painter."""
         session = self._session(args)
         which = args.get("which", "enhanced")
+        preset = str(args.get("preset") or "")
+        if preset and preset not in self.PRESETS:
+            raise AppError(f"There's no export preset '{preset}'.")
+        if preset == "painter":
+            if which == "pieces":
+                raise AppError("Model Painter takes one model: show the Enhanced, Original or Finished model to hand "
+                               "it over.")
+            # (mm: a GLB is written in metres, glTF's own unit, unless asked for other units)
+            args = {**args, "format": ".glb", "units": "mm", "textures": which != "finished", "paint": None}
         if which == "pieces":
             return self._export_pieces(session, args)
         if which == "enhanced":
@@ -2827,6 +2883,8 @@ class Service:
         scale = UNITS.get(str(args.get("units") or "mm"), 1000.0)
         folder = Path(args.get("folder") or self.config.export_folder)
         base = _safe_name(str(args.get("name") or Path(session.model.variant or session.model.name).stem))
+        if preset == "painter":
+            base += "_for_painter"
         model = session.model
         paint = paint_settings(args.get("paint") or {}) if ext == ".3mf" else None
         finished = session.finished if which == "finished" else None

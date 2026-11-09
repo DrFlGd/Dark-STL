@@ -1,6 +1,7 @@
 // Settings: the game folders (rescan, change game, remove, add), the folders
 // searched for textures a model doesn't hold, the Oodle library Sekiro and
-// Elden Ring files need, where exports go, the previews, and the look.
+// Elden Ring files need, where exports go, where Model Painter is, the previews,
+// and the look.
 import { html, useState, useEffect } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui, THEMES, SKINS, setTheme, setSkin } from "./state.js";
@@ -115,6 +116,18 @@ function Engine() {
       <p class="muted">Where exported models and saved textures go unless you choose another folder on the Export tab.</p>
       <${PathRow} id="export-dir" value=${s.export_dir} busy=${busy} browse=${(v) => pickFolder("Export to", v || undefined)} onSave=${(p) => save({ export_dir: p }, "Saved.")} />
       <div><button type="button" class="ghost" onClick=${() => showInFolder(s.export_dir)}>${Icon.folder(14)} Show in folder</button></div>
+    </section>
+    <section class="ls-section" id="settings-painter">
+      <h2>Model Painter</h2>
+      <p class="muted">Model Painter paints models for colour printing and finishes them for printing. The Export tab's <i>Export for Model Painter</i>
+        writes a GLB with the textures, and <i>Open in Model Painter</i> opens it there. Dark STL finds Model Painter where its installer or its portable
+        zip put it; if yours is somewhere else, choose its program here. Get it from${" "}<a href="https://github.com/DrFlGd/Model-Painter/releases" target="_blank" rel="noreferrer">Model Painter's releases</a>.</p>
+      <p id="painter-status">${s.model_painter_found ? html`${Icon.check(14)} ${s.model_painter ? "Using" : "Found"}: <span class="note-path">${s.model_painter_found}</span>`
+        : s.model_painter_missing ? html`<span class="warn-text">${s.model_painter} isn't there any more.</span>`
+        : html`<span class="muted">Not found. Exports are still saved; only Open in Model Painter needs it.</span>`}</p>
+      <${PathRow} id="painter-path" value=${s.model_painter} placeholder=${s.model_painter_found && !s.model_painter ? "Found by itself: choose another to use that" : "Model Painter.exe"} busy=${busy}
+        browse=${async (start) => { try { return (await api("pick_file", { title: "Find Model Painter", patterns: ["Model Painter (*.exe;*.app)", "All files (*.*)"], start })).path; } catch (e) { toast(msg(e)); return null; } }}
+        onSave=${(p) => save({ model_painter: p }, p ? "Saved where Model Painter is." : "Cleared: Dark STL looks for Model Painter by itself.")} />
     </section>
     <section class="ls-section" id="settings-previews">
       <h2>Previews</h2>
