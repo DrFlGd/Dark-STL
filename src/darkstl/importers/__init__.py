@@ -17,6 +17,7 @@ from .fromsoft import FromSoftwareImporter
 from .gltf import GltfImporter
 from .package import PackageImporter
 from .psk import PskImporter
+from .rage import RageImporter
 from .redengine import RedEngineImporter
 from .reengine import REEngineImporter
 from .renderware import RenderWareImporter
@@ -24,8 +25,8 @@ from .returnal import ReturnalImporter
 from .wavefront import WavefrontImporter
 
 IMPORTERS: list[Importer] = [PackageImporter(), FromSoftwareImporter(), RedEngineImporter(), REEngineImporter(),
-                             RenderWareImporter(), ReturnalImporter(), BorderlandsImporter(), GltfImporter(), PskImporter(),
-                             WavefrontImporter()]
+                             RenderWareImporter(), RageImporter(), ReturnalImporter(), BorderlandsImporter(),
+                             GltfImporter(), PskImporter(), WavefrontImporter()]
 
 
 def register(importer: Importer) -> None:

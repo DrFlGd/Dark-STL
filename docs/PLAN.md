@@ -37,7 +37,7 @@ importer and registering it in `importers/__init__.py`:
 | glTF | `.gltf` (with its `.bin` and pictures) and `.glb`, as Blender, FModel and most tools export: each mesh a part placed by its node, base colour and normal textures (green up), Y up turned to Z up; a model too big to be in metres read as centimetres. Skinned meshes in their bind pose | Synthetic files (0.35.0) |
 | ActorX PSK/PSKX | UModel's and FModel's exports of Unreal models: points, wedges, faces and materials, mirrored from Unreal's frame like the Unreal games' own models; each material's textures found by name beside the model, from UModel's `.mat`, FModel's `.json` and UModel's `.props.txt` material files, then from texture names like the material's. The skeleton isn't read | Synthetic files (0.35.0) |
 | RenderWare (GTA III, Vice City, San Andreas) | `.img` archives (with `.dir`, or `VER2`) read in place, `.dff` models (parts placed by frames, skins, vehicles with their wheels copied to every axle and their colours from `carcols.dat` as variants), `.txd` textures (DXT, paletted and raw rasters), `.ifp` animations for peds, `.ide`/`.ipl`/`.gxt` for kinds, areas and vehicle names. Per-game differences are JSON profiles in `importers/renderware/profiles/`. See Reading Grand Theft Auto files | Synthetic files (0.50.0) |
-| RAGE (GTA V, then GTA IV) | `.rpf` v7 and IMG3 archives with keys found in the user's executable, RSC7/RSC5 resources: `.ydr`/`.wdr`, `.ydd` ped components, `.yft` vehicles, `.ytd` textures, `.ycd` animations | Planned (0.51.0 GTA V, 0.52.0 GTA IV) |
+| RAGE (GTA V, then GTA IV) | GTA V: `.rpf` v7 archives (open, AES, NG, nested) with keys found in the user's `GTA5.exe`, RSC7 resources in the original and the Enhanced layouts: `.ydr` drawables, `.ydd` ped components (each ped an outfit), `.yft` vehicles with their wheels, `.ytd` textures, `.ycd` animations, names from `.gxt2` and the `.meta` lists. GTA IV: IMG3 and RSC5 | GTA V synthetic files (0.51.0); GTA IV planned (0.52.0) |
 | id Tech 6/7/8 (DOOM, DOOM Eternal, DOOM: The Dark Ages) | `.resources` containers (IDCL; DOOM 2016's `.index`) and `.streamdb` with the game's Oodle, BIM textures, `.lwo` static and `.md6mesh` skinned models, `.md6skl` skeletons, `.md6anim` animations, `material2` decls. See Reading id Tech 6/7/8 files | Planned (0.53.0 Eternal, 0.54.0 DOOM 2016, 0.55.0 The Dark Ages) |
 
 An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
@@ -422,8 +422,8 @@ generation-specific layouts side by side.
   The NG cipher picks one of 101 keys by the JOAAT hash of the file name plus its length and
   runs 17 table rounds. The AES key, the 101 NG keys and the decryption tables are found in
   the user's `GTA5.exe` by searching for blocks whose SHA-1 matches the hashes CodeWalker
-  publishes (MIT), once, and kept in the settings folder; Settings > Rockstar games can point
-  to the executable when the install isn't the added folder. If the search fails (a patched or
+  publishes (MIT), once, and kept in the settings folder (`keys/gta5.bin`); the executable is
+  looked for in the added install folder (`GTA5.exe` or `GTA5_Enhanced.exe`). If the search fails (a patched or
   protected executable), the folder note says so, and a folder of files exported with OpenIV
   or CodeWalker still works, since exported resources are not encrypted.
 - **IMG3 archives (GTA IV).** Magic `0xA94E2A52`, entry table (size, resource type, offset,
@@ -468,7 +468,8 @@ generation-specific layouts side by side.
 - **Scale.** GTA V's archives hold over 100,000 drawables. The scan reads only archive tables
   (cached per archive, like Cyberpunk's), and the library lists without opening resources.
 - **Enhanced edition.** GTA V Enhanced (2025) keeps RPF7 but changes some resource layouts
-  (textures, shaders). Legacy comes first; Enhanced's layouts are added once checked on files.
+  (textures, shaders, vertex declarations). Both are read (0.51.0): each resource's version says
+  which layout it has (as CodeWalker's gen9 reader tells them apart), so a folder can mix them.
 - **Collect.** A package keeps each model as for other games (a ped's chosen components and
   every texture variant, a vehicle's parts and paint, sampled animations). "Game files" Collect
   extracts the members decrypted and still compressed as RSC files under their archive paths,
@@ -955,7 +956,7 @@ The plan is in Reading Grand Theft Auto files above.
 
 - [x] Plan: formats, importer layout, kinds and names, Collect, phases
 - [x] RenderWare trilogy: GTA III, Vice City, San Andreas (0.50.0), on synthetic files
-- [ ] GTA V: RPF7 with keys from the executable, peds as configurable models, vehicles, posing (0.51.0)
+- [x] GTA V: RPF7 with keys from the executable, peds as configurable models, vehicles, posing (0.51.0), on synthetic files
 - [ ] GTA IV and Episodes from Liberty City on the shared RAGE reader (0.52.0)
 - [ ] Trilogy Definitive Edition as a profile on the generic Unreal importer
 - [ ] Check each on Jerred's installs
@@ -1019,6 +1020,13 @@ The plan is in Reading id Tech 6/7/8 files above.
   their own), San Andreas' player clothes put together as one figure (they are listed one by one
   under Characters / Player clothes), night vertex colours, reflection and specular maps, and
   console (PS2, Xbox) files. Cutscene animations (`cuts.img`) aren't offered on the Pose tab.
+- GTA V has only been read from synthetic files so far (archives encrypted with made-up NG
+  tables, and resources in both layouts built byte by byte), so the archive keys have not yet
+  been searched for in a real `GTA5.exe`. Not done yet: vehicle paint (the game picks the
+  colours at run time; painted panels show their base texture), ped texture variations (`_b_`,
+  `_c_`... textures; each component shows its first), the peds' `.ymt` variation files (outfit
+  slots come from the component names instead), weapon attachments as configurable weapons,
+  map placement (`.ymap`), cloth and damaged vehicle meshes, and the console and mobile releases.
 - Of the real game files, Dark Souls Remastered weapons and Bloodborne characters, objects and
   armour have been loaded so far (Phase 1). The RE Engine importer has only seen synthetic files.
 - RE Engine: `.pak` archives with an encrypted table of contents (Monster Hunter Wilds and later)
