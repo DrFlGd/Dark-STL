@@ -6,6 +6,8 @@
     darkstl export <file> -o model.obj        export the original model (stl/obj/ply/glb)
     darkstl enhance <file> -o model.stl -n 2000000
                                               even remesh + texture displacement + export
+    darkstl export <file> -o model.stl --clean hidden-faces:2 --clean sheets:0.5 --clean height:150
+                                              clean the model first (as the Clean tab), then export it
     darkstl gui                               open the explorer (also the default with no arguments)
 """
 
@@ -205,7 +207,15 @@ def _mesh_options(args):
     if getattr(args, "pose", None):
         name, _, frame = args.pose.rpartition("@")
         pose = (name or args.pose, int(frame) if name and frame else 0)
-    return MeshOptions(parts=_parse_meshes(args.parts), flags=flags, pose=pose)
+    clean = None
+    if getattr(args, "clean", None):
+        from .clean import parse_steps
+
+        try:
+            clean = parse_steps(args.clean)
+        except ValueError as e:
+            raise SystemExit(f"error: {e}") from None
+    return MeshOptions(parts=_parse_meshes(args.parts), flags=flags, pose=pose, clean=clean)
 
 
 def _open(args):
@@ -346,7 +356,16 @@ def cmd_export(args) -> int:
     from .export import export_mesh
 
     model = _open(args)
-    mesh = model.build_mesh(_mesh_options(args))
+    options = _mesh_options(args)
+    if options.clean:
+        from .clean import apply
+
+        cleaned = apply(model.build_raw(options), options.clean)
+        for row in cleaned.rows:
+            print(f"clean: {row['label']}: {row['text']}", file=sys.stderr)
+        mesh = cleaned.mesh
+    else:
+        mesh = model.build_mesh(options)
     if mesh.n_faces == 0:
         print(f"error: {model.name} has no triangles to export", file=sys.stderr)
         return 1
@@ -487,6 +506,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help=("pose the model with one of its animations (see 'info'): from its anibnd, e.g. "
                               "a000_003000@12, or for RE Engine models from the game's motlists, "
                               "e.g. \"pl0000_move / wave@12\""))
+        sp.add_argument("--clean", action="append", metavar="STEP[:VALUE]", default=[],
+                        help=("clean the model before anything else, as the app's Clean tab (repeat for more, done in "
+                              "order): hidden-parts, hidden-faces[:DEPTH_MM] (default 1), sheets[:THICKNESS_MM] "
+                              "(thin sheets and cloth, default 0.5), holes[:SIZE_MM] (default 5), duplicates[:MM], "
+                              "weld[:MM] (default 0.01), normals, height:MM (print height), scale:FACTOR, "
+                              "rotate:X,Y,Z (degrees), mirror:x|y|z, floor"))
         sp.add_argument("--scale", type=float, default=1000.0, help="unit scale (default 1000: metres -> mm)")
         sp.add_argument("--ascii", action="store_true", help="ASCII STL")
         sp.add_argument("--textures", action="append", help="extra folder to search for textures")

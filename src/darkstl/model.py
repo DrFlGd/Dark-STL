@@ -110,6 +110,7 @@ class MeshOptions:
     # where the models attached to this one sit (see :mod:`darkstl.attach`): attachment id -> its place
     # (an :class:`darkstl.attach.Place`); None = as the model keeps them
     attach: dict | None = None
+    clean: Any = None  # a clean.CleanList: the Clean tab's operations, done on the model as built and posed
 
 
 @dataclass
@@ -168,6 +169,17 @@ class SourceModel:
     attachments: list = field(default_factory=list, repr=False)
 
     def build_mesh(self, options: MeshOptions | None = None) -> TriMesh:
+        """The model's mesh with ``options``: its parts, switches and pose, then its clean-up (Clean tab), last."""
+        options = options or MeshOptions()
+        mesh = self.build_raw(options)
+        if options.clean:
+            from .clean import apply
+
+            mesh = apply(mesh, options.clean).mesh
+        return mesh
+
+    def build_raw(self, options: MeshOptions | None = None) -> TriMesh:
+        """The model's mesh as the importer builds it with ``options`` (parts, switches, pose), before any clean-up."""
         options = options or MeshOptions()
         flags = {o.key: o.default for o in self.options}
         flags.update(options.flags)

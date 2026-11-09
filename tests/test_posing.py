@@ -320,6 +320,42 @@ def test_a_glb_export_keeps_the_skeleton_in_the_adjusted_pose(home, game, tmp_pa
     assert np.allclose(np.array(gltf["nodes"][3]["matrix"]).reshape(4, 4).T[:3, 3], [0, 0.5, 0], atol=1e-6)
 
 
+def test_the_clean_tab_works_on_the_posed_model_and_moves_its_bones(home, game, tmp_path):  # noqa: F811
+    """Pose, then Clean, then Mesh: the clean-up is done on the model with its bones turned, and the Clean tab's
+    transform (twice the size, on the floor) moves the bones the Pose tab shows and the GLB's skeleton with it."""
+    s = make_service(home)
+    wait(s, s.call("folder_add", {"path": str(game)})["job"])
+    _, m = _open(s, "c2000")
+    steps = [{"op": "transform", "scale": 2, "floor": True}]
+    turned = {"hand": [0, 0, 45]}
+    session = s.sessions[m["sid"]]
+    from darkstl import clean as cleanup
+    from darkstl.app.service import mesh_options
+
+    posed = session.build(mesh_options({"bones": turned}))
+    cleaned = session.cleaned(mesh_options({"bones": turned, "clean": steps}))
+    affine = cleaned.affine
+    assert affine is not None and np.allclose(np.linalg.det(affine[:3, :3]), 8)
+    moved = posed.vertices @ affine[:3, :3].T + affine[:3, 3]
+    assert np.allclose(_sorted_rows(cleaned.mesh.vertices), _sorted_rows(moved), atol=1e-6)
+    assert abs(cleaned.mesh.vertices[:, 2].min()) < 1e-9  # on the floor
+    assert np.allclose(cleanup.apply(posed, cleanup.CleanList.of(steps)).affine, affine)
+    # the bones shown are where the cleaned-up model has them
+    bones = s.call("model_bones", {"sid": m["sid"], "bones": turned, "clean": steps})["bones"]
+    world = posing.bone_world(session.model.rig, None, {"hand": (0, 0, 45)})
+    assert np.allclose(bones[2]["pos"], (affine @ world[2])[:3, 3] * 1000, atol=1e-3)
+    # and the GLB's skeleton too, the cleaned-up mesh bound to it
+    out = wait(s, s.call("export", {"sid": m["sid"], "which": "original", "format": ".glb", "units": "mm",
+                                    "folder": str(tmp_path), "name": "cleaned", "bones": turned, "clean": steps})["job"])
+    data = open(out["path"], "rb").read()
+    gltf = json.loads(data[20:20 + struct.unpack_from("<I", data, 12)[0]])
+    assert gltf["nodes"][0]["skin"] == 0
+    from darkstl.export import Z_UP_TO_Y_UP
+
+    root = np.array(gltf["nodes"][1]["matrix"]).reshape(4, 4).T
+    assert np.allclose(root[:3, 3], Z_UP_TO_Y_UP @ (affine @ world[0])[:3, 3], atol=1e-5)
+
+
 def test_a_package_of_a_model_without_animations_keeps_its_bones(tmp_path, game):
     from darkstl import package
 

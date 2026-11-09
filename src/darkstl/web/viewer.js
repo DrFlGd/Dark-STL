@@ -100,6 +100,9 @@ export class Viewer {
     this.onCut = null; // (id, { normal, point }, done) while a cut plane is dragged
     this.onCutSelect = null; // (id) when a plane is clicked
     this.placing = null; // (point, normal) for the next click on the model
+    this.picking = null; // (triangle, { add, take }) for each click on the model (the Clean tab's selection)
+    this.marks = new Map(); // name -> { mesh, count }: triangles of the model drawn over in a colour (Clean tab)
+    this._click = null;
     this.explode = 0;
     // the Pose tab's bones: [{ name, parent, pos (mm), quat, flip, turned }], the one chosen, and what a click
     // on a ball (onBonePick) or a turn of the gizmo (onBoneTurn(name, quaternion)) does
@@ -260,6 +263,7 @@ export class Viewer {
 
   /** Take the mesh off show. Its geometry belongs to whoever built it; the textures stay for the next. */
   clear() {
+    this.clearMarks();
     for (const o of [this.mesh, this.edges]) {
       if (o) {
         this.scene.remove(o);
@@ -385,6 +389,43 @@ export class Viewer {
     this.gizmo.setSize(0.8);
   }
 
+  // ---------------------------------------------------------------- marked triangles (Clean tab)
+
+  /** Draw triangles of the mesh on show (their numbers in its index, as the engine counts them) over the model in
+   *  `color`, under `name` ("selection", "sheets"...): the same name again replaces them; none takes them off. */
+  setMark(name, triangles, color) {
+    const old = this.marks.get(name);
+    if (old) { this.scene.remove(old.mesh); old.mesh.geometry.dispose(); old.mesh.material.dispose(); this.marks.delete(name); }
+    const b = this.shown;
+    if (!b || b.pieces || !triangles?.length) { this.redraw(); return; }
+    const src = b.geom.index.array;
+    const n = b.header.triangles;
+    const index = new Uint32Array(triangles.length * 3);
+    let k = 0;
+    for (const t of triangles) {
+      if (t < 0 || t >= n) continue;
+      index[k++] = src[3 * t]; index[k++] = src[3 * t + 1]; index[k++] = src[3 * t + 2];
+    }
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", b.geom.getAttribute("position"));
+    geom.setIndex(new THREE.BufferAttribute(index.subarray(0, k), 1));
+    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.62, side: THREE.DoubleSide, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.renderOrder = 5;
+    this.scene.add(mesh);
+    this.marks.set(name, { mesh, count: k / 3 });
+    this.redraw();
+  }
+
+  clearMarks() {
+    for (const name of [...this.marks.keys()]) {
+      const m = this.marks.get(name);
+      this.scene.remove(m.mesh); m.mesh.geometry.dispose(); m.mesh.material.dispose();
+    }
+    this.marks.clear();
+  }
+
   // ---------------------------------------------------------------- cut planes
 
   /** Show cut planes ([{ id, normal, point }] in model millimetres), the selected one highlighted with a handle
@@ -479,12 +520,15 @@ export class Viewer {
 
   _pointerDown(e) {
     if (e.button !== 0) return;
+    // a click (not a drag, which turns the view) on the model while picking: see _pointerUp
+    this._click = this.picking ? { x: e.clientX, y: e.clientY, at: performance.now() } : null;
     const ray = this._ray(e);
     if (this.bones.length && this.boneGroup.children.length && !(this.gizmo?.axis)) {
       const hit = this._raycaster.intersectObjects(this.boneGroup.children, false).find((h) => h.object.userData.bone);
       if (hit) {
         e.stopImmediatePropagation();
         e.preventDefault();
+        this._click = null; // a bone chosen, not a face
         this.onBonePick?.(hit.object.userData.bone);
         return;
       }
@@ -555,6 +599,13 @@ export class Viewer {
   }
 
   _pointerUp(e) {
+    const c = this._click;
+    this._click = null;
+    if (c && e.type === "pointerup" && this.picking && this.mesh && !this.mesh.isGroup && Math.hypot(e.clientX - c.x, e.clientY - c.y) < 5 && performance.now() - c.at < 800) {
+      this._ray(e);
+      const hit = this._raycaster.intersectObject(this.mesh, false)[0];
+      if (hit && hit.faceIndex != null) this.picking(hit.faceIndex, { add: e.shiftKey, take: e.altKey || e.ctrlKey || e.metaKey });
+    }
     const d = this._drag;
     if (!d) return;
     this._drag = null;

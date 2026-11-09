@@ -2,7 +2,8 @@
 // and the inspector's Model (parts, options, size, file), Textures (every texture,
 // and the normal maps cleaned up and upsampled for displacement, before and after),
 // Pose (an animation and a frame to hold the model in, bones turned on top, saved poses, models
-// attached to a bone), Mesh (step 1: the vertices
+// attached to a bone), Clean (parts left out, hidden parts and faces,
+// thin sheets and faces picked in the 3D view removed, repairs, print height and placement: clean.js), Mesh (step 1: the vertices
 // evened out to a count), Displace (step 2: the vertices pushed by the textures'
 // detail), Finish (post-processing for printing: the whole model made watertight, the
 // surfaces inside it removed), Cut (planes placed in the 3D view split it into pieces with
@@ -21,6 +22,7 @@ import { openMenu } from "./actions.js";
 import { Inspector, useWidth } from "./inspector.js";
 import { Viewer, PIECE_COLORS, addTurn } from "../viewer.js";
 import { ConfigureTab } from "./configure.js";
+import { CleanTab, cleanId } from "./clean.js";
 
 const ENHANCE = { target_vertices: 1_000_000, method: "subdivide", smooth: true, source: "normal", strength: 1, height_range_mm: 1,
   green: "auto", detail_fraction: 0.0625, max_displacement_mm: 0, integration: "mesh", edge_keeping: 0, deblock: "off", edge_smoothing: 1,
@@ -89,21 +91,25 @@ const num = (n) => Math.round(n).toLocaleString();
 const mm = (v) => (v >= 100 ? Math.round(v) : v >= 10 ? v.toFixed(1) : v.toFixed(2));
 const sizeText = (s) => (s ? `${mm(s[0])} × ${mm(s[1])} × ${mm(s[2])} mm` : "");
 const variantName = (v) => (v || "").replace(/\.(flver|flv)$/i, "");
+/** Beside a length in print millimetres, the game's own, muted, while the Clean tab scales the model (`scale`: print mm per game mm). */
+const gameMm = (v, scale) => (Math.abs((scale || 1) - 1) > 1e-6 ? html` <small class="muted game-mm" title="In the game, before the Clean tab scaled the model">(game ${mm(v / scale)} mm)</small>` : null);
 /** Where new vertices will be on average, for a mesh of `area` m² with `n` vertices: equilateral triangles, about 2 per vertex. */
 const spacingMm = (area, n) => (area > 0 && n > 0 ? Math.sqrt((2 * area) / (Math.sqrt(3) * n)) * 1000 : 0);
 
-/** The parts, options and pose (an animation's frame, the bones turned on top of it, where the attached models
- *  sit) as the mesh commands take them, JSON and in a URL. */
-function meshArgs(m, off, flags, pose, bones = null, places = null) {
+/** The parts, options, pose (an animation's frame, the bones turned on top of it, where the attached models
+ *  sit) and clean-up (Clean tab) as the mesh commands take them, JSON and in a URL. A URL names the clean-up
+ *  list by the page's name for it (cleanId), which the JSON sent before it gave the engine. */
+function meshArgs(m, off, flags, pose, bones = null, places = null, clean = null) {
   const parts = off.size ? m.parts.map((_, i) => i).filter((i) => !off.has(i)) : null;
   const p = pose ? [pose.anim, pose.frame] : null;
   const b = bones && Object.keys(bones).length ? sortedBones(bones) : null;
   const a = places && Object.keys(places).length ? places : null;
+  const c = cleanId(clean);
   return {
-    json: { parts, flags, pose: p, bones: b, attach: a },
+    json: { parts, flags, pose: p, bones: b, attach: a, ...(c ? { clean, clean_id: c } : {}) },
     url: { parts: parts ? parts.join(",") : "all", flags: Object.entries(flags).map(([k, v]) => `${k}:${v ? 1 : 0}`).join(","), pose: p ? `${p[0]}@${p[1]}` : "",
-      bones: b ? JSON.stringify(b) : "", attach: a ? JSON.stringify(a) : "" },
-    key: JSON.stringify([parts, flags, p, b, a]),
+      bones: b ? JSON.stringify(b) : "", attach: a ? JSON.stringify(a) : "", ...(c ? { clean: c } : {}) },
+    key: JSON.stringify([parts, flags, p, b, a, c || null]),
   };
 }
 /** Bone turns in name order, as the engine records them (so a key made of them is the same either way). */
@@ -133,7 +139,7 @@ function poseLabel(posed) {
 }
 
 /** Opens a tab of the model page's inspector (the Next strip, links between tabs); `focus`: a box in it to put the keyboard on. */
-const goTab = (tab, focus) => ui.set({ inspectorAsk: { page: "model", tab, ...(focus ? { focus } : {}) } });
+export const goTab = (tab, focus) => ui.set({ inspectorAsk: { page: "model", tab, ...(focus ? { focus } : {}) } });
 
 /** Whether a tab's explanation is open: open until the tab's job has run once, then closed, or as the user last left it. */
 function useTip(tab) {
@@ -142,10 +148,10 @@ function useTip(tab) {
 }
 const setTip = (tab, open) => setPref({ tipsOpen: { ...(ui.get().tipsOpen || {}), [tab]: open } });
 /** A tab's job has run: its explanation folds away the first time (a choice the user made stays). */
-const ranTab = (tab) => { if ((ui.get().tipsOpen || {})[tab] == null) setTip(tab, false); };
+export const ranTab = (tab) => { if ((ui.get().tipsOpen || {})[tab] == null) setTip(tab, false); };
 
 /** A tab's explanation: its first sentence (`summary`) always shown, the rest folded away once the tab's job has run. */
-function Tip({ tab, summary, children }) {
+export function Tip({ tab, summary, children }) {
   const open = useTip(tab);
   return html`<details class="tip" id=${`tip-${tab}`} data-tip=${tab} open=${open}
     onToggle=${(e) => { if (e.currentTarget.open !== open) setTip(tab, e.currentTarget.open); }}>
@@ -153,7 +159,7 @@ function Tip({ tab, summary, children }) {
 }
 
 /** ⓘ beside a tab's heading: shows (or hides again) the tab's explanation. */
-function TipButton({ tab }) {
+export function TipButton({ tab }) {
   const open = useTip(tab);
   const say = open ? "Hide the explanation" : "What this does";
   return html`<button type="button" class="ghost tip-btn" id=${`tip-btn-${tab}`} aria-pressed=${open ? "true" : "false"} aria-controls=${`tip-${tab}`}
@@ -161,7 +167,7 @@ function TipButton({ tab }) {
 }
 
 /** What to do next, under a tab's result: buttons that open the next tab (`tab`) or do something (`run`); the first is the main one. */
-function NextStep({ id, steps, children }) {
+export function NextStep({ id, steps, children }) {
   return html`<div class="next-step" id=${id} role="group" aria-label="Next">
     <span class="next-label">Next</span>
     ${steps.map((st, i) => html`<button type="button" key=${st.id || st.tab} id=${st.id || null} data-next=${st.tab || null}
@@ -318,12 +324,23 @@ function Workspace({ m, variant, switching }) {
   const [cutOpen, setCutOpen] = useState(false);
   const [pieces, setPieces] = useState(m.cut?.pieces?.length ? m.cut : null);
   const [explode, setExplode] = useState(0.25);
-  const [bounds, setBounds] = useState(null); // { min, max } in millimetres of the model shown
+  const [bounds, setBounds] = useState(null); // { min, max } in millimetres of the model shown, which it is, its args' key
   const viewer = useRef(null);
+  // the Clean tab's steps (kept per model), done on the model as built and posed before everything else
+  const [clean, setCleanList] = useState(() => (ui.get().cleanPlans || {})[m.id] || []);
+  const setClean = (list) => {
+    setCleanList(list);
+    const all = { ...(ui.get().cleanPlans || {}) };
+    delete all[m.id];
+    if (list.length) all[m.id] = list;
+    const keys = Object.keys(all);
+    for (const k of keys.slice(0, Math.max(0, keys.length - KEEP_PLANS))) delete all[k];
+    setPref({ cleanPlans: all });
+  };
   const saved = useStore(ui, (st) => st.enhance);
   const s = { ...ENHANCE, ...(saved || {}) };
   const set = (patch) => setPref({ enhance: { ...s, ...patch } });
-  const args = meshArgs(m, off, flags, pose, posed.bones, m.attachments?.length ? places : null);
+  const args = meshArgs(m, off, flags, pose, posed.bones, m.attachments?.length ? places : null, clean);
   // the engine keeps a few models open; if this one was let go, open it again and retry
   const call = async (cmd, a) => {
     try { return await api(cmd, a); } catch (e) {
@@ -332,19 +349,23 @@ function Workspace({ m, variant, switching }) {
       return api(cmd, a);
     }
   };
+  // the model's size and counts with these parts, options, pose and clean-up, and what each clean-up step did
+  // (`key`: the args they are for; `error` when the clean-up can't be done)
   useEffect(() => {
     if (args.key === meshArgs(m, new Set(), Object.fromEntries(m.options.map((o) => [o.key, o.default])), null, null,
-      m.attachments?.length ? savedPlaces(m) : null).key) { setStats(m.stats); return; }
+      m.attachments?.length ? savedPlaces(m) : null, []).key) { setStats(m.stats); return; }
     let live = true;
-    call("model_stats", { sid: m.sid, ...args.json }).then((s) => { if (live) setStats(s); }, () => {});
+    const key = args.key;
+    call("model_stats", { sid: m.sid, ...args.json }).then((st) => { if (live) setStats({ ...st, key }); },
+      (e) => { if (live) setStats((old) => ({ ...old, key, clean: null, error: msg(e) })); });
     return () => { live = false; };
   }, [args.key]);
-  // the bones where the pose puts them, while the Pose tab is open
-  const poseKey = JSON.stringify([args.json.pose, args.json.bones]);
+  // the bones where the pose puts them (and the Clean tab's transform moves them), while the Pose tab is open
+  const poseKey = JSON.stringify([args.json.pose, args.json.bones, args.json.clean_id || null]);
   useEffect(() => {
     if (!poseOpen || !m.bones) return;
     let live = true;
-    call("model_bones", { sid: m.sid, pose: args.json.pose, bones: args.json.bones }).then((r) => { if (live) setBoneList(r); }, () => {});
+    call("model_bones", { sid: m.sid, ...args.json }).then((r) => { if (live) setBoneList(r); }, () => {});
     return () => { live = false; };
   }, [poseOpen, poseKey, m.sid]);
   const showBones = useStore(ui, (st) => st.showBones) ?? true;
@@ -361,6 +382,8 @@ function Workspace({ m, variant, switching }) {
     if (bones[name].every((a) => Math.abs(a) < 1e-3)) delete bones[name];
     changePose({ bones });
   };
+  /** Print millimetres for each game millimetre (the Clean tab's print height or scale), for the readouts. */
+  const printScale = stats?.key === args.key && stats.clean ? stats.clean.scale || 1 : 1;
   const box = useRef(null);
   const room = useWidth(box);
   const paneW = Math.max(260, Math.min(520, ui.get().inspectorWidth || 360));
@@ -393,7 +416,7 @@ function Workspace({ m, variant, switching }) {
   };
   /** The Textures tab's step: the normal maps cleaned up and upsampled as the texture settings ask. */
   const upscale = (keys) => follow("upscale", () => call("texture_upscale", { sid: m.sid, ...args.json, settings: sendSettings(), ...(keys ? { keys } : {}) }), `Upscaling ${name}'s textures`);
-  const shared = { m, args, stats, s, set, run, setRun, call, sendSettings };
+  const shared = { m, args, stats, s, set, run, setRun, call, sendSettings, printScale };
   /** Cut the model along the Cut tab's planes; the pieces are shown at once. */
   const cutModel = async (request) => {
     const r = await follow("cut", () => call("cut", { sid: m.sid, ...args.json, ...request }), `Cutting ${name}`);
@@ -413,7 +436,8 @@ function Workspace({ m, variant, switching }) {
   const listed = (items) => setVars((v) => ({ ...(v || {}), items }));
   const meshKeyOf = (mesh) => JSON.stringify([mesh?.parts ?? null, mesh?.flags || {}, mesh?.pose ?? null,
     mesh?.bones && Object.keys(mesh.bones).length ? sortedBones(mesh.bones) : null,
-    mesh?.attach && Object.keys(mesh.attach).length ? Object.fromEntries(Object.entries(mesh.attach).map(([k, v]) => [k, placeOf(v)])) : null]);
+    mesh?.attach && Object.keys(mesh.attach).length ? Object.fromEntries(Object.entries(mesh.attach).map(([k, v]) => [k, placeOf(v)])) : null,
+    cleanId(mesh?.clean) || null]);
   const variation = {
     vars,
     save: async (label) => {
@@ -443,6 +467,7 @@ function Workspace({ m, variant, switching }) {
       setFlags({ ...Object.fromEntries(m.options.map((o) => [o.key, o.default])), ...(mesh.flags || {}) });
       changePose({ pose: mesh.pose ? { anim: mesh.pose[0], frame: mesh.pose[1] } : null, bones: mesh.bones || {} });
       if (mesh.attach) setPlaces({ ...places, ...Object.fromEntries(Object.entries(mesh.attach).filter(([k]) => k in places).map(([k, v]) => [k, placeOf(v)])) });
+      setClean(Array.isArray(mesh.clean) ? mesh.clean : []);
       toast(`Set to what ${v.name} was made with: change what you like and generate again`, { ms: 5000 });
     },
     rename: async (v, label) => listed((await call("variation_rename", { sid: m.sid, id: v.id, name: label })).items),
@@ -464,22 +489,26 @@ function Workspace({ m, variant, switching }) {
   return html`<div class="model-workspace" ref=${box}>
     <section class="workspace-viewing-area">
       <${Stage} m=${m} variant=${variant} which=${which} setWhich=${setWhich} args=${args} result=${result} finished=${finished} stats=${stats} posed=${posed} onBusy=${setBusy}
-        cutting=${cutting} showCuts=${cutOpen} onBounds=${setBounds} boneView=${boneView} onBonePick=${setBoneSel} onBoneTurn=${turnBone} />
+        cutting=${cutting} showCuts=${cutOpen} onBounds=${setBounds} boneView=${boneView} onBonePick=${setBoneSel} onBoneTurn=${turnBone}
+        cleaned=${clean.length > 0} printScale=${printScale} />
     </section>
     <${Inspector} page="model" crowded=${crowded} label="Panels" tabs=${[
       ...(m.configuration ? [{ id: "configure", label: "Configure", icon: "layers", group: GROUP.model, body: html`<${ConfigureTab} m=${m} switching=${switching} />` }]
         : m.configurable_as?.length ? [{ id: "configure", label: "Configure", icon: "layers", group: GROUP.model, body: html`<${ConfigureLinks} m=${m} />` }] : []),
-      { id: "model", label: "Model", icon: "box", group: GROUP.model, body: html`<${ModelTab} m=${m} off=${off} setOff=${setOff} flags=${flags} setFlags=${setFlags} stats=${stats} />` },
+      { id: "model", label: "Model", icon: "box", group: GROUP.model, body: html`<${ModelTab} m=${m} off=${off} flags=${flags} setFlags=${setFlags} stats=${stats} printScale=${printScale} />` },
       { id: "textures", label: "Textures", icon: "image", group: GROUP.model, body: html`<${TexturesTab} ...${shared} over=${over} upscale=${upscale} />` },
       ...(m.animated || m.posable || m.sockets?.length || m.attachments?.length ? [{ id: "pose", label: "Pose", icon: "play", group: GROUP.model,
         body: html`<${PoseTab} m=${m} posed=${posed} changePose=${changePose} busy=${busy} call=${call} args=${args} setOpen=${setPoseOpen}
           boneList=${boneList} boneSel=${boneSel} setBoneSel=${setBoneSel} places=${places} setPlaces=${setPlaces} />` }] : []),
+      { id: "clean", label: "Clean", icon: "brush", group: GROUP.edit, body: html`<${CleanTab} m=${m} args=${args} stats=${stats} run=${run} setRun=${setRun} call=${call} follow=${follow}
+        clean=${clean} setClean=${setClean} off=${off} setOff=${setOff} bounds=${bounds} viewer=${viewer} which=${which} setWhich=${setWhich} />` },
       { id: "mesh", label: "Mesh", icon: "grid", group: GROUP.edit, body: html`<${MeshTab} ...${shared} result=${result} generate=${generate} />` },
       { id: "displace", label: "Displace", icon: "stack", group: GROUP.edit, body: html`<${DisplaceTab} ...${shared} result=${result} stale=${!!result && !!resultKey && resultKey !== args.key}
         over=${over} setOver=${setOver} strengths=${strengths} setStrengths=${setStrengths} generate=${generate} variation=${variation} />` },
       { id: "finish", label: "Finish", icon: "drop", group: GROUP.edit, body: html`<${FinishTab} ...${shared} result=${result} finished=${finished} which=${which} setWhich=${setWhich} finishModel=${finishModel} />` },
       { id: "cut", label: "Cut", icon: "scissors", group: GROUP.edit, body: html`<${CutTab} ...${shared} ...${cutting} result=${result} finished=${finished} which=${which} setWhich=${setWhich} setOpen=${setCutOpen} cutModel=${cutModel} />` },
-      { id: "export", label: "Export", icon: "download", group: GROUP.out, body: html`<${ExportTab} m=${m} args=${args} result=${result} finished=${finished} which=${which} pose=${pose} posed=${posed} call=${call} pieces=${pieces} />` },
+      { id: "export", label: "Export", icon: "download", group: GROUP.out, body: html`<${ExportTab} m=${m} args=${args} result=${result} finished=${finished} which=${which} pose=${pose} posed=${posed} call=${call} pieces=${pieces}
+        stats=${stats} printScale=${printScale} />` },
     ]} />
   </div>`;
 }
@@ -493,8 +522,12 @@ function ConfigureLinks({ m }) {
   </section></div>`;
 }
 
+/** The clean-up lists (by the page's name for them) sent to the engine since the page opened. */
+const knownClean = new Set();
+
 /** The 3D view: the model with its textures, clay or wireframe, its size, and the views. */
-function Stage({ m, variant, which, setWhich, args, result, finished, stats, posed, onBusy, cutting, showCuts, onBounds, boneView, onBonePick, onBoneTurn }) {
+function Stage({ m, variant, which, setWhich, args, result, finished, stats, posed, onBusy, cutting, showCuts, onBounds, boneView, onBonePick, onBoneTurn,
+  cleaned, printScale = 1 }) {
   const canvas = useRef(null);
   const viewer = cutting.viewer;
   // the meshes shown lately, built, the newest last: showing the original and the enhanced model in
@@ -546,13 +579,22 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
         setState((s) => ({ ...s, loading: true, error: null }));
         onBusy?.(true);
         const url = () => binUrl("model_mesh", { sid: m.sid, which, uv: 1, ...args.url });
-        let res = await fetch(url());
-        if (res.status === 400) {
-          const text = await res.text();
-          if (!/was closed/.test(text)) throw new Error(text);
-          await api("model_open", { id: m.id, variant });
-          if (which !== "original") { setWhich("original"); return; }
+        // the engine let the model go (opened again), or doesn't know the clean-up list named in the address yet
+        // (sent to it, then asked again)
+        if (args.json.clean_id && !knownClean.has(args.json.clean_id)) { // named in the address: the engine gets it first
+          await api("clean_check", { sid: m.sid, ...args.json }).catch(() => {});
+          knownClean.add(args.json.clean_id);
+        }
+        let res;
+        for (let tries = 0; ; tries++) {
           res = await fetch(url());
+          if (res.status !== 400 || tries >= 2) break;
+          const text = await res.text();
+          if (/isn't known here yet/.test(text)) await api("clean_check", { sid: m.sid, ...args.json });
+          else if (/was closed/.test(text)) {
+            await api("model_open", { id: m.id, variant });
+            if (which !== "original") { setWhich("original"); return; }
+          } else throw new Error(text);
         }
         if (!res.ok) throw new Error(await res.text());
         const buf = await res.arrayBuffer();
@@ -567,11 +609,15 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
         b.dispose();
       }
       if (!live) return;
-      const size = viewer.current.show(built, { textures: view.shading === "textured" && which !== "pieces" && which !== "finished" ? textures : null, wireframe: view.shading === "wire", keepView: shown.current });
+      // the camera stays where it is, unless the model is now a very different size (a print height set on the Clean tab)
+      const before = viewer.current.shown?.header;
+      const extent = (h) => Math.max(...h.max.map((x, i) => x - h.min[i]), 1e-6);
+      const alike = !!before && extent(built.header) / extent(before) < 2 && extent(before) / extent(built.header) < 2;
+      const size = viewer.current.show(built, { textures: view.shading === "textured" && which !== "pieces" && which !== "finished" ? textures : null, wireframe: view.shading === "wire", keepView: shown.current && alike });
       viewer.current.setEdges(view.edges);
       shown.current = true;
       if (which === "pieces") viewer.current.setExplode(cutting.explode);
-      onBounds?.({ min: built.header.min, max: built.header.max, which });
+      onBounds?.({ min: built.header.min, max: built.header.max, which, args: args.key });
       setState({ loading: false, error: null, size, key });
       onBusy?.(false);
     })().catch((e) => { if (live) { setState({ loading: false, error: msg(e), size: null, key }); onBusy?.(false); } });
@@ -608,6 +654,8 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
   const seg = (id, label, options, value, onChange) => html`<div class="seg" role="group" aria-label=${label} id=${id}>${options.map(([k, l, title, disabled]) =>
     html`<button type="button" key=${k} data-value=${k} aria-pressed=${value === k ? "true" : "false"} title=${title || l} disabled=${!!disabled} onClick=${() => onChange(k)}>${l}</button>`)}</div>`;
   const size = state.size;
+  const game = stats?.clean?.game_size_mm;
+  const scaled = Math.abs(printScale - 1) > 1e-6 && !!game?.length;
   const noTextures = !Object.keys(textures).length;
   const shadings = [["textured", "Textured", noTextures ? "No colour textures were found for this model" : "With the game's colour textures"], ["clay", "Clay", "Plain grey, to see the shape"], ["wire", "Wireframe", "Every triangle's edges"]];
   const cameras = [["iso", "3/4", "Three-quarter view"], ["top", "Top", "Looking down"], ["front", "Front", "From the front"]];
@@ -629,12 +677,12 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
         <canvas ref=${canvas} tabindex="0" aria-label="The model in 3D: drag to turn it, right-drag to move, wheel to zoom"></canvas>
         ${state.loading && !shown.current ? html`<div class="stage-note muted">Loading the model…</div>` : null}
         ${state.error ? html`<div class="stage-note"><p class="warn-note" role="alert" id="stage-error">${state.error}</p></div>` : null}
-        ${!state.loading && !state.error && size && !size.triangles ? html`<div class="stage-note muted">No parts are switched on (Model tab).</div>` : null}
+        ${!state.loading && !state.error && size && !size.triangles ? html`<div class="stage-note muted">${cleaned ? "Nothing left to show: no parts are switched on, or the Clean tab's steps took everything off." : "No parts are switched on (Clean tab)."}</div>` : null}
       </div>
       <div class=${`stage-bar${roomy ? "" : " one-row"}`} id="stage-bar" ref=${barBox}>
-        <span class="stage-what" id="stage-size" title=${`${size?.triangles ? `${sizeText([size.x, size.y, size.z])}, ${plural(size.triangles, "triangle")}` : sizeText(stats?.size_mm)}: width × depth × height, as exported in millimetres`}><span class="stage-dims">${size?.triangles ? sizeText([size.x, size.y, size.z]) : sizeText(stats?.size_mm)}</span>${size?.triangles ? html`<span class="muted stage-tris" id="stage-tris">\u00a0· ${plural(size.triangles, "triangle")}</span>` : null}${poseLabel(posed) ? html`<span class="muted stage-pose" id="stage-pose" title="The pose shown (Pose tab)">\u00a0· ${poseLabel(posed)}</span>` : null}</span>
+        <span class="stage-what" id="stage-size" title=${`${size?.triangles ? `${sizeText([size.x, size.y, size.z])}, ${plural(size.triangles, "triangle")}` : sizeText(stats?.size_mm)}: width × depth × height, as exported in millimetres${scaled ? `; in the game ${sizeText(game)}` : ""}`}><span class="stage-dims">${size?.triangles ? sizeText([size.x, size.y, size.z]) : sizeText(stats?.size_mm)}</span>${scaled ? html`<span class="muted stage-game" id="stage-game" title="How tall it is in the game, before the Clean tab scaled it to print">\u00a0· game ${mm(game[2])} mm</span>` : null}${size?.triangles ? html`<span class="muted stage-tris" id="stage-tris">\u00a0· ${plural(size.triangles, "triangle")}</span>` : null}${poseLabel(posed) ? html`<span class="muted stage-pose" id="stage-pose" title="The pose shown (Pose tab)">\u00a0· ${poseLabel(posed)}</span>` : null}</span>
         <span class="stage-tools">
-          ${seg("show-which", "Show", [["original", "Original", "The model as the game has it"], ["enhanced", "Enhanced", result ? "The enhanced model" : "Make it first (Mesh or Displace tab)", !result],
+          ${seg("show-which", "Show", [["original", "Original", cleaned ? "The model as the game has it, cleaned up (Clean tab)" : "The model as the game has it"], ["enhanced", "Enhanced", result ? "The enhanced model" : "Make it first (Mesh or Displace tab)", !result],
             ["finished", "Finished", finished ? "The model made watertight, without its textures" : "Make it watertight first (Finish tab)", !finished],
             ["pieces", "Pieces", cutting.pieces ? "The model cut into pieces" : "Cut it first (Cut tab)", !cutting.pieces]], which, setWhich)}
           ${roomy ? html`${seg("shading", "Shading", shadings, view.shading, (v) => setView({ shading: v }))}
@@ -649,27 +697,30 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
   </section>`;
 }
 
-/** Model: its parts (each can be left out), the importer's options, its size and its file. */
-function ModelTab({ m, off, setOff, flags, setFlags, stats }) {
-  const toggle = (i) => { const next = new Set(off); next.has(i) ? next.delete(i) : next.add(i); setOff(next); };
+/** Model: its parts (left out or put back on the Clean tab), the importer's options, its size and its file. */
+function ModelTab({ m, off, flags, setFlags, stats, printScale = 1 }) {
   const folder = m.file.slice(0, m.file.length - m.file.split(/[\\/]/).pop().length - 1);
+  const game = stats?.clean?.game_size_mm;
+  const scaled = Math.abs(printScale - 1) > 1e-6 && !!game?.length;
   return html`<div class="tab-pad" id="model-tab">
     <section class="insp-section" id="parts"><h3>Parts</h3>
-      <div class="part-list">${m.parts.map((p, i) => html`<label class="check-row part-row" key=${i} data-part=${i}>
-        <input type="checkbox" checked=${!off.has(i)} onChange=${() => toggle(i)} />
-        <span class="part-name">${p.name}<small class="muted">${m.materials[p.material]?.name || "?"} · ${plural(p.triangles, "triangle")}</small></span></label>`)}</div>
-      ${m.parts.length > 2 ? html`<div class="insp-actions"><button type="button" class="ghost" disabled=${!off.size} onClick=${() => setOff(new Set())}>All</button>
-        <button type="button" class="ghost" onClick=${() => setOff(new Set(m.parts.map((_, i) => i)))}>None</button></div>` : null}
+      <ul class="ls-list part-list part-list-read">${m.parts.map((p, i) => html`<li class="part-row" key=${i} data-part=${i} data-on=${off.has(i) ? "0" : "1"}>
+        <span class=${`part-name${off.has(i) ? " muted" : ""}`}>${p.name}<small class="muted">${m.materials[p.material]?.name || "?"} · ${plural(p.triangles, "triangle")}</small></span>
+        ${off.has(i) ? html`<span class="muted part-out">left out</span>` : null}</li>`)}</ul>
+      <small class="muted" id="parts-clean-note">Leave parts out, and take off hidden parts, thin sheets and faces you pick, on the${" "}
+        <a href="#" id="parts-to-clean" title="Open the Clean tab" onClick=${(e) => { e.preventDefault(); goTab("clean"); }}>Clean tab</a>.</small>
     </section>
     ${m.options.length ? html`<section class="insp-section" id="options"><h3>Options</h3>${m.options.map((o) => html`<label class="check-row" key=${o.key} title=${o.tooltip}>
       <input type="checkbox" data-option=${o.key} checked=${!!flags[o.key]} onChange=${(e) => setFlags({ ...flags, [o.key]: e.target.checked })} />
       <span>${o.label}${o.tooltip ? html`<small class="muted">${o.tooltip}</small>` : null}</span></label>`)}</section>` : null}
     <section class="insp-section" id="model-size"><h3>Size</h3><dl class="insp-dl">
       <dt>Size</dt><dd id="model-dims">${sizeText(stats.size_mm)}</dd>
+      ${scaled ? html`<dt>In the game</dt><dd class="muted" id="model-game-dims">${sizeText(game)}</dd>` : null}
       <dt>Vertices</dt><dd>${num(stats.vertices)}</dd>
       <dt>Triangles</dt><dd>${num(stats.triangles)}</dd>
       <dt>Surface</dt><dd>${num(stats.area_m2 * 10000)} cm²</dd></dl>
-      <small class="muted">In millimetres, one game metre to 1000 mm: the size the model exports at.</small></section>
+      <small class="muted">${scaled ? `In print millimetres: the Clean tab scales the model ×${printScale.toPrecision(3)} from the game's size (one game metre to 1000 mm). It exports at this size.`
+        : "In millimetres, one game metre to 1000 mm: the size the model exports at."}</small></section>
     ${m.notes.length ? html`<section class="insp-section" id="model-notes"><h3>Notes</h3>${m.notes.map((n, i) => html`<p class="insp-note" key=${i}>${n}</p>`)}</section>` : null}
     <section class="insp-section" id="model-file"><h3>File</h3><dl class="insp-dl">
       <dt>File</dt><dd>${m.file.split(/[\\/]/).pop()}</dd>
@@ -684,7 +735,7 @@ function ModelTab({ m, off, setOff, flags, setFlags, stats }) {
 
 /** Textures: every texture found for the model, a bigger look at one with Save as PNG, the normal maps
  *  cleaned up and upsampled for displacement (with before and after to zoom into), and which each material uses. */
-function TexturesTab({ m, args, s, set, run, setRun, call, sendSettings, over, upscale }) {
+function TexturesTab({ m, args, s, set, run, setRun, call, sendSettings, over, upscale, printScale }) {
   const [sel, setSel] = useState(m.textures[0]?.key || null);
   const [about, setAbout] = useState(null);
   const tex = m.textures.find((t) => t.key === sel);
@@ -797,7 +848,7 @@ function TexturesTab({ m, args, s, set, run, setRun, call, sendSettings, over, u
       <${JobProgress} run=${run?.kind === "upscale" ? run : null} setRun=${setRun} id="upscale-progress" />
       ${error ? html`<p class="warn-note" role="alert" id="upscale-error">${error}</p>` : null}
       ${list.length ? html`<ul class="ls-list upscale-maps" id="upscale-maps">${list.map((x) => html`<li key=${x.key} data-map=${x.key} data-ready=${x.ready ? "1" : "0"}>
-        <span>${x.name}<small class="muted">${x.materials.join(", ")} · ${x.size[0]} × ${x.size[1]} px · ${x.texel_mm.toFixed(2)} mm per texel</small>
+        <span>${x.name}<small class="muted">${x.materials.join(", ")} · ${x.size[0]} × ${x.size[1]} px · ${x.texel_mm.toFixed(2)} mm per texel${gameMm(x.texel_mm, printScale)}</small>
           ${x.ready && x.steps.length ? html`<small class="muted">${x.steps.join(" · ")}</small>` : null}
           ${x.warnings.map((w, i) => html`<small class="warn-text" key=${i}>${w}</small>`)}
           <span class="map-import">${x.imported
@@ -1198,7 +1249,7 @@ function AttachedModels({ m, call, boneList, places, setPlaces }) {
 
 /** A number box saved to the Generate settings. What's typed is kept while the tab draws again
  * (a progress update, a toast going) until it's saved on leaving the box. */
-function NumberField({ id, label, value, step, min, max, unit, title, onChange }) {
+export function NumberField({ id, label, value, step, min, max, unit, title, onChange }) {
   const [typed, setTyped] = useState(null); // { over: the value it was typed over, text }
   const shown = typed && typed.over === value ? typed.text : value;
   return html`<label class="field-block" title=${title}><span>${label}</span>
@@ -1220,7 +1271,7 @@ function useMeshKept(call, m, args, s, run) {
 }
 
 /** A job's progress with its Stop button. */
-function JobProgress({ run, setRun, id }) {
+export function JobProgress({ run, setRun, id }) {
   if (!run) return null;
   return html`<div class="job-progress" id=${id}><progress max="1" value=${run.progress}></progress><small class="muted">${run.message}</small>
     ${run.job ? html`<button type="button" class="ghost compact danger-text" id=${`${id}-stop`} disabled=${!!run.stopping} title="Stop; the model shown stays as it is"
@@ -1228,7 +1279,7 @@ function JobProgress({ run, setRun, id }) {
 }
 
 /** Mesh: step 1, the model's vertices evened out to the count chosen (upsampled, or decimated by isotropic remeshing). */
-function MeshTab({ m, args, stats, s, set, run, setRun, call, result, generate }) {
+function MeshTab({ m, args, stats, s, set, run, setRun, call, result, generate, printScale }) {
   const [error, setError] = useState(null);
   const methods = info().methods || [];
   const kept = useMeshKept(call, m, args, s, run);
@@ -1246,7 +1297,7 @@ function MeshTab({ m, args, stats, s, set, run, setRun, call, result, generate }
         flat areas get no more than they need. Above the model's own count that upsamples it; below it, isotropic remeshing decimates it.<//>
       <${NumberField} id="target-vertices" label="Vertices" value=${s.target_vertices} step=${250000} min=${1000} max=${50000000}
         title="How many vertices the model gets. More keeps finer texture detail and makes a bigger file." onChange=${(v) => set({ target_vertices: Math.round(v) })} />
-      <small class="muted" id="spacing">About ${spacing ? `${spacing < 1 ? spacing.toFixed(2) : spacing.toFixed(1)} mm` : "–"} between vertices (now ${num(stats.vertices)} vertices).</small>
+      <small class="muted" id="spacing">About ${spacing ? `${spacing < 1 ? spacing.toFixed(2) : spacing.toFixed(1)} mm` : "–"}${spacing ? gameMm(spacing, printScale) : null} between vertices (now ${num(stats.vertices)} vertices).</small>
       <label class="field-block"><span>Method</span><select id="method" value=${s.method} onChange=${(e) => set({ method: e.target.value })}>
         ${methods.map((x) => html`<option key=${x.id} value=${x.id} disabled=${!x.available}>${x.label}${x.available ? "" : ` (${x.missing || "not installed"})`}</option>`)}</select></label>
       <label class="check-row" title="New vertices follow the curve the model's shading describes, so low-poly cylinders and blades print round instead of faceted. Flat-shaded parts stay flat.">
@@ -1265,7 +1316,7 @@ function MeshTab({ m, args, stats, s, set, run, setRun, call, result, generate }
 }
 
 /** Displace: step 2, the evened-out mesh's vertices pushed by the detail in the textures. */
-function DisplaceTab({ m, args, stats, s, set, run, setRun, call, sendSettings, result, stale, over, setOver, strengths, setStrengths, generate, variation }) {
+function DisplaceTab({ m, args, stats, s, set, run, setRun, call, sendSettings, result, stale, over, setOver, strengths, setStrengths, generate, variation, printScale }) {
   const [error, setError] = useState(null);
   const kept = useMeshKept(call, m, args, s, run);
   const maps = useTextureMaps(call, m, args, s, over, run, sendSettings);
@@ -1336,10 +1387,10 @@ function DisplaceTab({ m, args, stats, s, set, run, setRun, call, sendSettings, 
       <dl class="insp-dl">
         <dt>Vertices</dt><dd>${num(result.stats.vertices)} <span class="muted">from ${num(result.stats.source_vertices)}</span></dd>
         <dt>Triangles</dt><dd>${num(result.stats.faces)}</dd>
-        <dt>Size</dt><dd>${sizeText(result.size_mm)}</dd>
-        <dt>Relief</dt><dd>up to ${result.stats.max_displacement_mm.toFixed(2)} mm</dd></dl>
+        <dt>Size</dt><dd>${sizeText(result.size_mm)}${result.size_mm ? gameMm(result.size_mm[2], printScale) : null}</dd>
+        <dt>Relief</dt><dd id="relief">up to ${result.stats.max_displacement_mm.toFixed(2)} mm${gameMm(result.stats.max_displacement_mm, printScale)}</dd></dl>
       ${result.fields.length ? html`<ul class="ls-list field-list">${result.fields.map((f, i) => html`<li key=${i}><span>${f.material}<small class="muted">${[f.texture, f.convention, ...(f.steps || [])].filter(Boolean).join(" · ")}</small></span>
-        <span class="muted" title="One texture pixel covers this much of the model">${f.texel_mm.toFixed(2)} mm/px</span></li>`)}</ul>` : null}
+        <span class="muted" title="One texture pixel covers this much of the model">${f.texel_mm.toFixed(2)} mm/px${gameMm(f.texel_mm, printScale)}</span></li>`)}</ul>` : null}
       ${result.warnings.map((w, i) => html`<p class="insp-note" key=${i}>${w}</p>`)}
       ${result.displaced !== false ? html`<${NextStep} id="displace-next" steps=${[
         { tab: "export", label: "Export", title: "Write the enhanced model to a file, or hand it to Model Painter" },
@@ -1644,7 +1695,7 @@ export function shortPath(p) {
 
 /** Export: the model the 3D view shows (its Show picker) as STL, OBJ, PLY, GLB or a painted 3MF, in a folder; or in one
  *  click as a GLB for Model Painter, which the app opens there when it knows where Model Painter is (Settings). */
-function ExportTab({ m, args, result, finished, which, pose, posed, call, pieces }) {
+function ExportTab({ m, args, result, finished, which, pose, posed, call, pieces, stats, printScale = 1 }) {
   const saved = useStore(ui, (s) => s.exportOpts);
   const o = { ...EXPORT, ...(saved || {}) };
   const set = (patch) => setPref({ exportOpts: { ...o, ...patch } });
@@ -1660,6 +1711,7 @@ function ExportTab({ m, args, result, finished, which, pose, posed, call, pieces
   useEffect(() => {
     api("settings_get").then((r) => setWhere({ fallback: r.export_dir, painter: r.model_painter_found || null }), () => {});
   }, []);
+  const scaled = Math.abs(printScale - 1) > 1e-6 && !!stats?.clean?.game_size_mm?.length;
   const base = variantName(m.variant) || m.name;
   const auto = `${base}${poseSuffix(pose, posed)}${which === "enhanced" ? "_enhanced" : which === "finished" ? "_watertight" : ""}`;
   const many = which === "pieces";
@@ -1719,8 +1771,9 @@ function ExportTab({ m, args, result, finished, which, pose, posed, call, pieces
     <section class="insp-section" id="export-file"><h3>Save a file</h3>
     <label class="field-block"><span>Format</span><select id="export-format" value=${o.format} onChange=${(e) => set({ format: e.target.value })}>
       ${formats.map((f) => html`<option key=${f.ext} value=${f.ext}>${f.label} (${f.ext})</option>`)}</select></label>
-    <label class="field-block"><span>Units</span><select id="export-units" value=${o.units} onChange=${(e) => set({ units: e.target.value })}>
-      ${UNITS.map(([k, l]) => html`<option key=${k} value=${k}>${l}</option>`)}</select></label>
+    <label class="field-block" title="The unit the file's numbers are in; slicers take STL in millimetres"><span>Units</span><select id="export-units" value=${o.units} onChange=${(e) => set({ units: e.target.value })}>
+      ${UNITS.map(([k, l]) => html`<option key=${k} value=${k}>${scaled && k === "mm" ? "Millimetres (the print size set on the Clean tab)" : scaled && k === "m" ? "Metres (print size ÷ 1000)" : l}</option>`)}</select></label>
+    ${scaled ? html`<small class="muted" id="export-scaled">The Clean tab scales the model to print: ${sizeText(stats.size_mm)}, ×${printScale.toPrecision(3)} the game's ${sizeText(stats.clean.game_size_mm)}.</small>` : null}
     ${many ? html`<label class="check-row" title="Each piece turned so its biggest flat cut face (without pegs or a tongue on it) lies on the bed; dowels stand on end">
       <input type="checkbox" id="export-lay-flat" checked=${cutOpts.lay_flat} onChange=${(e) => setPref({ cutOpts: { ...cutOpts, lay_flat: e.target.checked } })} />
       <span>Lay each piece on a cut face<small class="muted">Off: the pieces keep their place in the model.</small></span></label>` : null}
@@ -1771,7 +1824,7 @@ function Swatches({ id, colours, coverage, change }) {
 }
 
 /** A range slider whose value is sent when let go (each change chooses the colours again), shown as it moves. */
-function Slider({ id, label, value, min, max, step, text, hint, onChange }) {
+export function Slider({ id, label, value, min, max, step, text, hint, onChange }) {
   const [moving, setMoving] = useState(null);
   const shown = moving ?? value;
   return html`<label class="field-block"><span>${label} <b class="slider-value" id=${`${id}-value`}>${text(shown)}</b></span>

@@ -25,7 +25,8 @@ from typing import Callable
 
 import numpy as np
 
-from .cut import _components, _from_manifold, _m, _n, _signed_volume, _to_manifold, available, make_solid
+from .clean import components as _components, signed_volume as _signed_volume
+from .cut import _from_manifold, _m, _n, _to_manifold, available, make_solid
 from .geometry.mesh import TriMesh
 
 ProgressFn = Callable[[float, str], None]

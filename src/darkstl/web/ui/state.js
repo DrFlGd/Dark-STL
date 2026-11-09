@@ -40,6 +40,7 @@ export const ui = createStore({
   view: null,              // the 3D view's shading and edges
   cutOpts: null,           // the Cut tab's settings: the model cut, sheet and wall thickness, the joint new cuts get
   cutPlans: null,          // per model id: its cuts [{ id, normal, point, joint }] (the last 20 models)
+  cleanPlans: null,        // per model id: its Clean tab steps [{ op, ... }] (the last 20 models)
   configChoices: null,     // per configurable model id: the part chosen in each slot { slot: option }
   configEdit: null,        // the configurable model whose configuration is being edited (Configure tab)
   configRev: 0,            // counts the configurations saved, so the model page opens its model again
@@ -50,7 +51,7 @@ export const ui = createStore({
 let prefs = null;
 const KEY = "ds-ui";
 const KEPT = ["skin", "theme", "layout", "sort", "sorts", "recent", "lod", "cardSize", "open", "navCollapsed", "inspector", "inspectorTab",
-  "inspectorWidth", "catPanel", "catPanelWidth", "catPanelModel", "tipsOpen", "enhance", "exportOpts", "view", "cutOpts", "cutPlans", "configChoices",
+  "inspectorWidth", "catPanel", "catPanelWidth", "catPanelModel", "tipsOpen", "enhance", "exportOpts", "view", "cutOpts", "cutPlans", "cleanPlans", "configChoices",
   "paintOpts", "paintSources", "showBones"];
 
 /** Load saved preferences (call once the platform store exists). */
