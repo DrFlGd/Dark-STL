@@ -445,7 +445,7 @@ def orientation_flips(faces: np.ndarray, vertices: np.ndarray, corner_normals: n
     key = und[:, 0] * w + und[:, 1]
     order = np.argsort(key, kind="stable")
     ks = key[order]
-    uniq, start, counts = np.unique(ks, return_index=True, return_counts=True)
+    _, start, counts = np.unique(ks, return_index=True, return_counts=True)
     two = start[counts == 2]  # edges two faces share (others don't say how the faces turn)
     h1, h2 = order[two], order[two + 1]
     f1, f2 = h1 // 3, h2 // 3
@@ -1213,7 +1213,7 @@ def apply(mesh: TriMesh, clean: CleanList | None, progress: ProgressFn | None = 
             row.update(got, text=f"turned {_n(got['flipped'], 'face')}" if got["flipped"] else "every face already faced the right way")
         rows[i] = row
     if mesh.n_faces and len(np.unique(mesh.faces)) < mesh.n_vertices:
-        mesh, ids = mesh.subset(np.ones(mesh.n_faces, bool)), ids  # vertices nothing uses any more dropped
+        mesh = mesh.subset(np.ones(mesh.n_faces, bool))  # vertices nothing uses any more dropped (faces and ids stay)
     game = _size_mm(mesh)
     s = 1.0
     if transform is not None:
@@ -1243,7 +1243,7 @@ def parse_steps(texts: list[str]) -> CleanList:
         name, _, value = str(text).strip().partition(":")
         name = name.strip().lower().replace("_", "-")
 
-        def number(default: float) -> float:
+        def number(default: float, text=text, value=value) -> float:
             try:
                 return float(value) if value.strip() else default
             except ValueError:

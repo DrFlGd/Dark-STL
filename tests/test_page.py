@@ -3,11 +3,13 @@ open a model in the 3D view, even it out, upscale its textures, displace and exp
 installed (pip install playwright && python -m playwright install chromium)."""
 
 import os
+import struct
 import time
 from pathlib import Path
 from urllib.parse import quote
 
 
+import numpy as np
 import pytest
 
 from darkstl.app.config import Config
@@ -520,8 +522,6 @@ def test_clean_a_model_up_step_by_step(page, app, tmp_path):
     the 3D view as they're pointed at and ticked, and removed; a click picks faces up to the creases (Shift adds,
     Alt takes away) and removes them; a print height scales the model. The steps are kept for the model, and the
     enhanced model and the exported file are made from the cleaned one."""
-    import struct
-
     from test_clean import figure
 
     shots = os.environ.get("DARKSTL_SCREENSHOTS")
@@ -636,8 +636,6 @@ def test_clean_a_model_up_step_by_step(page, app, tmp_path):
     page.wait_for_selector("#export-done", timeout=60000)
     data = (tmp_path / "out" / "figure_enhanced.stl").read_bytes()
     n = struct.unpack_from("<I", data, 80)[0]
-    import numpy as np
-
     tri = np.frombuffer(data, dtype=np.dtype([("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")]), count=n, offset=84)["v"].reshape(-1, 3)
     size = tri.max(0) - tri.min(0)
     assert abs(size[2] - 150) < 0.5 and tri[:, 2].min() > -0.01  # 150 mm tall, on the floor

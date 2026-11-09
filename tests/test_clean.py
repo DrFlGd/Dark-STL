@@ -2,6 +2,7 @@
 built here (a body inside a cuirass, a cape, two-sided cloth, holes, flipped faces), and the list replaying."""
 
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -327,7 +328,7 @@ def test_the_command_line_steps():
 # ------------------------------------------------------------------ the app's commands
 
 
-def write_obj(path, parts) -> "Path":
+def write_obj(path, parts) -> Path:
     """``parts`` [(name, TriMesh)] as an OBJ in metres, a group each (the app's parts)."""
     lines, base = [], 1
     for name, m in parts:
