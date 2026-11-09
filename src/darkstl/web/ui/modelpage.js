@@ -16,6 +16,7 @@ import { ui, setPref, resolvedTheme, rememberOpened } from "./state.js";
 import { routeHash, placeRoute, modelOf } from "./context.js";
 import { Icon } from "./icons.js";
 import { collectModelItem, modelFilesItem, redrawModelItem, arrangeModel, combineModels } from "./games.js";
+import { markItems, Related } from "./organise.js";
 import { api, binUrl, info, plural, bytesText, followJob, stopJob, toast, showInFolder, pickFolder, pickFile } from "./api.js";
 import { CommandBar } from "./layout.js";
 import { openMenu } from "./actions.js";
@@ -250,13 +251,14 @@ export function ModelPage({ route }) {
     redrawModelItem(m),
     { sep: true },
     { id: "open-file", label: "Open another model file…", icon: "file", run: () => ui.set({ dialog: { type: "open-file" } }) },
+    ...(entry ? [{ sep: true }, ...markItems(entry)] : []),
     ...(entry && !m.configuration ? [{ sep: true },
       { id: "arrange", label: "Rename or move…", sub: "its in-game name, a folder of your own", icon: "edit", run: () => arrangeModel(entry) },
       { id: "combine", label: "Combine with other models…", sub: "face, body and hair as one model", icon: "box", run: () => combineModels(entry) },
       { id: "make-configurable", label: "Make configurable…", icon: "box", run: () => makeConfigurable(m, entry) }] : []),
   ];
   return html`<${CommandBar} ...${bar} up=${up.filter(([, href]) => href)} title=${html`<h1 id="mp-name" title=${entry?.label || m.name}>${entry?.label || m.name}</h1>`}
-      count=${html`<span class="page-count" id="mp-count" title=${m.file}>${fileName}</span>`}
+      count=${html`<span class="page-count" id="mp-count" title=${m.file}>${fileName}</span>${entry?.starred ? html`<span class="card-star mp-star" title="Starred">${Icon.star(13, true)}</span>` : null}`}
       tools=${m.variants.length > 1 ? html`<label class="variant-pick" title="This file holds several models, such as a weapon and its sheath">
         <span class="visually-hidden">Model in this file</span>
         <select id="variant-select" class="compact" value=${m.variant} onChange=${(e) => pick(e.target.value)}>
@@ -763,6 +765,11 @@ function ModelTab({ m, off, flags, setFlags, stats, printScale = 1 }) {
       <small class="muted">${scaled ? `In print millimetres: the Clean tab scales the model ×${printScale.toPrecision(3)} from the game's size (one game metre to 1000 mm). It exports at this size.`
         : "In millimetres, one game metre to 1000 mm: the size the model exports at."}</small></section>
     ${m.notes.length ? html`<section class="insp-section" id="model-notes"><h3>Notes</h3>${m.notes.map((n, i) => html`<p class="insp-note" key=${i}>${n}</p>`)}</section>` : null}
+    ${m.entry ? html`<${Related} m=${m.entry} id="model-related" />` : null}
+    ${m.entry?.tags?.length || m.entry?.collections?.length ? html`<section class="insp-section" id="model-marks"><h3>Yours</h3>
+      <p class="summary-marks">${m.entry.starred ? html`<span class="card-star" title="Starred">${Icon.star(13, true)}</span>` : null}
+        ${(m.entry.tags || []).map((t) => html`<a key=${t} class="card-tag" href=${`#/search?q=${encodeURIComponent(t)}`} title=${`Search every game for ${t}`}>${t}</a>`)}
+        ${(m.entry.collections || []).map((c) => html`<a key=${c.id} class="card-location summary-collection" href=${`#/collection/${encodeURIComponent(c.id)}`} title=${`In ${c.name}`}>${Icon.stack(12)} ${c.name}</a>`)}</p></section>` : null}
     <section class="insp-section" id="model-file"><h3>File</h3><dl class="insp-dl">
       <dt>File</dt><dd>${m.file.split(/[\\/]/).pop()}</dd>
       ${m.variants.length > 1 ? html`<dt>Model</dt><dd>${variantName(m.variant)}</dd>` : null}
@@ -845,7 +852,7 @@ function TexturesTab({ m, args, s, set, run, setRun, call, sendSettings, over, u
     const texNotes = m.notes.filter((n) => /textur|material|skin|\.tfc/i.test(n));
     return html`<div class="tab-pad" id="textures-tab"><p>No textures were found for this model.</p>
       <p class="muted">Map pieces and some objects use textures kept elsewhere in the game. Add the folders that hold them${" "}
-        under <a href="#/settings">Settings › Texture folders</a>.</p>
+        under <a href="#/settings/library">Settings › Library › Texture folders</a>.</p>
       ${m.materials.some((mat) => mat.details.length) ? html`<section class="insp-section" id="material-trace"><h3>What each material points to</h3>
         ${m.materials.map((mat, i) => html`<div class="mat-trace" key=${i}><b>${mat.name}</b>
           ${mat.details.length ? html`<pre>${mat.details.join("\n")}</pre>` : html`<p class="muted">Nothing recorded.</p>`}</div>`)}</section>` : null}
@@ -1792,7 +1799,7 @@ function ExportTab({ m, args, result, finished, which, pose, posed, call, pieces
     setOpening(false);
   };
   const painterHint = html`<small class="muted painter-hint" id="painter-hint">Model Painter isn't set up here, so the file is only saved.
-    Install it from <a href="https://github.com/DrFlGd/Model-Painter/releases" target="_blank" rel="noreferrer">its releases</a>, or say where it is in <a href="#/settings">Settings › Model Painter</a>.</small>`;
+    Install it from <a href="https://github.com/DrFlGd/Model-Painter/releases" target="_blank" rel="noreferrer">its releases</a>, or say where it is in <a href="#/settings">Settings › General › Model Painter</a>.</small>`;
   const errorNote = (at) => (error?.at === at ? html`<p class="warn-note" role="alert" id="export-error">${error.text}</p>` : null);
   const doneBox = done ? html`<div class="export-done" id="export-done" role="status" data-preset=${done.preset}><p><b>Saved</b> ${done.files ? `${plural(done.files.length, "file")} in ${done.path.split(/[\\/]/).pop()}` : done.path.split(/[\\/]/).pop()} <span class="muted">· ${bytesText(done.bytes)}</span></p>
       <p class="note-path muted" title=${done.path}>${shortPath(done.path)}</p>

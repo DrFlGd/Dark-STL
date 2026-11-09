@@ -216,7 +216,7 @@ def test_the_collect_dialog_on_the_page(home, weapon_dir, tmp_path, as_packages)
             else:
                 assert page.inner_text("#toast").startswith("Copied 7 files")
                 assert (home / "library" / "Dark Souls III" / "parts" / "wp_a_0300_l.partsbnd.dcx").is_file()
-            page.goto(server.url + "#/settings")
+            page.goto(server.url + "#/settings/library")
             if not as_packages:
                 page.wait_for_function("document.querySelector('#library-status')?.textContent.includes('7 files')",
                                        timeout=30000)
@@ -302,7 +302,7 @@ def test_moving_and_adding_collected_files_on_the_page(home, weapon_dir, tmp_pat
             browser = launch(p)
             page = browser.new_page(viewport={"width": 1400, "height": 900})
             # Settings: a new place for the collected files, and they move there
-            page.goto(servers[0].url + "#/settings")
+            page.goto(servers[0].url + "#/settings/library")
             page.wait_for_selector("#library-move")
             assert page.is_checked("#library-move")
             page.fill("#library-dir", str(elsewhere))

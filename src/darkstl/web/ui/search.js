@@ -3,7 +3,7 @@
 // the game, its file name and its kind and group, in every game of the
 // library. Results come grouped by game, as cards or as a list with columns.
 // Chips narrow them down: by game, by kind, to models with animations or
-// textures, by how many triangles they have, collected or not.
+// textures, by how many triangles they have, collected or not, by the tags you gave them, starred.
 import { html, useState, useEffect, useLayoutEffect, useRef } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui, setPref } from "./state.js";
@@ -14,7 +14,8 @@ import { CommandBar, ViewSwitch, SortMenu } from "./layout.js";
 import { Inspector } from "./inspector.js";
 import { openMenu, usePageKeys } from "./actions.js";
 import { GameBadge, CategoryIcon } from "./gameicons.js";
-import { openModel, Card, ListHead, ListRow, listColumns, sortOptions, usePageSort } from "./models.js";
+import { openModel, Card, ListHead, ListRow, listColumns, sortOptions, usePageSort, useModelSelection, CardSize, cardStyle } from "./models.js";
+import { SelectionSummary } from "./organise.js";
 import { ModelSummary } from "./browser.js";
 
 const PAGE = 300;
@@ -35,14 +36,15 @@ const toggled = (list, v) => (list.includes(v) ? list.filter((x) => x !== v) : [
 function filterArgs(f) {
   const tri = TRI_RANGES.find(([id]) => id === f.tris) || TRI_RANGES[0];
   return {
-    games: f.games || [], kinds: f.kinds || [],
-    animated: f.animated ? true : null, textured: f.textured ? true : null,
+    games: f.games || [], kinds: f.kinds || [], tags: f.tags || [],
+    animated: f.animated ? true : null, textured: f.textured ? true : null, starred: f.starred ? true : null,
     tri_min: tri[2], tri_max: tri[3],
     collected: f.collected === "yes" ? true : f.collected === "no" ? false : null,
   };
 }
 
-const anyFilter = (f) => !!((f.games || []).length || (f.kinds || []).length || f.animated || f.textured || (f.tris && f.tris !== "any") || (f.collected && f.collected !== "any"));
+const anyFilter = (f) => !!((f.games || []).length || (f.kinds || []).length || (f.tags || []).length || f.starred || f.animated || f.textured
+  || (f.tris && f.tris !== "any") || (f.collected && f.collected !== "any"));
 
 function Chip({ id, on, label, count, title, onClick, icon }) {
   return html`<button type="button" class=${`chip-btn${on ? " on" : ""}`} id=${id} aria-pressed=${on ? "true" : "false"} title=${title || label} onClick=${onClick}>
@@ -62,6 +64,9 @@ function Filters({ f, setF, games, facets }) {
   const gameCounts = new Map((facets?.games || []).map((g) => [g.name, g.count]));
   const kinds = facets?.kinds || [];
   const chosenKinds = (f.kinds || []).filter((k) => !kinds.some((x) => x.name === k)).map((k) => ({ name: k, count: 0 }));
+  const tags = facets?.tags || [];
+  const chosenTags = (f.tags || []).filter((t) => !tags.some((x) => x.name.toLowerCase() === t.toLowerCase())).map((t) => ({ name: t, count: 0 }));
+  const tagOn = (t) => (f.tags || []).some((x) => x.toLowerCase() === t.toLowerCase());
   return html`<div class="search-filters" id="search-filters" aria-label="Narrow the search">
     <div class="filters filter-row" id="filter-games" aria-label="Games">
       <${Chip} id="filter-game-all" on=${!(f.games || []).length} label="Every game" onClick=${() => setF({ games: [] })} title="Search every game in the library" />
@@ -76,19 +81,24 @@ function Filters({ f, setF, games, facets }) {
       <${Chip} id="filter-textured" on=${!!f.textured} label="Has textures" title="Only models that come with textures" onClick=${() => setF({ textured: !f.textured })} />
       <${MenuChip} id="filter-tris" options=${TRI_RANGES} value=${f.tris || "any"} title="How many triangles the model has" onChange=${(v) => setF({ tris: v })} />
       <${MenuChip} id="filter-collected" options=${COLLECTED} value=${f.collected || "any"} title="Whether the model is a copy collected into the app, which opens without the game" onChange=${(v) => setF({ collected: v })} />
+      <${Chip} id="filter-starred" on=${!!f.starred} label="Starred" icon=${Icon.star(12, !!f.starred)} title="Only the models you starred" onClick=${() => setF({ starred: !f.starred })} />
       ${anyFilter(f) ? html`<button type="button" class="ghost compact" id="filter-clear" title="Clear every filter" onClick=${() => ui.set({ searchFilters: {} })}>${Icon.close(12)} Clear filters</button>` : null}
     </div>
+    ${tags.length || chosenTags.length ? html`<div class="filters filter-row" id="filter-tags" aria-label="Tags">
+      ${[...tags, ...chosenTags].map((t) => html`<${Chip} key=${t.name} on=${tagOn(t.name)} label=${t.name} count=${t.count} icon=${Icon.tag(12)}
+        title=${`Only models tagged ${t.name} (click again to leave it out of the filter)`}
+        onClick=${() => setF({ tags: tagOn(t.name) ? (f.tags || []).filter((x) => x.toLowerCase() !== t.name.toLowerCase()) : [...(f.tags || []), t.name] })} />`)}
+    </div>` : null}
   </div>`;
 }
 
 export function SearchPage() {
-  const s = useStore(ui, (st) => ({ overview: st.overview, q: st.searchQ, layout: st.layout, lod: st.lod, f: st.searchFilters || {} }));
+  const s = useStore(ui, (st) => ({ overview: st.overview, q: st.searchQ, layout: st.layout, lod: st.lod, f: st.searchFilters || {}, cardSize: st.cardSize }));
   const libRev = useStore(ui, (st) => st.libRev);
   const [sort, setSort] = usePageSort("search");
   const [text, setText] = useState(s.q);
   const [result, setResult] = useState(null);
   const [limit, setLimit] = useState(PAGE);
-  const [picked, setPicked] = useState(null);
   const seq = useRef(0);
   const box = useRef(null);
   const list = s.layout === "list";
@@ -109,11 +119,14 @@ export function SearchPage() {
       .then((r) => { if (n === seq.current) setResult({ ...r, q }); }, (e) => { if (n === seq.current) setResult({ total: 0, items: [], q, error: String(e.message || e) }); });
   }, [s.q, s.lod, sort.by, sort.desc, list, limit, fKey, s.overview?.total, libRev]);
   const items = result?.items || [];
-  const selected = items.find((m) => m.id === picked) || null;
+  const pick = useModelSelection(items);
+  const selected = pick.picked;
+  const picked = pick.pickedId;
+  const setPicked = pick.setPicked;
   usePageKeys((e) => {
     const ids = items.map((m) => m.id);
     if (e.key === "Enter") { if (selected) { e.preventDefault(); openModel(selected); } return; }
-    if (e.key === "Escape") { setPicked(null); return; }
+    if (pick.key(e)) return;
     if (!e.key.startsWith("Arrow") || !ids.length || e.ctrlKey || e.metaKey || e.altKey) return;
     const d = { ArrowRight: list ? 0 : 1, ArrowLeft: list ? 0 : -1, ArrowDown: 1, ArrowUp: -1 }[e.key];
     if (!d) return;
@@ -138,10 +151,10 @@ export function SearchPage() {
     groups[groups.length - 1].items.push(m);
   }
   const statsFilter = s.f.animated || s.f.textured || (s.f.tris && s.f.tris !== "any") || ["size", "triangles", "parts", "textures", "animated"].includes(sort.by);
-  return html`<${CommandBar} id="search-head" title=${html`<h1 class="crumbs">${Icon.search(18)}<span class="crumbs-name">Search every game</span></h1>`}
+  return html`<${CommandBar} id="search-head" selection=${pick.bar} title=${html`<h1 class="crumbs">${Icon.search(18)}<span class="crumbs-name">Search every game</span></h1>`}
       count=${html`<span class="page-count" id="search-count">${fresh ? plural(fresh.total, "model") : ""}</span>`}
       search=${search}
-      tools=${html`<${ViewSwitch} id="layout-switch" views=${VIEWS} value=${list ? "list" : "grid"} onChange=${(v) => setPref({ layout: v })} />
+      tools=${html`${list ? null : html`<${CardSize} />`}<${ViewSwitch} id="layout-switch" views=${VIEWS} value=${list ? "list" : "grid"} onChange=${(v) => setPref({ layout: v })} />
         <${SortMenu} id="sort" options=${sortOptions(true)} value=${sort.by} onChange=${(v) => setSort({ by: v, desc: false })} />`} />
   <div class="browser">
     <div class="browse-main">
@@ -153,18 +166,19 @@ export function SearchPage() {
         ${result?.error ? html`<p class="warn-note" role="alert">${result.error}</p>` : null}
         ${fresh && !items.length && !result.error ? html`<div class="empty" id="no-results">${s.q ? `Nothing in the library matches “${s.q}”${anyFilter(s.f) ? " with these filters" : ""}.` : "No models match these filters."}</div>` : null}
         ${list ? html`${items.length ? html`<${ListHead} cols=${cols} sort=${sort} onSort=${setSort} />` : null}
-          <div class="results list-view lib-list lib-list-all" role="listbox" aria-label="Models found">
-            ${items.map((m) => html`<${ListRow} key=${m.id} m=${m} cols=${cols} selected=${picked === m.id} onPick=${(x) => setPicked(x.id)} />`)}</div>`
+          <div class=${`results list-view lib-list lib-list-all${pick.multi ? " picking" : ""}`} role="listbox" aria-label="Models found" aria-multiselectable="true">
+            ${items.map((m) => html`<${ListRow} key=${m.id} m=${m} cols=${cols} selected=${pick.sel.has(m.id)} onPick=${pick.onPick} onMenu=${pick.onMenu} dragIds=${pick.dragIds} />`)}</div>`
         : groups.map((g) => html`<section class="search-group" key=${g.game} data-game=${g.game}>
             <h2 class="search-game-head"><${GameBadge} name=${g.game} size=${16} /><span>${g.game}</span><span class="muted">${plural(counts.get(g.game) ?? g.items.length, "model")}</span></h2>
-            <div class="results grid-view" role="listbox" aria-label=${`Models found in ${g.game}`}>
-              ${g.items.map((m) => html`<${Card} key=${m.id} m=${m} selected=${picked === m.id} where=${`${m.category}${m.group ? ` › ${m.group}` : ""}`} onPick=${(x) => setPicked(x.id)} />`)}</div>
+            <div class=${`results grid-view${pick.multi ? " picking" : ""}`} role="listbox" aria-label=${`Models found in ${g.game}`} aria-multiselectable="true" style=${cardStyle(s.cardSize)}>
+              ${g.items.map((m) => html`<${Card} key=${m.id} m=${m} selected=${pick.sel.has(m.id)} where=${`${m.category}${m.group ? ` › ${m.group}` : ""}`}
+                onPick=${pick.onPick} onMenu=${pick.onMenu} dragIds=${pick.dragIds} />`)}</div>
           </section>`)}
         ${result && result.total > items.length ? html`<button type="button" class="ghost more-btn" id="show-more" onClick=${() => setLimit(limit + PAGE)}>Show more (${(result.total - items.length).toLocaleString()} left)</button>` : null}
       </div>
     </div>
     <${Inspector} page="search" open=${!matchMedia("(max-width: 1250px)").matches} tabs=${[
-      { id: "details", label: "Details", icon: "info", body: selected ? html`<${ModelSummary} key=${selected.id} m=${selected} />`
+      { id: "details", label: "Details", icon: "info", body: pick.multi ? html`<${SelectionSummary} models=${pick.chosen} />` : selected ? html`<${ModelSummary} key=${selected.id} m=${selected} />`
         : html`<div class="place-summary" id="place-summary"><section class="insp-section"><h3>Search every game</h3>
           <p>${fresh ? plural(fresh.total, "model") : "…"} found${s.q ? html` for <b>${s.q}</b>` : ""}.</p>
           <p class="muted">Click a model to see it here; double-click (or Enter) opens it.</p></section></div>` },
