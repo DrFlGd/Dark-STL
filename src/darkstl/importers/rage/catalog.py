@@ -1,11 +1,14 @@
-"""Sorting GTA V's models into the library.
+"""Sorting GTA V's and GTA IV's models into the library (GTA IV's kinds in brackets).
 
 - Vehicles (``.yft`` in a ``vehicles`` archive or named in ``vehicles.meta``): by class, named from the
   text (``gameName``). A vehicle's ``_hi`` model is the one listed; the plain one is its lower detail.
 - Characters: peds' component dictionaries (``.ydd``), by name prefix (ambient, service, gangs...), and
   the components of streamed peds (the online characters) by ped.
 - Weapons (``w_*`` models, or named in ``weapons*.meta``): by weapon group, named from the text.
-- Objects (props) and Map Pieces (everything else under ``levels/``), by archive.
+- Objects (props) and Map Pieces (everything else under ``levels/``, or GTA IV's ``data/maps/``), by
+  archive.
+- GTA IV's names come from the ``.ide`` files and the ``.gxt`` text; models of its episodes (``TLAD/``,
+  ``TBoGT/``) have the episode's name after their group.
 """
 
 from __future__ import annotations
@@ -44,20 +47,29 @@ def _component_ped(rel: str) -> str | None:
     if "^" in stem:
         return stem.split("^", 1)[0]
     parts = rel.split("/")
-    if len(parts) >= 2 and not parts[-2].endswith(".rpf") and "peds" in rel:
+    if len(parts) >= 2 and not parts[-2].endswith((".rpf", ".img")) and "peds" in rel:
         return parts[-2]
     return None
 
 
 def classify(gf: files.GameFiles, rel: str) -> tuple[str, str, str, bool] | None:
     """(category, group, label, is lower detail) of a model, or None to leave it out."""
+    c = _classify(gf, rel)
+    episode = files.EPISODES.get(rel.split("/", 1)[0])
+    if c is not None and episode:
+        return c[0], f"{c[1]} ({episode})", c[2], c[3]
+    return c
+
+
+def _classify(gf: files.GameFiles, rel: str) -> tuple[str, str, str, bool] | None:
     stem = _stem(rel)
     ext = rel.rsplit(".", 1)[-1]
     low = rel.lower()
     prof = gf.profile
     if stem.endswith("_lod") or stem.endswith("_slod") or "_slod" in stem or stem.startswith("lod_"):
         return None
-    if ext == "yft" and ("vehicles" in low or stem.removesuffix("_hi") in gf.vehicles):
+    frag, dictionary, drawable = ext in ("yft", "wft"), ext in ("ydd", "wdd"), ext in ("ydr", "wdr")
+    if frag and ("vehicles" in low or stem.removesuffix("_hi") in gf.vehicles):
         base = stem.removesuffix("_hi")
         info = gf.vehicles.get(base)
         label = (gf.label(info.label) if info else None) or base
@@ -65,10 +77,10 @@ def classify(gf: files.GameFiles, rel: str) -> tuple[str, str, str, bool] | None
         if maker and not label.lower().startswith(maker.lower()):
             label = f"{maker} {label}"
         group = (prof.vehicle_classes.get(info.vclass.upper(), "") if info and prof else "") or "Vehicles"
-        lower = not stem.endswith("_hi") and gf.find(base + "_hi.yft") is not None
+        lower = not stem.endswith("_hi") and gf.find(f"{base}_hi.{ext}") is not None
         return "Vehicles", group, label + (" (high detail)" if stem.endswith("_hi") else ""), lower
-    if "peds" in low or stem in gf.peds or ext == "ydd" and stem.split("_")[0] in ("a", "s", "g", "u", "cs", "ig"):
-        if ext == "yft":
+    if "peds" in low or stem in gf.peds or dictionary and stem.split("_")[0] in ("a", "s", "g", "u", "cs", "ig"):
+        if frag:
             return None  # a ped's skeleton and ragdoll; its components are in the .ydd
         if "pedprops" in low or stem.endswith("_p"):
             return "Characters", "Props", stem, False
@@ -77,7 +89,7 @@ def classify(gf: files.GameFiles, rel: str) -> tuple[str, str, str, bool] | None
             return "Characters", f"{ped} components", stem.split("^", 1)[-1], False
         return "Characters", ped_group(gf, stem), stem, False
     weapon = gf.weapons.get(stem)
-    if weapon is not None or stem.startswith("w_") and ("weapons" in low or ext == "ydr"):
+    if weapon is not None or stem.startswith("w_") and ("weapons" in low or drawable):
         label = (gf.label(weapon.label) if weapon else None) or stem
         group = (prof.weapon_groups.get(weapon.group.upper(), "") if weapon and prof else "") or "Weapons"
         if weapon is None and stem.startswith("w_"):
@@ -87,7 +99,7 @@ def classify(gf: files.GameFiles, rel: str) -> tuple[str, str, str, bool] | None
         return "Weapons", group, label, False
     if "/props/" in low or "props" in _archive_name(rel) or stem.startswith("prop_"):
         return "Objects", _archive_name(rel) or "Props", stem, False
-    if "/levels/" in low or low.startswith("levels/") or "/levels/" in "/" + low:
+    if "/levels/" in "/" + low or "/data/maps/" in "/" + low:
         return "Map Pieces", _archive_name(rel) or "Map", stem, False
     return "Models", _archive_name(rel) or PurePosixPath(rel).parent.name or "Models", stem, False
 
@@ -107,6 +119,6 @@ def scan(gf: files.GameFiles, game: str | None, importer: str) -> list[CatalogEn
             if c is None:
                 continue
             cat, group, label, lower = c
-            out.append(CatalogEntry(game or gf.game or "GTA V files", cat, group, _stem(rel), label,
+            out.append(CatalogEntry(game or gf.game or ("GTA IV files" if gf.generation == 4 else "GTA V files"), cat, group, _stem(rel), label,
                                     gf.path(rel), importer, lower, rel not in gf.loose))
     return out

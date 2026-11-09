@@ -46,6 +46,7 @@ class Resource:
     version: int
     system: bytes
     graphics: bytes
+    ptr_size: int = 8  # GTA IV's resources (RSC5) point with 4 bytes
 
     def reader(self, gen9: bool = False) -> Reader:
         return Reader(self, gen9)
@@ -143,14 +144,18 @@ class Reader:
             end = len(buf)
         return buf[off:end].decode("utf-8", "replace")
 
+    def ptr(self, at: int) -> int:
+        """The pointer stored at ``at`` (8 bytes in GTA V, 4 in GTA IV)."""
+        return self.u64(at) if self.res.ptr_size == 8 else self.u32(at)
+
     def pointers(self, ptr: int, n: int) -> list[int]:
         if not ptr or n <= 0:
             return []
-        return list(self.unpack(f"{n}Q", ptr))
+        return list(self.unpack(f"{n}{'Q' if self.res.ptr_size == 8 else 'I'}", ptr))
 
     def pointer_list(self, at: int) -> list[int]:
         """A ``(pointer, count u16, capacity u16)`` list header at ``at``: the pointers it lists."""
-        ptr, count = self.unpack("QH", at)
+        ptr, count = self.unpack(("Q" if self.res.ptr_size == 8 else "I") + "H", at)
         return self.pointers(ptr, count)
 
     def ok(self, ptr: int) -> bool:

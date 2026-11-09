@@ -1,7 +1,10 @@
-"""Grand Theft Auto V's game profile (JSON), as the RenderWare games have theirs.
+"""The RAGE games' profiles (JSON), as the RenderWare games have theirs: GTA V and GTA IV.
 
-``profiles/gta5.json`` ships beside this file, and a file of the same name in the settings folder's
-``profiles/`` folder replaces it. It names the engine (``rage``) and:
+``profiles/gta5.json`` and ``profiles/gta4.json`` ship beside this file, and a file of the same name in the
+settings folder's ``profiles/`` folder replaces one. Each names the engine (``rage``) and:
+
+- ``generation``: 5 (GTA V: RPF7 archives, RSC7 resources, ``.y*`` files) or 4 (GTA IV: IMG3 archives,
+  RSC5 resources, ``.w*`` files);
 
 - ``recognise``: files below the game folder (an archive or the executable) and folder names;
 - ``language``: whose ``.gxt2`` text gives vehicle and weapon names (``american``);
@@ -28,6 +31,7 @@ PROFILE_DIR = Path(__file__).with_name("profiles")
 class Profile:
     name: str
     short: str = ""
+    generation: int = 5
     recognise_files: list[str] = field(default_factory=list)
     folder_names: list[str] = field(default_factory=list)
     language: str = "american"
@@ -46,6 +50,7 @@ class Profile:
         groups = data.get("groups") or {}
         return cls(
             name=str(data["name"]), short=str(data.get("short") or ""),
+            generation=int(data.get("generation") or 5),
             recognise_files=[str(f) for f in rec.get("files") or []],
             folder_names=[str(f).lower() for f in rec.get("folder_names") or []],
             language=str(data.get("language") or "american").lower(),
@@ -121,6 +126,7 @@ def detect(folder: Path) -> tuple[Profile, Path] | None:
 
 def _has_files(folder: Path) -> bool:
     try:
-        return any(n.lower().endswith((".rpf", ".ydr", ".yft", ".ydd", ".ytd")) for n in os.listdir(folder))
+        return any(n.lower().endswith((".rpf", ".ydr", ".yft", ".ydd", ".ytd", ".img", ".wdr", ".wft",
+                                                                 ".wdd", ".wtd")) for n in os.listdir(folder))
     except OSError:
         return False

@@ -1,0 +1,23 @@
+{
+  "engine": "rage",
+  "generation": 4,
+  "name": "Grand Theft Auto IV",
+  "short": "GTA4",
+  "recognise": {
+    "files": ["GTAIV.exe", "EFLC.exe", "pc/models/cdimages/vehicles.img", "common/data/vehicles.ide"],
+    "folder_names": ["grand theft auto iv", "gta iv", "gtaiv", "gta4", "episodes from liberty city", "eflc"]
+  },
+  "language": "american",
+  "shared_textures": {"vehicles": ["vehshare", "vehshare_truck"], "all": []},
+  "groups": {
+    "vehicle_classes": {
+      "CAR": "Cars", "BIKE": "Motorcycles", "BOAT": "Boats", "HELI": "Helicopters", "PLANE": "Planes",
+      "TRAIN": "Trains"
+    },
+    "ped_prefixes": {
+      "m_y_": "Young men", "m_m_": "Men", "m_o_": "Older men", "f_y_": "Young women", "f_m_": "Women",
+      "f_o_": "Older women", "ig_": "Story characters", "cs_": "Cutscene characters", "player": "Players",
+      "supermodel": "Players"
+    }
+  }
+}

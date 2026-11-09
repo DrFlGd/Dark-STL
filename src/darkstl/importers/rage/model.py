@@ -1,4 +1,5 @@
-"""Opening a GTA V model: a ``.ydr``, one drawable of a ``.ydd``, or a ``.yft`` (vehicles, weapons, props).
+"""Opening a GTA V model: a ``.ydr``, one drawable of a ``.ydd``, or a ``.yft`` (vehicles, weapons, props);
+and GTA IV's, the same kinds as ``.wdr``, ``.wdd`` and ``.wft`` with ``.wtd`` textures.
 
 Each model of the drawable (high detail) is a part, named after the bone it sits on; unskinned models are
 placed by that bone. A vehicle's wheels and loose panels are the fragment's children, placed on their bones
@@ -26,14 +27,35 @@ from . import files
 from .animation import RageAnimations, RageSkeleton, rig
 from .formats import clip as clipfmt
 from .formats import drawable as dfmt
+from .formats import drawable4 as d4
 from .formats import rsc
 from .formats import texture as tfmt
 from .formats.text import joaat
 
-SLOTS = ("head", "berd", "hair", "uppr", "lowr", "hand", "feet", "teef", "accs", "task", "decl", "jbib")
+SLOTS = ("head", "berd", "hair", "uppr", "lowr", "hand", "feet", "teef", "accs", "task", "decl", "jbib",
+         "suse", "jack", "sus2", "face")  # the last four are GTA IV's
 SLOT_LABELS = {"head": "Head", "berd": "Mask", "hair": "Hair", "uppr": "Upper body", "lowr": "Legs",
                "hand": "Hands", "feet": "Feet", "teef": "Teeth", "accs": "Accessories", "task": "Gear",
-               "decl": "Decals", "jbib": "Top"}
+               "decl": "Decals", "jbib": "Top", "suse": "Accessories", "jack": "Jacket", "sus2": "Accessories 2",
+               "face": "Face"}
+KINDS = {".ydr": "ydr", ".ydd": "ydd", ".yft": "yft", ".wdr": "ydr", ".wdd": "ydd", ".wft": "yft"}
+
+
+def is_iv(path: Path) -> bool:
+    """A GTA IV file (``.wdr``, ``.wdd``, ``.wft``, ``.wtd``)."""
+    return Path(path).suffix.lower().startswith(".w")
+
+
+def frag_ext(path: Path) -> str:
+    return ".wft" if is_iv(path) else ".yft"
+
+
+def read_texture_file(gf: files.GameFiles, path: Path) -> dict[str, tfmt.Texture]:
+    """A texture dictionary file (``.ytd`` or ``.wtd``): its textures by lower-case name."""
+    res = gf.resource(path)
+    if res.ptr_size == 4:
+        return d4.read_texture_dictionary(res.reader(False))
+    return tfmt.read_dictionary(res.reader(rsc.is_enhanced(".ytd", res.version)), 0x50000000)
 
 DIFFUSE = {joaat(n) for n in ("DiffuseSampler", "DiffuseSampler2", "TextureSampler", "DiffuseTexture",
                               "PlateBgSampler", "DiffuseExtraSampler")}
@@ -94,6 +116,15 @@ def read_file(gf: files.GameFiles, path: Path):
     """What a model file holds: ("ydr", Drawable), ("ydd", [(hash, Drawable)]) or ("yft", Fragment)."""
     ext = Path(path).suffix.lower()
     r, res = _reader(gf, path)
+    if res.ptr_size == 4:  # GTA IV
+        kind = KINDS.get(ext)
+        if kind == "ydr":
+            return "ydr", d4.read_drawable(r), res
+        if kind == "ydd":
+            return "ydd", d4.read_dictionary(r), res
+        if kind == "yft":
+            return "yft", d4.read_fragment(r, Path(path).stem.lower()), res
+        raise FormatError(f"{Path(path).name} isn't a GTA IV model")
     if ext == ".ydr":
         return "ydr", dfmt.read_drawable(r), res
     if ext == ".ydd":
@@ -109,10 +140,12 @@ def ydd_names(gf: files.GameFiles, path: Path) -> list[str]:
     if rel in gf.components:
         return gf.components[rel]
     res = gf.resource_system(path)
-    r = res.reader(rsc.is_enhanced(".ydd", res.version))
-    root = 0x50000000
-    hashes_ptr, hcount = r.unpack("QH", root + 0x20)
-    hashes = list(r.unpack(f"{hcount}I", hashes_ptr)) if hashes_ptr and hcount else []
+    if res.ptr_size == 4:
+        hashes = d4.dictionary_hashes(res.reader(False))
+    else:
+        r = res.reader(rsc.is_enhanced(".ydd", res.version))
+        hashes_ptr, hcount = r.unpack("QH", 0x50000000 + 0x20)
+        hashes = list(r.unpack(f"{hcount}I", hashes_ptr)) if hashes_ptr and hcount else []
     known = component_names()
     names = []
     for h in hashes:
@@ -135,9 +168,9 @@ def ped_name(gf: files.GameFiles, path: Path) -> str:
 
 
 def ped_skeleton(gf: files.GameFiles, path: Path) -> dfmt.Skeleton | None:
-    """The skeleton in the ped's ``.yft``."""
+    """The skeleton in the ped's ``.yft`` (``.wft``)."""
     name = ped_name(gf, path)
-    p = gf.find(name + ".yft")
+    p = gf.find(name + frag_ext(path))
     if p is None:
         return None
     try:
@@ -163,8 +196,7 @@ class TextureFinder:
     def _dict(self, p: Path) -> dict[str, tfmt.Texture] | None:
         if p not in self.loaded:
             try:
-                r, _res = _reader(self.gf, p)
-                self.loaded[p] = tfmt.read_dictionary(r, 0x50000000)
+                self.loaded[p] = read_texture_file(self.gf, p)
             except (FormatError, OSError):
                 self.loaded[p] = None
         return self.loaded[p]
@@ -221,16 +253,17 @@ def texture_chain(gf: files.GameFiles, path: Path, vehicle: bool) -> list[Path]:
     if gf.profile is not None:
         for n in gf.profile.shared_textures:
             add(n)
+    ext = ".wtd" if is_iv(path) else ".ytd"
     out = []
     for n in names:
-        for p in gf.find_all(n + ".ytd")[:1]:
+        for p in gf.find_all(n + ext)[:1]:
             out.append(p)
     # last: the other dictionaries beside the model (map pieces share them)
     here = gf.rel(path)
     if here is not None:
         folder = here.rsplit("/", 1)[0] + "/"
         extra = [rel for rel in list(gf.members) + list(gf.loose)
-                 if rel.startswith(folder) and rel.endswith(".ytd") and "/" not in rel[len(folder):]]
+                 if rel.startswith(folder) and rel.endswith(ext) and "/" not in rel[len(folder):]]
         for rel in sorted(extra)[:12]:
             p = gf.path(rel)
             if p not in out:
@@ -325,27 +358,31 @@ def load(importer_key: str, path: Path, variant: str | None = None, cache=None) 
                 label = f"{label} {mi + 1}"
             placed.append(Placed(label, d, m, np.eye(4) if m.skinned else bone_matrix(m.bone), di))
     # a fragment's children: wheels and panels, on their bones; the stored wheels drawn on every wheel bone
-    if children and skel is not None:
+    if skel is not None and kind == "yft":
         tags = skel.by_tag()
-        front = next((c.drawable for c in children if c.bone_tag in WHEEL_FRONT and c.drawable is not None
-                      and c.drawable.models()), None)
-        rear = next((c.drawable for c in children if c.bone_tag in WHEEL_REAR and c.drawable is not None
-                     and c.drawable.models()), None)
-        for c in children:
-            d = c.drawable
-            if (d is None or not d.models()) and c.bone_tag in WHEEL_FRONT | WHEEL_REAR:
-                d = (front or rear) if c.bone_tag in WHEEL_FRONT else (rear or front)
+        roles = {i: _wheel_role(b) for i, b in enumerate(skel.bones)}
+        kids = [(tags.get(c.bone_tag), c.drawable) for c in children]
+        kids = [(bi, d) for bi, d in kids if bi is not None]
+        front = next((d for bi, d in kids if roles[bi] and roles[bi][0] == "front" and d is not None
+                      and d.models()), None)
+        rear = next((d for bi, d in kids if roles[bi] and roles[bi][0] == "rear" and d is not None
+                     and d.models()), None)
+        filled = {bi for bi, d in kids if d is not None and d.models()}
+        # wheel bones no child fills (GTA IV lists only the stored wheels)
+        kids += [(bi, None) for bi, role in roles.items() if role and bi not in filled
+                 and bi not in {k for k, _ in kids}]
+        for bi, d in kids:
+            role = roles[bi]
+            if (d is None or not d.models()) and role:
+                d = (front or rear) if role[0] == "front" else (rear or front)
             if d is None or not d.models():
                 continue
-            bi = tags.get(c.bone_tag)
-            if bi is None:
-                continue
             m = bone_matrix(bi).copy()
-            if c.bone_tag in WHEEL_RIGHT:
+            if role and role[1]:
                 m[:3, :3] = m[:3, :3] @ np.diag([-1.0, 1.0, -1.0])
             if d not in drawables:
                 drawables.append(d)
-            for mi, mod in enumerate(d.models("high")):
+            for mod in d.models("high"):
                 placed.append(Placed(skel.bones[bi].name, d, mod, m, drawables.index(d)))
     # materials, one per (drawable, shader)
     own = [d.textures for d in drawables]
@@ -375,8 +412,11 @@ def load(importer_key: str, path: Path, variant: str | None = None, cache=None) 
     skinned = any(p.model.skinned for p in placed)
     if skel is not None and skel.bones and skinned:
         rs = RageSkeleton(skel)
-        dicts = _clip_dictionaries(gf, path, is_ped)
-        if dicts:
+        dicts = [] if is_iv(path) else _clip_dictionaries(gf, path, is_ped)
+        if is_iv(path):
+            pose_note = ("GTA IV's animations (.wad) aren't read yet, so its characters can't be posed; they "
+                         "open in their bind pose.")
+        elif dicts:
             anims = RageAnimations(rs, dicts)
             the_rig = rig(rs, anims)
         else:
@@ -461,6 +501,17 @@ def load(importer_key: str, path: Path, variant: str | None = None, cache=None) 
     )
 
 
+def _wheel_role(bone: dfmt.Bone) -> tuple[str, bool] | None:
+    """("front" or "rear", on the right) for a wheel bone, by its tag (GTA V) or name (both games)."""
+    name = bone.name.lower()
+    by_name = name.startswith("wheel_") and len(name) >= 8 and name[6] in "lr"
+    if bone.tag in WHEEL_FRONT or by_name and name[7] == "f":
+        return "front", bone.tag in WHEEL_RIGHT or by_name and name[6] == "r"
+    if bone.tag in WHEEL_REAR or by_name:
+        return "rear", bone.tag in WHEEL_RIGHT or by_name and name[6] == "r"
+    return None
+
+
 def _label(gf: files.GameFiles, path: Path) -> str | None:
     from .catalog import classify
 
@@ -475,8 +526,9 @@ def _info(gf, path, kind, res, gen9, drawables, placed, skel, finder) -> list[st
     what = {"ydr": "drawable", "ydd": "drawable dictionary", "yft": "fragment"}[kind]
     verts = sum(len(g.positions) for p in placed for g in p.model.geometries)
     tris = sum(len(g.triangles) for p in placed for g in p.model.geometries)
-    lines = [f"GTA V {what} (resource version {res.version}, {'Enhanced' if gen9 else 'original PC'} layout)"
-             + (f" ({gf.game})" if gf.game else ""),
+    head = (f"GTA IV {what} (RSC5, type {res.version})" if res.ptr_size == 4 else
+            f"GTA V {what} (resource version {res.version}, {'Enhanced' if gen9 else 'original PC'} layout)")
+    lines = [head + (f" ({gf.game})" if gf.game else ""),
              f"{len(placed)} models, {verts:,} vertices, {tris:,} triangles"]
     arc = gf.archive_of(path)
     if arc:

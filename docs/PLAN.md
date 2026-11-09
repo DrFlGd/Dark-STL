@@ -37,7 +37,7 @@ importer and registering it in `importers/__init__.py`:
 | glTF | `.gltf` (with its `.bin` and pictures) and `.glb`, as Blender, FModel and most tools export: each mesh a part placed by its node, base colour and normal textures (green up), Y up turned to Z up; a model too big to be in metres read as centimetres. Skinned meshes in their bind pose | Synthetic files (0.35.0) |
 | ActorX PSK/PSKX | UModel's and FModel's exports of Unreal models: points, wedges, faces and materials, mirrored from Unreal's frame like the Unreal games' own models; each material's textures found by name beside the model, from UModel's `.mat`, FModel's `.json` and UModel's `.props.txt` material files, then from texture names like the material's. The skeleton isn't read | Synthetic files (0.35.0) |
 | RenderWare (GTA III, Vice City, San Andreas) | `.img` archives (with `.dir`, or `VER2`) read in place, `.dff` models (parts placed by frames, skins, vehicles with their wheels copied to every axle and their colours from `carcols.dat` as variants), `.txd` textures (DXT, paletted and raw rasters), `.ifp` animations for peds, `.ide`/`.ipl`/`.gxt` for kinds, areas and vehicle names. Per-game differences are JSON profiles in `importers/renderware/profiles/`. See Reading Grand Theft Auto files | Synthetic files (0.50.0) |
-| RAGE (GTA V, then GTA IV) | GTA V: `.rpf` v7 archives (open, AES, NG, nested) with keys found in the user's `GTA5.exe`, RSC7 resources in the original and the Enhanced layouts: `.ydr` drawables, `.ydd` ped components (each ped an outfit), `.yft` vehicles with their wheels, `.ytd` textures, `.ycd` animations, names from `.gxt2` and the `.meta` lists. GTA IV: IMG3 and RSC5 | GTA V synthetic files (0.51.0); GTA IV planned (0.52.0) |
+| RAGE (GTA V, then GTA IV) | GTA V: `.rpf` v7 archives (open, AES, NG, nested) with keys found in the user's `GTA5.exe`, RSC7 resources in the original and the Enhanced layouts: `.ydr` drawables, `.ydd` ped components (each ped an outfit), `.yft` vehicles with their wheels, `.ytd` textures, `.ycd` animations, names from `.gxt2` and the `.meta` lists. GTA IV (and its episodes): IMG3 archives with the key found in `GTAIV.exe`, RSC5 `.wdr`, `.wdd` (outfits), `.wft` (vehicles with their wheels), `.wtd`, names from the `.ide` files and `.gxt` | Synthetic files (0.51.0 GTA V, 0.52.0 GTA IV) |
 | id Tech 6/7/8 (DOOM, DOOM Eternal, DOOM: The Dark Ages) | `.resources` containers (IDCL; DOOM 2016's `.index`) and `.streamdb` with the game's Oodle, BIM textures, `.lwo` static and `.md6mesh` skinned models, `.md6skl` skeletons, `.md6anim` animations, `material2` decls. See Reading id Tech 6/7/8 files | Planned (0.53.0 Eternal, 0.54.0 DOOM 2016, 0.55.0 The Dark Ages) |
 
 An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
@@ -456,7 +456,12 @@ generation-specific layouts side by side.
   or CodeWalker still works, since exported resources are not encrypted.
 - **IMG3 archives (GTA IV).** Magic `0xA94E2A52`, entry table (size, resource type, offset,
   sizes) and names, encrypted with AES-256 (ECB, applied 16 times). The key is found in
-  `GTAIV.exe` / `EFLC.exe` the same way.
+  `GTAIV.exe` / `EFLC.exe` the same way (SHA-1 of every 4-byte-aligned 32 bytes against the hash
+  SparkIV publishes) and kept as `keys/gta4.bin`. Built in 0.52.0 as `formats/img.py`,
+  `formats/keys4.py`, `formats/rsc5.py` and `formats/drawable4.py`, which reads GTA IV's blocks into
+  the same objects as GTA V's, so the rest of the importer (library, vehicles, outfits, Collect) is
+  shared. The episodes (`TLAD/`, `TBoGT/` in the Complete Edition) are read with the base game, their
+  models' groups named after the episode.
 - **Resources.** RSC7 (V) and RSC5 (IV): a header with the resource version and the sizes of
   the system and graphics parts (encoded in flags), then the data deflated (zlib). Pointers in
   the data point into those parts (`0x5xxxxxxx` system, `0x6xxxxxxx` graphics), and one reader
@@ -993,7 +998,7 @@ The plan is in Reading Grand Theft Auto files above.
 - [x] Plan: formats, importer layout, kinds and names, Collect, phases
 - [x] RenderWare trilogy: GTA III, Vice City, San Andreas (0.50.0), on synthetic files
 - [x] GTA V: RPF7 with keys from the executable, peds as configurable models, vehicles, posing (0.51.0), on synthetic files
-- [ ] GTA IV and Episodes from Liberty City on the shared RAGE reader (0.52.0)
+- [x] GTA IV and Episodes from Liberty City on the shared RAGE reader (0.52.0), on synthetic files
 - [ ] Trilogy Definitive Edition as a profile on the generic Unreal importer
 - [ ] Check each on Jerred's installs
 
@@ -1063,6 +1068,10 @@ The plan is in Reading id Tech 6/7/8 files above.
   `_c_`... textures; each component shows its first), the peds' `.ymt` variation files (outfit
   slots come from the component names instead), weapon attachments as configurable weapons,
   map placement (`.ymap`), cloth and damaged vehicle meshes, and the console and mobile releases.
+- GTA IV has only been read from synthetic files so far, so the key search has not yet run on a
+  real `GTAIV.exe`. Not done yet: posing (its `.wad` animations aren't read; characters open in
+  their bind pose), vehicle paint, ped texture variations, weapon names (weapons keep their model
+  names), map placement (`.wpl`), and the Xbox 360 and PlayStation 3 files.
 - Of the real game files, Dark Souls Remastered weapons and Bloodborne characters, objects and
   armour have been loaded so far (Phase 1). The RE Engine importer has only seen synthetic files.
 - RE Engine: `.pak` archives with an encrypted table of contents (Monster Hunter Wilds and later)
