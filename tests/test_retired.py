@@ -147,6 +147,26 @@ def test_an_old_bulk_preset_still_enhances(home, weapon_dir):  # noqa: F811
     assert s.config.last_enhance["Dark Souls III"] == {"target_vertices": 2500}
 
 
+def test_an_old_clean_list_with_their_settings_still_cleans_the_model(home, weapon_dir, tmp_path):  # noqa: F811
+    """A Clean list kept by an earlier version (on the page, or in a saved variation's record) whose steps carry
+    Finish, Cut or paint settings: each step keeps only what it is known by, so it cleans the model as the same list
+    without them, under the same name."""
+    from darkstl.clean import CleanList
+
+    plain = [{"op": "weld", "distance_mm": 0.01}, {"op": "transform", "scale": 0.5, "floor": True}]
+    old = [{**plain[0], "watertight": WATERTIGHT}, {**plain[1], "lay_flat": True, "cut": CUT, "paint": PAINT}]
+    assert CleanList.of(old) == CleanList.of(plain)
+    s = make_service(home)
+    wait(s, s.call("folder_add", {"path": str(weapon_dir)})["job"])
+    m = s.call("model_open", {"id": _weapon(s)["id"]})
+    checked = s.call("clean_check", {"sid": m["sid"], "clean": old})
+    assert checked == s.call("clean_check", {"sid": m["sid"], "clean": plain})
+    assert checked["size_mm"][:2] == pytest.approx([500, 500])  # the 1 m plate at half its size
+    out = wait(s, s.call("export", {"sid": m["sid"], "which": "original", "format": ".stl", "clean": old,
+                                    "folder": str(tmp_path)})["job"])
+    assert Path(out["path"]).is_file()
+
+
 def test_the_engine_has_no_finish_cut_or_painted_3mf(home, weapon_dir, tmp_path):  # noqa: F811
     out_dir = tmp_path / "exports"
     s = make_service(home)
