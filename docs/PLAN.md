@@ -36,6 +36,9 @@ importer and registering it in `importers/__init__.py`:
 | Wavefront OBJ | OBJ + MTL with PNG/JPG/TGA/DDS textures, from any other tool | Done |
 | glTF | `.gltf` (with its `.bin` and pictures) and `.glb`, as Blender, FModel and most tools export: each mesh a part placed by its node, base colour and normal textures (green up), Y up turned to Z up; a model too big to be in metres read as centimetres. Skinned meshes in their bind pose | Synthetic files (0.35.0) |
 | ActorX PSK/PSKX | UModel's and FModel's exports of Unreal models: points, wedges, faces and materials, mirrored from Unreal's frame like the Unreal games' own models; each material's textures found by name beside the model, from UModel's `.mat`, FModel's `.json` and UModel's `.props.txt` material files, then from texture names like the material's. The skeleton isn't read | Synthetic files (0.35.0) |
+| RenderWare (GTA III, Vice City, San Andreas) | `.img` archives, `.dff` models (parts, skins, vehicle frames), `.txd` textures, `.ifp` animations, `.ide`/`.ipl`/`.gxt` for kinds, areas and names. See Reading Grand Theft Auto files | Planned (0.50.0) |
+| RAGE (GTA V, then GTA IV) | `.rpf` v7 and IMG3 archives with keys found in the user's executable, RSC7/RSC5 resources: `.ydr`/`.wdr`, `.ydd` ped components, `.yft` vehicles, `.ytd` textures, `.ycd` animations | Planned (0.51.0 GTA V, 0.52.0 GTA IV) |
+| id Tech 6/7/8 (DOOM, DOOM Eternal, DOOM: The Dark Ages) | `.resources` containers (IDCL; DOOM 2016's `.index`) and `.streamdb` with the game's Oodle, BIM textures, `.lwo` static and `.md6mesh` skinned models, `.md6skl` skeletons, `.md6anim` animations, `material2` decls. See Reading id Tech 6/7/8 files | Planned (0.53.0 Eternal, 0.54.0 DOOM 2016, 0.55.0 The Dark Ages) |
 
 An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
 folder), `detect_game`, `variants` (files holding several models) and `describe`.
@@ -158,11 +161,40 @@ the tests call directly.
   (`thumbnails.py`: the model from the 3D view's angle, coloured from its albedo texture, long
   weapons laid corner to corner) and cached by file date, a few at a time so browsing stays quick.
 - **The model page.** The 3D view with the game's textures (or clay, or wireframe), and the
-  inspector's Model (parts, importer options, size, file), Textures, Pose (an animation and a
-  frame, with a slider, stepping and playback; only for models with animations), Generate and
-  Export tabs.
+  inspector's tabs in the order the work happens, in three groups on the rail (each tab's icon
+  with its short name upright under it; icons only when the page is crowded): **Model**
+  (Configure, Model: parts, importer options, size, file; Textures; Pose: an animation and a
+  frame, with a slider, stepping and playback, only for models with animations), **Edit** (Mesh,
+  Displace, Finish, Cut) and **Export**. Since 0.43.0:
+  - *One place chooses the model worked on*: the Show buttons under the 3D view (Original,
+    Enhanced, Finished, Pieces). Finish, Cut and Export say "Working on: Enhanced · change" (the
+    link puts the keyboard on those buttons and makes them flash). Finish and Cut show a choice
+    of their own only while the view shows a model they can't take (Finish: Finished or Pieces;
+    Cut: Pieces), kept as they last used it.
+  - *Explanations fold away*: each tab's opening paragraph (Mesh, Displace, Finish, Cut, Paint)
+    shows its first sentence, with the rest open until that tab's job has run once (the
+    `tipsOpen` preference); ⓘ beside the heading opens it again.
+  - *A Next strip* under each result opens the next tab: Mesh → Displace; Displace → Export or
+    Finish; Finish → Cut or Export; Cut → Export; Export → Open in Model Painter.
+  - Toasts show at the top right of the 3D view, never over the buttons under it. The footer
+    stays one row: without room for every view button, shading, edges and the view's turns fold
+    into one *View* menu. Under a 1440 px window the game's tree beside the menu folds as a model
+    opens and comes back on the way back (opening or folding it there by hand is remembered for
+    model pages, `catPanelModel`).
+  - The Displace tab names its per-material columns (Texture, Strength); the Export tab shows its
+    folder as the last two parts of the path (the whole path in its tooltip and while editing).
   Meshes travel to the page in a packed binary form (`app/meshpack.py`) split at UV seams and
   grouped by material.
+- **The handoff to Model Painter (0.43.0).** Print finishing and painting move to Model Painter
+  (github.com/DrFlGd/Model-Painter). The Export tab's *Export for Model Painter* writes the model
+  shown as a GLB with its textures and materials, Y up, in metres, named
+  `<model>_for_painter.glb` (the `painter` preset of the `export` command), and *Open in Model
+  Painter* (beside *Show in folder*) starts Model Painter with the file, which opens it as the
+  model it was started with. Where Model Painter is: Settings › Model Painter, or found by
+  itself (`app/painter.py`: the per-user installer's folder, Program Files, or the portable
+  zip's folder beside Dark STL's own or in Downloads). The engine checks the program and the
+  file (`painter_target`); the desktop app's window starts it (`desktop/src/main.rs`), and
+  `darkstl gui` and the local server start it from the engine (`painter_open`).
 - **Safety.** The server listens on 127.0.0.1 only, checks the Host header (against DNS
   rebinding) and needs a token written into the page, so other web pages can't use it.
 
@@ -286,6 +318,313 @@ they need; properties of types it does not know are kept as bytes and skipped by
   to; the result is cached per archive. Members are listed under the pseudo path
   `<pack>.archive\<hash>.mesh`. Collecting extracts them under their depot paths, so the copies
   read like a WolvenKit export.
+
+### Reading Grand Theft Auto files
+
+The series runs on three engines, and each gets one importer family. The plan below was worked
+out from the published format descriptions (gtamods.com wiki), librw (MIT, the RenderWare
+reimplementation behind re3), CodeWalker (MIT, GTA V), and OpenIV, SparkIV, DragonFF and
+Sollumz as cross-checks (GPL or closed: read for layouts only, nothing copied). No game key
+is shipped: where an archive is encrypted, the key is found in the user's own executable at
+scan time and kept in the settings folder, as the Oodle library is.
+
+| Games | Engine | Archives | Models | Textures | Animations | Names |
+| --- | --- | --- | --- | --- | --- | --- |
+| GTA III, Vice City, San Andreas (PC) | RenderWare 3.1-3.6 | `.img` with a `.dir` beside it (III, VC) or `VER2` single file (SA), loose files in `models/` | `.dff` | `.txd` | `.ifp` (`ANPK` III/VC, `ANP3` SA) | `.ide` definitions, `.gxt` text |
+| GTA IV, Episodes from Liberty City | RAGE, first generation | `IMG3` archives (`pc/models/cdimages`, `pc/data/maps`), table encrypted with AES-256 | `.wdr`, `.wdd`, `.wft` (RSC5) | `.wtd` | `.wad` | `.gxt`, `.ide` |
+| GTA V (Legacy, then Enhanced) | RAGE, second generation | `.rpf` version 7: open, AES or NG encrypted; DLC packs in `update/x64/dlcpacks` | `.ydr`, `.ydd`, `.yft` (RSC7) | `.ytd` | `.ycd` | `.gxt2`, `vehicles.meta`, `.ymt` |
+| Trilogy Definitive Edition | Unreal Engine 4.26 | `.pak` | through the Unreal readers | | | string tables |
+
+#### RenderWare: GTA III, Vice City, San Andreas (`importers/renderware/`)
+
+- **Chunks.** Every RenderWare file is a tree of chunks: `type`, `size`, `library id` (u32
+  each), then `size` bytes. The library id encodes the RenderWare version
+  (`((id >> 14) & 0x3ff00) + 0x30000 | ((id >> 16) & 0x3f)`, or `id << 8` for the oldest
+  files): 3.1/3.2 in III, 3.3/3.4 in VC, 3.6 in SA. Layouts that changed with the version are
+  picked from it, not from the game. Unknown chunks are skipped by their size, so plugins we
+  don't read (collision, 2D effects, reflections, night colours) cost nothing.
+- **Archives.** III and VC: `gta3.dir` holds 32-byte entries (offset and size in 2048-byte
+  sectors, a 24-byte name) for the raw `gta3.img`. SA: `VER2`, a count, then the same entries
+  with the size split into two u16s. Members are addressed as pseudo paths
+  `<archive>.img/<name>.dff` (as RE Engine pak entries are), so the library, previews,
+  packages and Collect work unchanged. `player.img` (SA clothes) and `cutscene.img` are read
+  the same way.
+- **Models (`.dff`).** A Clump holds a Frame List (per frame a 3x3 rotation, a position, a
+  parent index, with a name and an HAnim bone id in its extensions), a Geometry List and
+  Atomics (a frame and a geometry each). A Geometry has flags (positions, normals, prelit
+  colours, one or two UV sets), triangles stored as `v1, v0, material, v2` (u16), one morph
+  target with the positions and normals, a Material List (colour, texture name and mask name,
+  material effects) and, for peds, the Skin plugin: bone indices and weights for four bones
+  per vertex and an inverse bind matrix per bone (each preceded by `0xDEADDEAD` before 3.4).
+  Game space is right-handed, Z up, metres, as Dark STL's: nothing is rotated. Each atomic is a
+  part, placed by its frame; geometry without normals gets them averaged.
+- **Textures (`.txd`).** A Texture Dictionary of Texture Natives: platform 8 (Direct3D 8, III
+  and VC) or 9 (Direct3D 9, SA), name, mask name, raster format, size, mip count, then the
+  palette (PAL8 or PAL4) and each level's pixels. Rasters are DXT1/3/5 (decoded through
+  `texture2ddecoder` like the other importers), 8-bit paletted, or raw 8888, 888, 1555, 565,
+  4444 and LUM8, in BGRA order. All are colour textures in sRGB. The games have no normal maps,
+  so Displace uses the grayscale-height path from the colour texture.
+- **Which textures a model uses.** The model's line in an `.ide` file names its `.txd`; SA's
+  `txdp` sections chain dictionaries to parents; vehicles also read `vehicle.txd`, and anything
+  still missing is looked up in `generic.txd`, then in any dictionary of the archive by name
+  (with a note on the model saying the match was guessed).
+- **Kinds and groups.** `gta.dat` (`default.dat` first) lists the `.ide` files. Their sections
+  decide the kind: `peds` → Characters (group from the ped type: civilians, gangs, cops,
+  special and cutscene characters), `cars` → Vehicles (group from the type: car, bike, boat,
+  heli, plane, trailer), `weap` → Weapons, `objs`/`tobj`/`anim` → Map pieces and props, grouped
+  by the `.ide` file's area (`data/maps/LA/...`, `SF`, `vegas`, `generic`), `hier` →
+  Cutscene objects. The `.ipl` files say where each map object is placed; the scan uses them to
+  list the objects each map area places. A `.dff` no `.ide` names (SA's `player.img` clothes,
+  upgrades, `_l` LODs) goes under Other, low-detail copies hidden as for other games.
+- **Vehicles.** A car's frames name its pieces (`chassis`, `door_lf_hi_ok`, `bonnet_dummy`,
+  `wheel_rf_dummy`...). Each atomic is a part placed by its frame; `_dam` (damaged) and `_vlo`
+  (low detail) parts are switched off by default. The game copies the one wheel to every
+  `wheel_*_dummy` (mirrored on the left), and so does the importer. Paint: materials coloured
+  with the placeholder colours (primary 60,255,0 and secondary 255,0,175; SA adds 0,255,255
+  and 255,0,255) take the car's colours from `carcols.dat`; each colour pair is a variant, and
+  the material colour is baked into the colour texture so the package and exports carry it.
+- **Animations (`.ifp`).** III and VC: `ANPK` blocks (`INFO`, `NAME`, `DGAN`, per bone `CPAN`
+  `ANIM` then `KR00`/`KRT0`/`KRTS` key frames: quaternion, position, scale, time). SA: `ANP3`
+  with 24-byte names, per bone a frame type, a frame count and an HAnim bone id, frames as
+  floats or compressed int16 (quaternion / 4096, position / 1024, time / 60). Peds share the
+  skeleton, so `ped.ifp` poses every ped (bones matched by HAnim id in SA, by name in III/VC);
+  other `.ifp` files (`anim/*.ifp`, SA's `anim.img`) add their animations to the peds that use
+  them (the `.ide`'s animation file).
+- **Names.** Vehicles' `.ide` lines carry a text key resolved through the game's `.gxt`
+  (III: `TKEY`/`TDAT` UTF-16; VC: tables; SA: version 8 tables keyed by the CRC32 of the key),
+  so `landstal` shows as "Landstalker". Weapons get their names from the `.gxt` weapon keys
+  where there is one; peds and map pieces keep their model names.
+- **Differences between the three games** (archive version, IFP and GXT format, colour
+  placeholders, executable and folder layout, where `ped.ifp` lives) are a game profile each.
+  They are written as JSON in the format of the game profiles from 0.49.0 (`importers/profiles/`,
+  engine backend `renderware`), so a profile override in the settings folder works for them
+  too. Bully: Scholarship Edition and Manhunt are RenderWare games that could follow with a
+  profile and their own archive readers.
+- **Collect.** A package keeps the mesh with its parts and skeleton, the baked paint variants,
+  every texture the model reads (its dictionary, parents, `vehicle.txd` and `generic.txd`
+  entries), the sampled `.ifp` animations for peds, and the in-game name. "Game files" Collect
+  extracts the members from the archives under `models/<archive>/<name>` and copies the data
+  files the importer reads (`gta.dat`, the `.ide` files, `carcols.dat`, the `.gxt`, the
+  `.ifp` files), so the collected folder reads like a game folder.
+
+#### RAGE: GTA V and GTA IV (`importers/rage/`)
+
+GTA IV and V share most of the resource design, so one package holds both, with the
+generation-specific layouts side by side.
+
+- **RPF7 archives (GTA V).** Header: magic `RPF7`, entry count, names length, encryption
+  (`0` or `OPEN` none, `0x0FFFFFF9` AES, `0x0FEFFFFF` NG). The entry table (16 bytes each:
+  directories with their first child and count; files with a name offset, size and offset in
+  512-byte blocks, and for resources the system and graphics flags) and the names follow,
+  encrypted as the header says. Files inside are encrypted the same way, and archives nest
+  (`x64v.rpf/models/cdimages/componentpeds_p.rpf/...`), which the pseudo paths follow.
+  The NG cipher picks one of 101 keys by the JOAAT hash of the file name plus its length and
+  runs 17 table rounds. The AES key, the 101 NG keys and the decryption tables are found in
+  the user's `GTA5.exe` by searching for blocks whose SHA-1 matches the hashes CodeWalker
+  publishes (MIT), once, and kept in the settings folder; Settings > Rockstar games can point
+  to the executable when the install isn't the added folder. If the search fails (a patched or
+  protected executable), the folder note says so, and a folder of files exported with OpenIV
+  or CodeWalker still works, since exported resources are not encrypted.
+- **IMG3 archives (GTA IV).** Magic `0xA94E2A52`, entry table (size, resource type, offset,
+  sizes) and names, encrypted with AES-256 (ECB, applied 16 times). The key is found in
+  `GTAIV.exe` / `EFLC.exe` the same way.
+- **Resources.** RSC7 (V) and RSC5 (IV): a header with the resource version and the sizes of
+  the system and graphics parts (encoded in flags), then the data deflated (zlib). Pointers in
+  the data point into those parts (`0x5xxxxxxx` system, `0x6xxxxxxx` graphics), and one reader
+  follows them for every resource type.
+- **Drawables (`.ydr`, `.wdr`).** A shader group (each shader's parameters name its textures:
+  `DiffuseSampler`, `BumpSampler`, `SpecSampler`; V can embed a texture dictionary), a
+  skeleton (bones with rotation, translation, scale, parent and bone tag), and up to four
+  levels of detail; the high one is read. Each geometry has a vertex declaration (which of
+  position, blend weights, blend indices, normal, colours, UVs and tangent are present, and in
+  what format) and a u16 index buffer. Game space is right-handed, Z up, metres.
+- **Dictionaries and fragments.** `.ydd`/`.wdd` hold several drawables by name hash: GTA V
+  ped components (`head_000_r`, `uppr_001_u`, `lowr_000_u`, `feet_*`, `hair_*`, `accs_*`...).
+  `.yft`/`.wft` fragments are vehicles and breakable props: a main drawable with the skeleton
+  plus child pieces, each a part (doors, bonnet, wheels at their bones; damaged and low-detail
+  pieces off by default).
+- **Textures (`.ytd`, `.wtd`).** Dictionaries of textures with name, size, mip count and
+  Direct3D format (DXT1/3/5, BC5 for normal maps, BC7 in V, A8R8G8B8, L8), decoded like DDS.
+  A model finds its textures in its own or embedded dictionary, then the parents named in
+  `gtxd.meta` (V) or the `.ide` (IV), then the shared `vehshare` dictionaries for vehicles.
+  Normal maps' green direction is found on real files and set per game (auto-detect until then).
+- **Peds as combinable components.** A ped is its skeleton plus one drawable per component
+  slot, each with texture variants (`uppr_diff_000_a_uni`, `_b_`...). The ped's variation file
+  (`.ymt`, PSO binary in V) lists what goes together; Dark STL lists each ped as a configurable
+  model (see Configurable models): a slot per component, options for each drawable and texture
+  variant, assembled on its shared skeleton and posed together. GTA IV peds work the same way
+  from their `.wdd`, with fewer slots.
+- **Animations.** V: `.ycd` clip dictionaries (animations as sequences of compressed channels:
+  quantised floats, cached quaternions, linear and constant tracks), bones matched by bone tag.
+  IV: `.wad` dictionaries. Ped animations are found by the clip sets the ped uses and offered
+  on the Pose tab.
+- **Kinds, groups and names.** From the archive path: `componentpeds`, `streamedpeds`,
+  `cutspeds` → Characters; `vehicles.rpf` and DLC vehicle archives → Vehicles (group by class
+  from `vehicles.meta`); `weapons.rpf` → Weapons; `props` → Props; `levels/gta5/...` → Map
+  pieces grouped by area. Display names from `.gxt2` (hash of the key, then UTF-8 text) for the
+  `gameName` in `vehicles.meta` and the weapon names in `weapons.meta`; GTA IV from its `.gxt`.
+  Weapon attachments (`weaponcomponents.meta`) become configurable weapons, as Cyberpunk's do.
+- **Scale.** GTA V's archives hold over 100,000 drawables. The scan reads only archive tables
+  (cached per archive, like Cyberpunk's), and the library lists without opening resources.
+- **Enhanced edition.** GTA V Enhanced (2025) keeps RPF7 but changes some resource layouts
+  (textures, shaders). Legacy comes first; Enhanced's layouts are added once checked on files.
+- **Collect.** A package keeps each model as for other games (a ped's chosen components and
+  every texture variant, a vehicle's parts and paint, sampled animations). "Game files" Collect
+  extracts the members decrypted and still compressed as RSC files under their archive paths,
+  as OpenIV exports them, plus the `.meta`, `.ymt` and `.gxt2` files the importer reads.
+
+#### Trilogy Definitive Edition
+
+The Definitive Edition is Unreal Engine 4.26 with encrypted `.pak` files. It comes in through
+the generic Unreal importer and a game profile (0.49.0); its AES key goes in Settings > Unreal
+games like Returnal's. Nothing GTA-specific is planned for it unless its folder layout needs
+more than a profile.
+
+#### Phases
+
+1. **Plan** (this section).
+2. **RenderWare trilogy (0.50.0).** Archives, `.dff`, `.txd`, `.ide`, `.ipl` areas, `.ifp`
+   posing for peds, vehicles with parts and paint, `.gxt` names, profiles for III, VC and SA,
+   Collect and packages. Needs nothing else; uses 0.49.0's profile format.
+3. **GTA V (0.51.0).** RPF7 and keys from the executable, RSC7, `.ytd`, `.ydr`, `.ydd` peds as
+   configurable models, `.yft` vehicles, `.gxt2` and `.meta` names, then `.ycd` posing. Legacy
+   first, Enhanced after a check on real files.
+4. **GTA IV and Episodes (0.52.0).** IMG3, RSC5 and the `w*` resources, on the shared RAGE
+   reader. Comes after GTA V lands, since most of its code is shared.
+5. **Definitive Edition**: a profile on the generic Unreal importer, when someone has the files.
+
+Everything is first built and tested on byte-built files (`tests/synth_rw.py`,
+`tests/synth_rage.py`); each PR says what has only been checked that way.
+### Reading id Tech 6/7/8 files (DOOM, DOOM Eternal, DOOM: The Dark Ages)
+
+Planned (requested by Jerred on 2026-11-09); built in three releases, one per game, by a single
+importer, `importers/idtech/`, with a profile per game. The layouts below were worked out from
+[Valen](https://github.com/jandk/valen) (Jan De Kock, MIT: DOOM Eternal and The Dark Ages, the
+most complete reader of these games' models, textures and animations), EntityAtlan
+(FlavorfulGecko5, MIT: The Dark Ages' containers, StreamDB and Oodle use), EternalResourceExtractor
+and SAMUEL (Eternal's `.resources` and `.streamdb`, GPL: read only as a cross-check) and DOOMExtract
+(emoose: DOOM 2016's `.index`/`.resources`). Dark STL re-implements them; no code is copied. All
+values are little-endian unless said otherwise.
+
+| Game | Engine | Folder recognised by | Containers | Compression | Oodle |
+| --- | --- | --- | --- | --- | --- |
+| DOOM (2016) | id Tech 6 | `DOOMx64vk.exe` / `DOOMx64.exe`, `base/*.index` | `.index` (table) + `.resources` + `.patch` / `_NNN.patch` | raw deflate (entry sizes differ) | not needed |
+| DOOM Eternal | id Tech 7 | `DOOMEternalx64vk.exe`, `base/packagemapspec.json` | `IDCL` v12 `.resources`, `.streamdb` | Oodle Kraken | `oo2core_8_win64.dll` beside the exe |
+| DOOM: The Dark Ages | id Tech 8 | `DOOMTheDarkAges.exe`, `base/packagemapspec.json` | `IDCL` v13 `.resources`, `.streamdb` | Oodle Kraken / Leviathan | none shipped (built into the exe): Eternal's `oo2core_8`, any `oo2core_9_win64.dll`, or Settings › Oodle |
+
+**Containers (Eternal, The Dark Ages).** `base/packagemapspec.json` lists every container
+(`files`), the maps (`maps`) and which files each map loads (`mapFileRefs`); `common`,
+`warehouse` (and `init` in The Dark Ages) hold what every map shares, each level's own files
+hold the rest. A `.resources` file starts with an `IDCL` header (version 12 or 13, one segment,
+counts of resources, dependencies, dependency indices and string indices, the string table size,
+and 64-bit offsets of the string table, meta entries, resource entries, dependencies, special
+hashes and data; version 12 adds a 64-bit meta size). Each 144-byte resource entry holds the
+index of its strings, the data's offset, stored and full size, checksum, time stamp, its
+`defaultHash` (which keys its streamed data, below), a version, flags, the compression mode
+(0 stored, 1 zlib, 2 Kraken, 4 Kraken behind a 12-byte chunk header, 5 Leviathan, 6 BCPack) and a
+platform variation. The string table is a count, 64-bit offsets and null-terminated strings;
+an entry's type is `strings[stringIndex[e.strings]]` and its name `strings[stringIndex[e.strings + 1]]`.
+Names are resource paths with options after `$` (`models/monsters/imp/imp_albedo.tga$bc7srgb$mtlkind=albedo`).
+The same resource sits in several containers (a copy per level, older copies in patches);
+`generated/buildgame/container.mask` in `meta.resources` gives, per container (keyed by the
+FarmHash64 fingerprint of its entry table), a bit per entry saying which copies are live. Dark
+STL indexes each game once (types, names, where each live copy is; kept in the importer's cache
+keyed by the containers' sizes and dates) and reads an entry when a model needs it.
+
+**StreamDB.** Large data is kept outside the containers, in `.streamdb` files (magic
+`0x61C7F32E29C2A550`, a header with the entry count and flags, then entries of a 64-bit id, a
+32-bit offset in 16-byte units and a 32-bit length): the full levels of detail of every model's
+geometry and the large mips of every texture. A piece is Oodle-compressed when its stored length
+differs from the size the resource expects. Ids are derived from the resource's `defaultHash`:
+in Eternal `defaultHash << 4 | n` (n = level of detail for geometry, `mipCount - mipLevel` for a
+texture mip); in The Dark Ages a boost-style `hash_combine` of the hash with MurmurHash3's
+`fmix64` of two small numbers (the stream's index, 0).
+
+**Textures (`image`, BIM).** Magic `BIM` and a version byte (21 in Eternal, 24 and later in The
+Dark Ages, which adds a byte), the texture type (2D, 3D, cube), its material kind (albedo,
+specular, normal, smoothness, cover, mask...), width, height, depth, mip count, the albedo
+specular scale and bias, the format (an enum: BC1/BC3/BC4/BC5/BC6H/BC7, their sRGB forms,
+RGBA8, RG8, R8, half and float formats), whether it is streamed and how many of its mips sit in
+the StreamDB; then a 36-byte record per mip (40 in The Dark Ages, with depth) and the mips kept
+in the container. Decoded through `texture2ddecoder` and wrapped as DDS for packages like the
+other importers. Albedo is sRGB; normal maps are two-channel BC5 (Z rebuilt), their green
+direction to be found on a known flat sample and set in the profile.
+
+**Static models (`model`, `.lwo` names: props, pickups, map pieces).** A header (reference
+point, level-of-detail count, surface count, deviations, streamable), per surface the material
+decl name and up to five levels of detail (vertex and index counts, a vertex mask naming the
+attributes, bounds, position offset and scale, UV offset and scale), lightmap settings and
+decal projections. Small models keep their one level inline; streamable ones keep, per level,
+memory layouts (one per combination of attributes: each attribute's stream offset and the index
+offset) and a disk layout (compression, sizes) of a StreamDB piece. Attributes: positions as
+three 16-bit unsigned normals times scale plus offset (or floats), normal and tangent as signed
+bytes with the tangent's sign in the last byte, UVs as 16-bit unsigned normals or floats with
+their own scale and offset, colour, lightmap UVs; 16-bit indices. Space is Z up, already
+right-handed; the unit (id units, taken as inches) is set in the profile and checked against a
+character of known height.
+
+**Skinned models (`baseModel`, `.md6mesh` names: monsters, characters, weapons).** A header
+naming the skeleton (`.md6skl`), a joint remap table, bounds, per mesh its name, material decl
+and five levels of detail (as above), material infos, decal data, and per level a memory and disk
+layout of its StreamDB piece. Skin weights for four joints are packed into the spare bits of the
+normal and tangent bytes, joint indices into the colour attribute (4, 6 and 8 joints have
+their own attributes), and indices go through the remap table plus the mesh's joint offset.
+**Skeletons (`skeleton`, `.md6skl`)**: a header of 16-bit offsets, then per joint (padded to a
+multiple of 8) a local rotation (quaternion), scale and translation, the parent table, the
+inverse bind matrices (3x4) and the names. **Animations (`anim`, `.md6anim`)**: the skeleton's
+name, bounds, frame count and rate, constant rotations, scales and translations for the joints
+that don't move, RLE joint lists, and frame sets, each holding every animated joint's first value,
+a bit per frame saying where a key is, and the keys; rotations are 48-bit "smallest three"
+quaternions. The Dark Ages streams long animations (a stream info and disk layout like geometry).
+Animations are matched to a model by skeleton name; the list is built once per game and cached.
+
+**Materials (`generated/decls/material2/<name>.decl`).** Text decls in id's syntax
+(`{ inherit = "...", edit = { RenderLayers = { item[0] = { parms = { albedo = { filePath = ... } } } }, Parms = {...} } }`),
+inheriting from parents that are merged in. Texture roles come from the parm names:
+`albedo`/`decalalbedo`/`hairalbedomap`... → albedo, `normal`/`decalnormal`... → normal,
+`specular`, `smoothness`, `bloommaskmap`. The image a parm names is found by its path, choosing
+among the resource's `$`-option variants the one whose `$mtlkind=` matches the role.
+
+**DOOM (2016).** `base/*.index` files start with `RES` and a version byte, then (big-endian)
+the entry count and per entry an id, three length-prefixed strings (type, name, path), the
+offset, size and stored size, and the number of the file the data is in (0 `.resources`,
+1 `.patch`, n `_00n.patch`); stored size ≠ size means raw deflate. Its models (`bmd6model`,
+`bmodel`), textures (`bimage`) and animations are earlier versions of the formats above, but no
+open reader for the retail game exists: Phase 2 starts from a handful of Jerred's files (one
+monster, one weapon, one prop, their textures) and pins the differences from Eternal's layouts.
+
+**Catalog.** Models are sorted by their resource path: `md6/monsters/<name>/...` and
+`md6/characters/...` → Characters, group by monster; `md6/player/...` → Characters › Player;
+`md6/weapons/<name>/...` (first-person) and `models/weapons/...` → Weapons, group by weapon;
+`models/pickups/...` → Objects › Pickups; `models/props/`, `models/mapobjects/` → Objects;
+architecture and level geometry → Map Pieces; gore, wound and lower-detail copies hidden by
+default. Paths not matching a rule fall back to their first folder. In-game names come from the
+`entityDef` decls (`generated/decls/entitydef/...`, whose render model names the md6) and the
+`.blang` string tables (`strings/english.blang`) through the names hook (R2).
+
+**Collect and packages.** Model packages (the default) hold the mesh, skeleton, weights,
+materials, textures (as DDS) and sampled animations, so nothing of the game is needed. *Game
+files* writes each resource a model reads, decompressed, under its resource name in
+`<library>/<game>/`, with its StreamDB pieces (decompressed, `streamdb/<id>.bin`) and a small
+index of the entries' types, hashes and sizes, so the copies open without the game and without
+Oodle; the importer reads such a folder like an install.
+
+**Layout.** `importers/idtech/`: `formats/` (`resources.py` IDCL containers and the container
+mask, `index6.py` DOOM 2016's `.index`, `streamdb.py`, `image.py`, `geometry.py` vertex masks
+and streams, `staticmodel.py`, `md6model.py`, `md6skel.py`, `md6anim.py`, `decl.py` the decl
+parser), `games.py` (the three profiles: executable, container version, hash scheme, unit,
+normal green, what is shared; read from R7's JSON profiles once those land), `store.py` (a
+game's index: names → live copies, streamed pieces, loose extracted files), `materials.py`,
+`catalog.py`, `animation.py` (poses for the Pose tab and packages) and `__init__.py`.
+
+**Phases.** 0.53.0 DOOM Eternal (containers, mask, StreamDB, images, static and skinned models,
+skeletons, animations, materials, catalog, names, Collect, packages); 0.54.0 DOOM (2016) (its
+`.index` and the older layouts, from Jerred's samples); 0.55.0 DOOM: The Dark Ages (version 13
+containers, new stream ids, the changed image, model and animation layouts; Valen reads them, so
+this is mostly a profile and the differences). Every format is tested on byte-built files.
+Risks: Oodle for The Dark Ages (no DLL in its folder; Eternal's or another `oo2core` needed, said
+in the app when missing); BCPack entries (consoles) are skipped; id's unit and the normal-map
+green direction are confirmed on the first real files; DOOM 2016 depends on samples.
 
 ### Step 1: even vertex spacing
 
@@ -447,7 +786,7 @@ give closed meshes).
 | STL (binary or ASCII) | Geometry only, Z up, millimetres by default |
 | OBJ + MTL + PNG | Geometry, UVs, one material per game material with its albedo map, Y up |
 | PLY (binary) | Geometry and normals |
-| GLB | Geometry, UVs and embedded albedo textures |
+| GLB | Geometry, UVs and embedded albedo textures, Y up, in metres (glTF's unit); *For Model Painter* is this, named `<model>_for_painter.glb` |
 
 Units can be mm, cm, m or inches; the game's own scale is metres.
 
@@ -494,7 +833,8 @@ src/darkstl/
   export.py     STL, OBJ, PLY, GLB writers
   cli.py        command line
   app/          the desktop app: service.py (the page's commands), server.py (local web
-                server), meshpack.py (meshes for the 3D view), config.py, desktop.py (window)
+                server), meshpack.py (meshes for the 3D view), config.py, desktop.py (window),
+                painter.py (where Model Painter is, and opening an export in it)
   web/          the page: Model Library's interface (styles.css, ui/ layout, inspector,
                 menus) with Dark STL's pages: home.js, browser.js, modelpage.js, configure.js,
                 settings.js
@@ -559,6 +899,9 @@ differs:
       model as tiles, groups, search, previews (on Model Library's interface)
 - [x] Collect into the app: the files chosen models need (model, textures, animations) copied
       into the app's own library folder, so the game's install isn't needed afterwards
+- [x] The model page in the order the work happens (0.43.0): the rail's Model, Edit and Export groups,
+      one picker for the model worked on, explanations folded once used, a Next strip, a one-row footer,
+      and the handoff to Model Painter (For Model Painter GLB, Open in Model Painter)
 - [ ] In-game names (weapon, armor and enemy names from the game's text and param files)
 - [ ] Batch queue: enhance and export a whole group with one set of settings
 - [ ] Read Elden Ring MATBIN files for exact material maps
@@ -604,6 +947,28 @@ The plan in the backlog entry below, built in stages:
       (UModel, FModel) importers beside OBJ, PSK materials' textures found through the tools' material
       files, and every loose picture in such a folder offered by the texture picker and kept by "Every
       texture of the game"
+
+### Phase 6: Grand Theft Auto
+
+The plan is in Reading Grand Theft Auto files above.
+
+- [x] Plan: formats, importer layout, kinds and names, Collect, phases
+- [ ] RenderWare trilogy: GTA III, Vice City, San Andreas (0.50.0)
+- [ ] GTA V: RPF7 with keys from the executable, peds as configurable models, vehicles, posing (0.51.0)
+- [ ] GTA IV and Episodes from Liberty City on the shared RAGE reader (0.52.0)
+- [ ] Trilogy Definitive Edition as a profile on the generic Unreal importer
+- [ ] Check each on Jerred's installs
+
+### Phase 7: DOOM (id Tech 6/7/8)
+
+The plan is in Reading id Tech 6/7/8 files above.
+
+- [x] Plan: containers, StreamDB, formats per game, importer layout, kinds and names, Collect, phases
+- [ ] DOOM Eternal: `.resources` and `.streamdb` with the game's Oodle, textures, static and skinned
+      models, skeletons, animations on the Pose tab, materials from decls (0.53.0)
+- [ ] DOOM (2016): its `.index`/`.resources`/`.patch` and the older layouts, from Jerred's samples (0.54.0)
+- [ ] DOOM: The Dark Ages: version 13 containers, its stream ids and changed layouts (0.55.0)
+- [ ] Check each on Jerred's installs
 
 ### Backlog (on hold)
 
