@@ -218,3 +218,22 @@ def test_a_locked_pak_of_an_unnamed_game_says_where_its_key_goes(home, tmp_path)
     found = imp.scan(root, "Lockbox")
     notes = imp.folder_notes(root, found)
     assert found == [] and any("Settings under Unreal games" in n for n in notes)
+
+
+def test_every_shipped_profile_is_packaged():
+    """Each shipped profile matches a [tool.setuptools.package-data] pattern, so wheels (and the Windows app,
+    built from a non-editable install) carry it."""
+    import re
+    from pathlib import Path
+
+    import darkstl
+
+    pkg = Path(darkstl.__file__).parent
+    text = (Path(__file__).parents[1] / "pyproject.toml").read_text("utf-8")
+    block = re.search(r"\[tool\.setuptools\.package-data\]\s*darkstl\s*=\s*\[(.*?)\]", text, re.S)
+    assert block, "no package-data for darkstl in pyproject.toml"
+    patterns = re.findall(r'"([^"]+)"', block.group(1))
+    packaged = {p for pattern in patterns for p in pkg.glob(pattern) if p.is_file()}
+    shipped = list((pkg / "importers").glob("profiles/*.json")) + list((pkg / "importers").glob("*/profiles/*.json"))
+    assert shipped and profiles.SHIPPED in {p.parent for p in shipped}
+    assert [p.relative_to(pkg).as_posix() for p in shipped if p not in packaged] == []

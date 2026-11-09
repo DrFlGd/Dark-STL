@@ -37,7 +37,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 darkstl = ["web/**/*", "importers/fromsoft/filelists/*", "importers/reengine/filelists/*",
-           "importers/*/configurations/*.json", "importers/*/profiles/*.json"]
+           "importers/*/configurations/*.json", "importers/profiles/*.json", "importers/*/profiles/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
