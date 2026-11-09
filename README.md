@@ -33,7 +33,7 @@ Importing is modular: each game family has its own importer, and everything afte
 Dark Souls III, Sekiro, Elden Ring), Cyberpunk 2077 files, Capcom RE Engine files (Resident Evil
 2, 3, 4, 7 and Village, Devil May Cry 5), Borderlands (Borderlands, Borderlands 2, The
 Pre-Sequel, Borderlands 3, Tiny Tina's Wonderlands, Borderlands 4), Returnal, Grand Theft Auto III,
-Vice City, San Andreas and V, and Wavefront OBJ are supported today.
+Vice City, San Andreas, IV and V, and Wavefront OBJ are supported today.
 
 ## Install
 
@@ -158,6 +158,16 @@ neither.
   `gtxd.meta` and the shared vehicle dictionaries. Files exported with OpenIV or CodeWalker (`.ydr`,
   `.ydd`, `.yft` with their `.ytd`) open too, without the keys. Vehicle paint colours aren't applied
   yet (painted panels show their base texture).
+
+- **Grand Theft Auto IV (PC, with The Lost and Damned and The Ballad of Gay Tony):** add the game's
+  install folder as it is (the one with `GTAIV.exe`). Models (`.wdr`, `.wdd`, `.wft` with their
+  `.wtd` textures) are read straight from the `.img` archives in `pc\models\cdimages` and
+  `pc\data\maps`. The archives' tables are encrypted with a key that is in `GTAIV.exe`: Dark STL
+  doesn't include it, but finds it there the first time and keeps it in its settings folder
+  (`keys\gta4.bin`). The game's `.ide` files and `american.gxt` sort and name the vehicles; peds are
+  outfits of their components, as in GTA V; the episodes' models are listed with the base game's,
+  their groups named after the episode. GTA IV's animations aren't read yet, so its characters
+  can't be posed. Files exported with OpenIV or SparkIV open too.
 
 - **Posing Unreal 4/5 models** (Returnal, Borderlands 3, Wonderlands, Borderlands 4): a skeletal
   mesh can be posed on the Pose tab with every `AnimSequence` made for its `Skeleton` asset. The

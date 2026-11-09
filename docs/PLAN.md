@@ -39,7 +39,7 @@ importer and registering it in `importers/__init__.py`:
 | FBX | `.fbx`, binary (6.1 to 7.7) and text, as Blender, Maya, 3ds Max, Unreal and the modding tools write it, read by Dark STL's own reader (`importers/fbx/`): every mesh the scene places (a part per mesh and material), the file's axes and units turned into metres with Z up, materials' textures from the paths the file stores, by name in the export folder, or embedded in the file; skin clusters as skin weights with the skeleton and bind pose, and the file's animation stacks for the Pose tab and packages | Synthetic files (0.49.0) |
 | ActorX PSK/PSKX | UModel's and FModel's exports of Unreal models: points, wedges, faces and materials, mirrored from Unreal's frame like the Unreal games' own models; each material's textures found by name beside the model, from UModel's `.mat`, FModel's `.json` and UModel's `.props.txt` material files, then from texture names like the material's. The skeleton isn't read | Synthetic files (0.35.0) |
 | RenderWare (GTA III, Vice City, San Andreas) | `.img` archives (with `.dir`, or `VER2`) read in place, `.dff` models (parts placed by frames, skins, vehicles with their wheels copied to every axle and their colours from `carcols.dat` as variants), `.txd` textures (DXT, paletted and raw rasters), `.ifp` animations for peds, `.ide`/`.ipl`/`.gxt` for kinds, areas and vehicle names. Per-game differences are JSON profiles in `importers/profiles/` (`gta3`, `gtavc`, `gtasa`), read by the shared profile loader. See Reading Grand Theft Auto files | Synthetic files (0.50.0) |
-| RAGE (GTA V, then GTA IV) | GTA V: `.rpf` v7 archives (open, AES, NG, nested) with keys found in the user's `GTA5.exe`, RSC7 resources in the original and the Enhanced layouts: `.ydr` drawables, `.ydd` ped components (each ped an outfit), `.yft` vehicles with their wheels, `.ytd` textures, `.ycd` animations, names from `.gxt2` and the `.meta` lists. GTA IV: IMG3 and RSC5 | GTA V synthetic files (0.51.0); GTA IV planned (0.52.0) |
+| RAGE (GTA V, then GTA IV) | GTA V: `.rpf` v7 archives (open, AES, NG, nested) with keys found in the user's `GTA5.exe`, RSC7 resources in the original and the Enhanced layouts: `.ydr` drawables, `.ydd` ped components (each ped an outfit), `.yft` vehicles with their wheels, `.ytd` textures, `.ycd` animations, names from `.gxt2` and the `.meta` lists. GTA IV (and its episodes): IMG3 archives with the key found in `GTAIV.exe`, RSC5 `.wdr`, `.wdd` (outfits), `.wft` (vehicles with their wheels), `.wtd`, names from the `.ide` files and `.gxt` | Synthetic files (0.51.0 GTA V, 0.52.0 GTA IV) |
 | id Tech 6/7/8 (DOOM, DOOM Eternal, DOOM: The Dark Ages) | `.resources` containers (IDCL; DOOM 2016's `.index`) and `.streamdb` with the game's Oodle, BIM textures, `.lwo` static and `.md6mesh` skinned models, `.md6skl` skeletons, `.md6anim` animations, `material2` decls. See Reading id Tech 6/7/8 files | Planned (0.53.0 Eternal, 0.54.0 DOOM 2016, 0.55.0 The Dark Ages) |
 
 An importer implements `can_open` and `load`, and optionally `scan` (to list its models in a
@@ -566,7 +566,12 @@ generation-specific layouts side by side.
   or CodeWalker still works, since exported resources are not encrypted.
 - **IMG3 archives (GTA IV).** Magic `0xA94E2A52`, entry table (size, resource type, offset,
   sizes) and names, encrypted with AES-256 (ECB, applied 16 times). The key is found in
-  `GTAIV.exe` / `EFLC.exe` the same way.
+  `GTAIV.exe` / `EFLC.exe` the same way (SHA-1 of every 4-byte-aligned 32 bytes against the hash
+  SparkIV publishes) and kept as `keys/gta4.bin`. Built in 0.52.0 as `formats/img.py`,
+  `formats/keys4.py`, `formats/rsc5.py` and `formats/drawable4.py`, which reads GTA IV's blocks into
+  the same objects as GTA V's, so the rest of the importer (library, vehicles, outfits, Collect) is
+  shared. The episodes (`TLAD/`, `TBoGT/` in the Complete Edition) are read with the base game, their
+  models' groups named after the episode.
 - **Resources.** RSC7 (V) and RSC5 (IV): a header with the resource version and the sizes of
   the system and graphics parts (encoded in flags), then the data deflated (zlib). Pointers in
   the data point into those parts (`0x5xxxxxxx` system, `0x6xxxxxxx` graphics), and one reader
@@ -612,6 +617,28 @@ generation-specific layouts side by side.
   every texture variant, a vehicle's parts and paint, sampled animations). "Game files" Collect
   extracts the members decrypted and still compressed as RSC files under their archive paths,
   as OpenIV exports them, plus the `.meta`, `.ymt` and `.gxt2` files the importer reads.
+
+#### Mobile and console versions
+
+Jerred asked on 2026-11-09 for the mobile and console releases too, after the PC games. They are
+the same games with different packaging, so each is a profile plus the readers for what differs,
+on the importer of its PC version. The user supplies their own copies: an Android `.obb` or the
+app's data folder, or files dumped from their own discs or consoles; Dark STL ships no keys and
+breaks no copy protection. In order of how much they share with what is built:
+
+| Release | Engine | What differs from the PC version | Work |
+|---|---|---|---|
+| III, Vice City, San Andreas: Android and iOS (War Drum, 2011-2015) | RenderWare | Models are ordinary `.dff` in `.img` archives; textures are not `.txd` but texture databases (`texdb/<name>.txt` listing each texture, with `.dxt`, `.etc`, `.pvr` or `.unc` `.dat`/`.toc` files holding them per GPU). San Andreas mobile is 2.0+ with its own `.img` names | A texture-database reader (DXT as on PC; ETC1 and PVRTC decoders), the `.obb` as a zip folder, profiles. Smallest step |
+| III, Vice City, San Andreas: Xbox | RenderWare | Native geometry (the Xbox native data plugin instead of triangle lists) and Xbox `.txd` rasters (DXT and swizzled RGBA) | Native geometry and raster readers; profiles |
+| III, Vice City, San Andreas: PlayStation 2 | RenderWare | PS2 native geometry (VIF packets of strips, quantised positions) and GS rasters (swizzled, 4/8-bit palettes, PS2 alpha) | The largest RenderWare step: VIF unpacking and GS unswizzling |
+| GTA IV: Xbox 360 and PS3 | RAGE (IV) | Big-endian `.img` (as on PC) holding `.xdr`/`.xtd` (360) or `.cdr`/`.ctd` (PS3); 360 resources compressed with LZX, textures tiled for the GPU | A big-endian reader for the RSC5 blocks (same layout), an LZX decoder, Xbox 360 untiling and PS3 swizzling |
+| GTA V: Xbox 360 and PS3 | RAGE (V) | RPF7 big-endian, `.xdr`/`.cdr` resources, LZX (360), each console's own archive key (in the dumped executable, found by hash as on PC) | As GTA IV's consoles, on the GTA V layouts |
+| GTA V: PS4, Xbox One, PS5, Xbox Series | RAGE (V) | The PC layouts (PS5/Series are Enhanced's), but archives keyed per console and executables encrypted on the console | Only if the user can supply decrypted files; otherwise exported files (which already open) |
+| Definitive Edition (all platforms, mobile included) | Unreal 4 | As the PC Definitive Edition | The generic Unreal importer's profile, as planned above |
+
+Each step is tested on byte-built files first, then on Jerred's own files. The Android releases come
+first (one new reader serves three games), then Xbox, then PS2, then the RAGE consoles (which need
+an LZX decoder and GPU untiling, more work than any one game so far).
 
 #### Trilogy Definitive Edition
 
@@ -1240,8 +1267,10 @@ The plan is in Reading Grand Theft Auto files above.
 - [x] Plan: formats, importer layout, kinds and names, Collect, phases
 - [x] RenderWare trilogy: GTA III, Vice City, San Andreas (0.50.0), on synthetic files
 - [x] GTA V: RPF7 with keys from the executable, peds as configurable models, vehicles, posing (0.51.0), on synthetic files
-- [ ] GTA IV and Episodes from Liberty City on the shared RAGE reader (0.52.0)
+- [x] GTA IV and Episodes from Liberty City on the shared RAGE reader (0.52.0), on synthetic files
 - [ ] Trilogy Definitive Edition as a profile on the generic Unreal importer
+- [ ] Mobile and console versions (see Mobile and console versions above): Android/iOS texture databases
+      first, then Xbox and PS2 RenderWare, then the RAGE consoles
 - [ ] Check each on Jerred's installs
 
 ### Phase 7: DOOM (id Tech 6/7/8)
@@ -1310,6 +1339,10 @@ The plan is in Reading id Tech 6/7/8 files above.
   `_c_`... textures; each component shows its first), the peds' `.ymt` variation files (outfit
   slots come from the component names instead), weapon attachments as configurable weapons,
   map placement (`.ymap`), cloth and damaged vehicle meshes, and the console and mobile releases.
+- GTA IV has only been read from synthetic files so far, so the key search has not yet run on a
+  real `GTAIV.exe`. Not done yet: posing (its `.wad` animations aren't read; characters open in
+  their bind pose), vehicle paint, ped texture variations, weapon names (weapons keep their model
+  names), map placement (`.wpl`), and the Xbox 360 and PlayStation 3 files.
 - Of the real game files, Dark Souls Remastered weapons and Bloodborne characters, objects and
   armour have been loaded so far (Phase 1). The RE Engine importer has only seen synthetic files.
 - RE Engine: `.pak` archives with an encrypted table of contents (Monster Hunter Wilds and later)

@@ -216,18 +216,21 @@ file of the same name in the profiles folder replaces one, and a new one adds a 
 * `shared_textures`: `vehicles` and `all`, the dictionaries models fall back on;
 * `bone_match`: `id` (HAnim ids, San Andreas) or `name` (III, Vice City), how animations find bones.
 
-### `rage`: Grand Theft Auto V
+### `rage`: Grand Theft Auto IV and V
 
-GTA V is read entirely from its profile (`gta5.json`), in the same way:
+GTA IV and V are read entirely from their profiles (`gta4.json`, `gta5.json`), in the same way:
+
+* `generation`: 5 (GTA V: RPF7 archives, RSC7 resources, `.y*` files) or 4 (GTA IV: IMG3 archives, RSC5
+  resources, `.w*` files);
 
 * `recognise.files` (the executable or an archive below the game folder) and `recognise.folder_names`;
-* `language`: whose `.gxt2` text names vehicles and weapons (`american`);
+* `language`: whose text names vehicles and weapons (`american`: GTA V's `.gxt2`, GTA IV's `american.gxt`);
 * `ped_animations`: the clip dictionaries (`.ycd`, without the extension) characters are posed with;
 * `shared_textures`: `vehicles` and `all`, the texture dictionaries models fall back on;
 * `groups`: library group names for `vehicle_classes` (`VC_SPORT`...), `ped_prefixes` (`a_m_`...) and
   `weapon_groups` (`GROUP_PISTOL`...).
 
-The archive keys are never in a profile: Dark STL finds them in the user's own `GTA5.exe`.
+The archive keys are never in a profile: Dark STL finds them in the user's own `GTA5.exe` or `GTAIV.exe`.
 
 ## Shipped profiles
 
@@ -241,3 +244,5 @@ The archive keys are never in a profile: Dark STL finds them in the user's own `
 | `gta3.json`            | Grand Theft Auto III    | `renderware`  |
 | `gtavc.json`           | Grand Theft Auto: Vice City | `renderware` |
 | `gtasa.json`           | Grand Theft Auto: San Andreas | `renderware` |
+| `gta4.json`            | Grand Theft Auto IV     | `rage`        |
+| `gta5.json`            | Grand Theft Auto V      | `rage`        |
