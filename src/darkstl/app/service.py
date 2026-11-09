@@ -312,6 +312,10 @@ class Service:
         from ..importers import set_cache_folder
 
         set_cache_folder(Path(cache) / "scans")  # the texture index of each game folder, so rescans are quick
+        from ..importers.idtech import games as idtech_games
+        from .config import config_dir
+
+        idtech_games.override(config_dir() / "profiles")  # <settings>/profiles/DOOM Eternal.json: unit, normal green
         self.sessions: OrderedDict[str, Session] = OrderedDict()
         self.opened: dict[str, Path] = {}  # model files opened on their own, by id
         self.lock = threading.RLock()

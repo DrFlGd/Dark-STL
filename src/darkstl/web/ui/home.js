@@ -105,7 +105,7 @@ function FirstRun({ error }) {
   const games = (info().games || []).filter((g) => g !== "Other models");
   return html`<div class="pages"><div class="first-run" id="first-run">
     <h1>Add your games</h1>
-    <p>Dark STL lists the models in your games (FromSoftware's, Cyberpunk 2077, the Resident Evil games and Borderlands) by game and kind (weapons, armour, characters and more),
+    <p>Dark STL lists the models in your games (FromSoftware's, Cyberpunk 2077, the Resident Evil games, Borderlands, Returnal and DOOM Eternal) by game and kind (weapons, armour, characters and more),
       shows them with their textures, and turns them into detailed meshes you can 3D print.</p>
     <p>Add a game's folder to start. Dark STL only reads it; nothing in it is changed. Once a game is listed, the models you want
       can be collected into the app, so the game's folder isn't needed afterwards.</p>
@@ -127,6 +127,7 @@ function FirstRun({ error }) {
         For Borderlands, Borderlands 2 and The Pre-Sequel, choose the install folder as it is: the models are read from the packages in <code>WillowGame\CookedPCConsole</code> (the first scan reads through them once).
         For Borderlands 3, Tiny Tina's Wonderlands and Borderlands 4, choose the install folder as it is: the models are read from the files in <code>OakGame\Content\Paks</code>.
         For Returnal, choose its install folder as it is: the models are read from the files in <code>Returnal\Content\Paks</code>. If its paks are encrypted, add the game's AES key in Settings under <i>Unreal games</i>; a .usmap type mappings file, if you have one, goes there too.
+        For DOOM Eternal, choose its install folder as it is: the models are read from the <code>.resources</code> and <code>.streamdb</code> files in <code>base</code> (the first scan reads through them once). It needs the game's Oodle library, <code>oo2core_8_win64.dll</code>, which is beside the game's .exe and found by itself.
         Borderlands 4 also needs its type mappings (a .usmap file), and the AES key if its containers are encrypted; add them in Settings under <i>Unreal games</i>.</p>
       <p><b>Or any folder of extracted files</b>, such as .partsbnd, .chrbnd, .objbnd, .flver or .mesh files you've pulled out with other tools, or models FModel, UModel or Blender exported (.gltf, .glb, .psk, .pskx, .obj) with their textures beside them.</p>
       <p><b>Or models Dark STL collected before</b> (on this computer or another): choose its library folder, or one game's folder in it, with <i>Add collected files</i>. Each game can come from either its own folder or its collected files.</p>

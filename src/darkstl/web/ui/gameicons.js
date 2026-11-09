@@ -9,6 +9,7 @@ const SHORT = {
   "Resident Evil Village": "RE8", "Resident Evil Requiem": "RE9", "Devil May Cry 5": "DMC",
   "Borderlands": "BL1", "Borderlands 2": "BL2", "Borderlands: The Pre-Sequel": "TPS", "Borderlands 3": "BL3",
   "Tiny Tina's Wonderlands": "TTW", "Borderlands 4": "BL4", "Returnal": "RET",
+  "DOOM Eternal": "DE", "DOOM (2016)": "D16", "DOOM: The Dark Ages": "TDA",
 };
 
 export const gameShort = (name) => SHORT[name] || (name || "?").split(/\s+/).filter(Boolean).map((w) => w[0]).join("").slice(0, 3).toUpperCase();
