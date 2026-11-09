@@ -149,9 +149,27 @@ class BorderlandsImporter(Importer):
         return catalog.scan(folder, game, progress, self.cache)
 
     def names(self, folder: Path, game: str, entries: list[CatalogEntry], fresh: bool = False) -> dict[str, str]:
-        """None yet: the Borderlands games name their items in the balance definitions and the localised
-        text packages (.INT), which aren't joined to the meshes yet. The models keep their file names."""
-        return {}
+        """The names the games' text gives their models: Borderlands 1, 2 and The Pre-Sequel's localised text
+        (``.INT``) for the objects that show a mesh (see :mod:`.names`), Borderlands 3, Wonderlands and 4's
+        string tables (see :mod:`darkstl.importers.unreal.names`)."""
+        if not entries or _another_importers_game(game):
+            return {}
+        folder = Path(folder)
+        ue4 = _ue4_game(folder, game)
+        if ue4:
+            from ..unreal import catalog as unreal_catalog
+            from ..unreal import names as unreal_names
+            from ..unreal.profile import get
+
+            prof = get(ue4)
+            if prof is None:
+                return {}
+            return unreal_names.names(unreal_catalog.root_for(folder, prof), folder, prof, entries, self.cache, fresh)
+        if not any(files.is_member(e.path) for e in entries[:50]):
+            return {}
+        from . import names
+
+        return names.names(folder, entries, self.cache, fresh)
 
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
         ours = [e for e in found if e.importer == self.key]

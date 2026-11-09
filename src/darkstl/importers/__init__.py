@@ -13,6 +13,7 @@ from ..errors import FormatError
 from ..model import SourceModel
 from .base import Importer
 from .borderlands import BorderlandsImporter
+from .fbx import FbxImporter
 from .fromsoft import FromSoftwareImporter
 from .gltf import GltfImporter
 from .package import PackageImporter
@@ -27,7 +28,7 @@ from .wavefront import WavefrontImporter
 # names its game. The Unreal importer comes after Returnal and Borderlands: it takes every other Unreal game.
 IMPORTERS: list[Importer] = [PackageImporter(), FromSoftwareImporter(), RedEngineImporter(), REEngineImporter(),
                              ReturnalImporter(), BorderlandsImporter(), UnrealImporter(), GltfImporter(),
-                             PskImporter(), WavefrontImporter()]
+                             FbxImporter(), PskImporter(), WavefrontImporter()]
 
 
 def register(importer: Importer) -> None:

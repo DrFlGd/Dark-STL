@@ -42,6 +42,13 @@ DEFAULTS_NAME = "Unreal game"
 _PLACE = re.compile(r"\{([^{}]*)\}")
 
 
+def _int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _regex(text, fallback: str = r"(?!x)x") -> re.Pattern:
     try:
         return re.compile(str(text) if text else fallback, re.I)
@@ -234,6 +241,10 @@ class UnrealProfile:
     roles: dict[str, list[re.Pattern]] = field(default_factory=dict, repr=False)
     collect_engine: bool = True
     collect_usmap: bool = True
+    names_tables: re.Pattern | None = field(default=None, repr=False)  # which assets are string tables
+    names_keys: re.Pattern | None = field(default=None, repr=False)  # the ending of a key that holds a name
+    names_skip: re.Pattern | None = field(default=None, repr=False)  # keys that don't, though they end so
+    names_limit: int = 400
     recognise_files: list[str] = field(default_factory=list)
     folder_names: list[str] = field(default_factory=list)
     folder_pattern: re.Pattern | None = None
@@ -252,6 +263,7 @@ class UnrealProfile:
         tex = data.get("textures") if isinstance(data.get("textures"), dict) else {}
         col = data.get("collect") if isinstance(data.get("collect"), dict) else {}
         rec = data.get("recognise") if isinstance(data.get("recognise"), dict) else {}
+        nm = data.get("names") if isinstance(data.get("names"), dict) else {}
         roles = {str(role).lower(): [_regex(x) for x in (pats if isinstance(pats, list) else [pats])]
                  for role, pats in (tex.get("roles") or {}).items()}
         green = str(tex.get("normal_green") or "directx").lower()
@@ -272,6 +284,10 @@ class UnrealProfile:
             roles=roles,
             collect_engine=bool(col.get("engine_release", True)),
             collect_usmap=bool(col.get("usmap", True)),
+            names_tables=_regex(nm["tables"]) if nm.get("tables") else None,
+            names_keys=_regex(nm["keys"]) if nm.get("keys") else None,
+            names_skip=_regex(nm["skip_keys"]) if nm.get("skip_keys") else None,
+            names_limit=_int(nm.get("limit"), 400),
             recognise_files=[str(f) for f in rec.get("files") or []],
             folder_names=[str(f).lower() for f in rec.get("folder_names") or []],
             folder_pattern=_regex(rec["folder_pattern"]) if rec.get("folder_pattern") else None,

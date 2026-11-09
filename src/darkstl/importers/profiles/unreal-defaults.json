@@ -54,5 +54,11 @@
     }
   },
   "textures": {"normal_green": "directx", "roles": {}},
+  "names": {
+    "tables": "(^|/)(st_[^/]*|[^/]*stringtable[^/]*)\\.uasset$|/stringtables?/[^/]*\\.uasset$",
+    "keys": "([_.]|^)(name|displayname|itemname|title)$",
+    "skip_keys": "desc|flavou?r|lore|tooltip|hint|subtitle|message|prompt|hidden",
+    "limit": 400
+  },
   "collect": {"engine_release": true, "usmap": true}
 }
