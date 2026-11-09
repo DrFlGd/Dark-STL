@@ -556,7 +556,7 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
         ${!state.loading && !state.error && size && !size.triangles ? html`<div class="stage-note muted">No parts are switched on (Model tab).</div>` : null}
       </div>
       <div class=${`stage-bar${roomy ? "" : " one-row"}`} id="stage-bar" ref=${barBox}>
-        <span class="stage-what" id="stage-size" title=${`${size?.triangles ? `${sizeText([size.x, size.y, size.z])}, ${plural(size.triangles, "triangle")}` : sizeText(stats?.size_mm)}: width × depth × height, as exported in millimetres`}>${size?.triangles ? html`${sizeText([size.x, size.y, size.z])}<span class="muted"> · ${plural(size.triangles, "triangle")}</span>` : sizeText(stats?.size_mm)}${pose ? html`<span class="muted stage-pose" id="stage-pose" title="The pose shown (Pose tab)"> · ${pose.anim} frame ${pose.frame}</span>` : null}</span>
+        <span class="stage-what" id="stage-size" title=${`${size?.triangles ? `${sizeText([size.x, size.y, size.z])}, ${plural(size.triangles, "triangle")}` : sizeText(stats?.size_mm)}: width × depth × height, as exported in millimetres`}><span class="stage-dims">${size?.triangles ? sizeText([size.x, size.y, size.z]) : sizeText(stats?.size_mm)}</span>${size?.triangles ? html`<span class="muted stage-tris" id="stage-tris">\u00a0· ${plural(size.triangles, "triangle")}</span>` : null}${pose ? html`<span class="muted stage-pose" id="stage-pose" title="The pose shown (Pose tab)">\u00a0· ${pose.anim} frame ${pose.frame}</span>` : null}</span>
         <span class="stage-tools">
           ${seg("show-which", "Show", [["original", "Original", "The model as the game has it"], ["enhanced", "Enhanced", result ? "The enhanced model" : "Make it first (Mesh or Displace tab)", !result],
             ["finished", "Finished", finished ? "The model made watertight, without its textures" : "Make it watertight first (Finish tab)", !finished],
@@ -565,7 +565,8 @@ function Stage({ m, variant, which, setWhich, args, result, finished, stats, pos
             <button type="button" class="ghost" id="edges-toggle" aria-pressed=${view.edges ? "true" : "false"} title="Show the triangles' sharp edges" onClick=${() => edges(!view.edges)}>Edges</button>
             ${seg("views", "View", cameras, null, (v) => viewer.current?.view(v))}`
           : html`<button type="button" class="ghost menu-btn" id="view-menu" aria-haspopup="menu" data-shading=${view.shading}
-              title="Shading (textured, clay, wireframe), edges, and turning the view to the front or top" onClick=${viewMenu}>${Icon.eye(14)}<span>${shadingName}${view.edges ? " + edges" : ""}</span> ▾</button>`}
+              aria-label="View" title=${`View: shading (now ${shadingName.toLowerCase()}${view.edges ? ", with edges" : ""}), edges, and turning the view to the front or top`}
+              onClick=${viewMenu}>${Icon.eye(15)} ▾</button>`}
         </span>
       </div>
     </div>

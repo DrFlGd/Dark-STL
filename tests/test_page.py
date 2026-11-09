@@ -552,8 +552,15 @@ def test_the_model_page_reads_in_the_order_the_work_happens(browser, app, weapon
     box = "e => { const r = e.getBoundingClientRect(); return [r.top, r.right, r.bottom]; }"
     toast, stage, footer = (page.eval_on_selector(sel, box) for sel in ("#toast", "#stage-canvas", "#stage-bar"))
     assert toast[0] < stage[0] + 40 and abs(toast[1] - (stage[1] - 12)) <= 2 and toast[2] < footer[0]
-    # folded to its first line, which never widens the tab: nothing runs under the rail
+    # folded to its first sentence, wrapped and whole (not cut short), and nothing runs under the rail
     assert page.eval_on_selector("#mesh-tab", "e => e.scrollWidth - e.clientWidth") <= 0
+    summary = "#tip-mesh > summary"
+    assert page.inner_text(summary).endswith("remade at one even size.")
+    assert page.eval_on_selector(summary, "e => e.scrollWidth - e.clientWidth") <= 0
+    # the bar under the view, one row: the triangle count whole, and the size beside it
+    whole = "e => e.scrollWidth <= e.clientWidth && e.getBoundingClientRect().right <= e.parentNode.getBoundingClientRect().right + 0.5"
+    assert page.eval_on_selector("#stage-tris", whole), page.inner_text("#stage-size")
+    assert page.eval_on_selector("#stage-size .stage-dims", "e => e.scrollWidth <= e.clientWidth")
     page.click("#tip-btn-mesh")  # ⓘ opens it again
     page.wait_for_selector("#tip-mesh[open]")
     page.click("#tip-btn-mesh")

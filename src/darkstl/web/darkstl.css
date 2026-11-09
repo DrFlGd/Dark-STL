@@ -125,12 +125,11 @@ a.chip-btn.on { background: var(--sel); }
 .tab-pad .insp-section h3:has(.tip-btn) { display: flex; align-items: center; gap: 6px; }
 .tip-btn { padding: 2px; border: 0; border-radius: 50%; color: var(--graphite); background: transparent; line-height: 0; }
 .tip-btn:hover, .tip-btn[aria-pressed="true"] { color: var(--ink); background: var(--steel); }
-.tip { font-size: 13.5px; color: var(--graphite); min-width: 0; }  /* (its one closed line never widens the tab) */
-.tip > summary { display: block; cursor: pointer; list-style: none; line-height: 1.45; }
+.tip { font-size: 13.5px; color: var(--graphite); min-width: 0; }
+.tip > summary { display: block; cursor: pointer; list-style: none; line-height: 1.45; padding-left: 1.1em; text-indent: -1.1em; }
 .tip > summary::-webkit-details-marker { display: none; }
-.tip > summary::before { content: "▸"; display: inline-block; width: 1.1em; color: var(--graphite); transition: transform .12s; }
+.tip > summary::before { content: "▸"; display: inline-block; width: 1.1em; text-indent: 0; color: var(--graphite); transition: transform .12s; }
 .tip[open] > summary::before { transform: rotate(90deg); }
-.tip:not([open]) > summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tip > p { margin: 4px 0 0 1.1em; }
 
 /* what to do next, under a tab's result */
@@ -153,8 +152,13 @@ a.chip-btn.on { background: var(--sel); }
 #export-painter > p { margin: 0; font-size: 13.5px; }
 
 /* the footer under the 3D view in a window under 1440 px: one row, the size shortened and the view settings in a menu */
-.stage-bar.one-row { flex-wrap: nowrap; }
-.stage-bar.one-row .stage-what { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
+.stage-bar.one-row { flex-wrap: nowrap; column-gap: 8px; }
+.stage-bar.one-row .stage-tools .seg button { padding: 5px 6px; }
+/* one row: the size gives way before the triangle count, which always shows whole */
+.stage-bar.one-row .stage-what { flex: 1 1 auto; display: flex; min-width: 0; white-space: nowrap; overflow-wrap: normal; }
+.stage-bar.one-row .stage-dims, .stage-bar.one-row .stage-pose { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.stage-bar.one-row .stage-pose { flex-shrink: 100; }
+.stage-bar.one-row .stage-tris { flex: none; }
 .stage-bar.one-row .stage-tools { flex: none; flex-wrap: nowrap; }
 #view-menu { padding: 5px 9px; font-size: 12.5px; white-space: nowrap; }
 
