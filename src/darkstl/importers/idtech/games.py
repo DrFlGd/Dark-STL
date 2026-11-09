@@ -1,14 +1,15 @@
 """The id Tech games Dark STL reads and what differs between them.
 
-Once game profiles are JSON files (docs/profiles.md), these move there; until then a profile can be tuned with a
-JSON file of the same fields in ``<settings>/profiles/<game>.json`` (see :func:`override`).
+The table is kept in code, as for the other engines' games; a game profile in the settings folder
+(``<settings>/profiles/*.json`` with ``"engine": "idtech"`` and the game's name, see docs/profiles.md) can
+change what isn't confirmed on the real files yet: ``{"idtech": {"unit": 0.01}}`` for the size,
+``{"textures": {"normal_green": "directx"}}`` for the normal maps, ``{"recognise": {"files": [...]}}`` for
+the executables a folder is recognised by.
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 
 ETERNAL = "DOOM Eternal"
 DOOM2016 = "DOOM (2016)"
@@ -34,32 +35,30 @@ PROFILES = {
                       shared_maps=("common", "warehouse", "init")),
 }
 GAMES = tuple(PROFILES)
-_overrides: dict[str, Profile] = {}
+ENGINE = "idtech"
 
 
 def profile(game: str | None) -> Profile:
     p = PROFILES.get(game or "", PROFILES[ETERNAL])
-    return _overrides.get(p.game, p)
+    from .. import profiles as shared
 
-
-def override(folder: str | Path | None) -> None:
-    """Read profile tweaks from ``<folder>/<game>.json`` (any of the fields above but the game's name)."""
-    _overrides.clear()
-    if not folder:
-        return
-    for game, p in PROFILES.items():
-        f = Path(folder) / f"{game.replace(':', '')}.json"
-        if not f.is_file():
-            continue
-        try:
-            data = json.loads(f.read_text("utf-8"))
-        except (OSError, ValueError):
-            continue
-        known = {k: v for k, v in data.items() if k in Profile.__dataclass_fields__ and k != "game"}
-        for k in ("executables", "shared_maps", "notes"):
-            if k in known:
-                known[k] = tuple(known[k])
-        _overrides[game] = replace(p, **known)
+    data = shared.overrides(ENGINE, p.game)
+    if not data:
+        return p
+    known: dict = {}
+    own = data.get(ENGINE) if isinstance(data.get(ENGINE), dict) else {}
+    try:
+        if own.get("unit") is not None and float(own["unit"]) > 0:
+            known["unit"] = float(own["unit"])
+    except (TypeError, ValueError):
+        pass
+    green = str((data.get("textures") or {}).get("normal_green") or "").lower()
+    if green in ("directx", "opengl"):
+        known["normal_green"] = green
+    files = [str(f).rsplit("/", 1)[-1] for f in (data.get("recognise") or {}).get("files") or [] if str(f).strip()]
+    if files:
+        known["executables"] = tuple(dict.fromkeys(files + list(p.executables)))
+    return replace(p, **known)
 
 
 def game_of_container_version(version: int) -> str | None:

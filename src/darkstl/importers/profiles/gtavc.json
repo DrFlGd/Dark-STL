@@ -1,0 +1,14 @@
+{
+  "name": "Grand Theft Auto: Vice City",
+  "short": "GTVC",
+  "engine": "renderware",
+  "recognise": {"files": ["gta-vc.exe", "gta_vc.exe", "data/gta_vc.dat"], "folder_names": ["vice city", "gtavc", "gta vc", "gta vice city"]},
+  "level_files": ["data/default.dat", "data/gta_vc.dat"],
+  "text": "text/american.gxt",
+  "car_colours": "data/carcols.dat",
+  "ped_animations": "ped.ifp",
+  "paint": [[60, 255, 0], [255, 0, 175]],
+  "lights": [],
+  "shared_textures": {"vehicles": ["vehicle"], "all": ["generic"]},
+  "bone_match": "name"
+}

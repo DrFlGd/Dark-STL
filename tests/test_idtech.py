@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import synth_idtech as S
+from test_app import home  # noqa: F401 - fixture
 
 from darkstl.importers import importer_for, open_model
 from darkstl.importers.idtech import IdTechImporter, catalog, games
@@ -226,13 +227,32 @@ def test_collected_copy_opens_without_the_game(install, tmp_path):
     storemod.forget(copy)
 
 
-def test_profile_override(tmp_path):
-    (tmp_path / "DOOM Eternal.json").write_text('{"unit": 0.01}')
+def test_a_profile_in_the_settings_folder_tunes_the_game(home, install):  # noqa: F811
+    """What isn't confirmed on the real files yet (size, normal maps, executables) can be set by a game profile in
+    the settings folder, through the shared profile loader."""
+    import json
+
+    from darkstl.importers import profiles
+
+    medkit = _entries(install)["medkit"].path
+    folder = home / "profiles"
+    folder.mkdir(parents=True)
+    (folder / "doom-eternal.json").write_text(json.dumps({
+        "format": 1, "name": games.ETERNAL, "engine": "idtech", "idtech": {"unit": 0.01},
+        "textures": {"normal_green": "directx"}, "recognise": {"files": ["DOOMEternal_renamed.exe"]}}))
+    profiles.forget()
     try:
-        games.override(tmp_path)
-        assert games.profile(games.ETERNAL).unit == 0.01
+        p = games.profile(games.ETERNAL)
+        assert p.unit == 0.01 and p.normal_green == "directx" and "DOOMEternal_renamed.exe" in p.executables
+        mesh = open_model(medkit).build(MeshOptions())
+        assert (mesh.vertices.max(0) - mesh.vertices.min(0))[0] == pytest.approx(0.1, rel=1e-3)
+        renamed = home / "renamed"
+        renamed.mkdir()
+        (renamed / "DOOMEternal_renamed.exe").write_bytes(b"MZ")
+        assert catalog.detect_game(renamed) == games.ETERNAL
     finally:
-        games.override(None)
+        (folder / "doom-eternal.json").unlink()
+        profiles.forget()
     assert games.profile(games.ETERNAL).unit == 0.0254
 
 

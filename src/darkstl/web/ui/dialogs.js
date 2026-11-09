@@ -1,14 +1,16 @@
 // Dialogs: adding a game folder, changing a folder's game, opening one model
 // file, collecting models into the app, unpacking a game's archives, and confirming. Which one is open is
 // `ui.dialog` ({ type: "add-folder" | "change-game" | "open-file" | "collect" | "model-files" | "unpack" | "confirm" | "texture-picker" |
-// "arrange" | "arrange-folder" | "combine", ... }); the last three keep the user's own names, folders and combined
-// models (the library overlay and the user's configurations).
+// "arrange" | "arrange-folder" | "combine" | "attach" | "collection-add" | "collection-name" | "tag", ... }); arrange,
+// arrange-folder, combine and attach keep the user's own names, folders, combined models and attached models (the library
+// overlay and the user's configurations); the last three are in organise.js (collections and tags).
 import { html, useState, useLayoutEffect, useRef, useEffect } from "../lib/html.js";
 import { useStore } from "../lib/store.js";
 import { ui } from "./state.js";
 import { routeHash, placeRoute } from "./context.js";
 import { Icon } from "./icons.js";
 import { api, binUrl, info, followJob, loadOverview, pickFolder, showInFolder, stopJob, toast, plural, bytesText } from "./api.js";
+import { CollectionAdd, CollectionName, TagDialog } from "./organise.js";
 
 export const close = () => ui.set({ dialog: null });
 
@@ -49,6 +51,7 @@ function GamePicker({ value, onChange, id }) {
   const games = useStore(ui, (s) => s.overview?.games?.map((g) => g.name) || []);
   const known = [...new Set([...(info().games || []), ...games])];
   const [other, setOther] = useState(value && !known.includes(value));
+  useEffect(() => { if (value && !known.includes(value)) setOther(true); }, [value]); // a name set from outside (a suggestion)
   return html`<div class="field-row">
     <select id=${id} value=${other ? OTHER : value || ""} onChange=${(e) => { const v = e.target.value; setOther(v === OTHER); onChange(v === OTHER ? "" : v); }}>
       ${!value && !other ? html`<option value="" disabled>Choose…</option>` : null}
@@ -75,6 +78,7 @@ function AddFolder({ game: forGame, collected = false }) {
       const c = await api("folder_check", { path: p });
       setCheck(c);
       if ((!touched || c.collection) && c.game) setGame(c.game);
+      else if (!touched && !c.game && c.unreal?.name) setGame(c.unreal.name); // an Unreal game Dark STL has no profile for
       if (c.collection || c.collections.length) setUseHere(!c.library_has_files); // the first collection added: collect into it
     } catch (e) { setError(String(e.message || e)); }
   };
@@ -127,7 +131,11 @@ function AddFolder({ game: forGame, collected = false }) {
     : html`<div class="field-block"><label class="field-label" for="folder-game">Game</label>
       <${GamePicker} id="folder-game" value=${game} onChange=${(g) => { setGame(g); setTouched(true); }} />
       <small class="muted" id="folder-recognised">${check?.collection ? `Files Dark STL collected for ${check.collection.game} (${plural(check.collection.models, "model")}).`
-        : check?.game ? `Recognised as ${check.game}.` : check?.exists ? "Not recognised: choose the game, or another name for a folder of other models." : "Dark STL recognises Dark Souls, Bloodborne, Dark Souls III, Sekiro, Elden Ring, Cyberpunk 2077, the Resident Evil games (2, 3, 4, 7, Village) Borderlands (1, 2, The Pre-Sequel, 3, Wonderlands, 4), Returnal and DOOM Eternal folders by their files."}</small>
+        : check?.game ? `Recognised as ${check.game}.`
+        : check?.unreal ? html`<span id="folder-unreal">An Unreal Engine game Dark STL has no profile for${check.unreal.project ? ` (its project is ${check.unreal.project})` : ""}. Give it its name:
+            its models are sorted by the folders the game keeps them in (Characters, Weapons, Props…), and a game profile is saved for it
+            (Settings › Game tools › Game profiles) so the folder is recognised from now on. Encrypted games need their AES key in Settings › Game tools › Unreal games.</span>`
+        : check?.exists ? "Not recognised: choose the game, or another name for a folder of other models." : "Dark STL recognises Dark Souls, Bloodborne, Dark Souls III, Sekiro, Elden Ring, Cyberpunk 2077, the Resident Evil games (2, 3, 4, 7, Village), Borderlands (1, 2, The Pre-Sequel, 3, Wonderlands, 4), Returnal, Grand Theft Auto (III, Vice City, San Andreas), DOOM Eternal and other Unreal Engine games by their files."}</small>
     </div>`}
     ${ours && where !== check.library_dir ? html`<label class="check-row" title=${`Now: ${check.library_dir}`}>
       <input type="checkbox" id="folder-use-library" checked=${!!useHere} disabled=${busy} onChange=${(e) => setUseHere(e.target.checked)} />
@@ -178,7 +186,7 @@ function OpenFile() {
     } catch (e) { setBusy(false); setError(String(e.message || e)); }
   };
   return html`<${Dialog} title="Open a model file" id="open-file-dialog" onSubmit=${submit} busy=${busy} error=${error} submitLabel=${busy ? "Opening…" : "Open"}>
-    <p class="muted">A .partsbnd, .chrbnd, .objbnd or .flver file (also inside .dcx), or a model another tool exported: .gltf, .glb, .psk, .pskx or .obj. It opens on its own page; its folder isn't added to the library.</p>
+    <p class="muted">A .partsbnd, .chrbnd, .objbnd or .flver file (also inside .dcx), or a model another tool exported: .gltf, .glb, .fbx, .psk, .pskx or .obj. It opens on its own page; its folder isn't added to the library.</p>
     <div class="field-block"><label class="field-label" for="file-path">File</label>
       <div class="field-row"><input type="text" id="file-path" placeholder=${dialogs ? "Choose with Browse…, or paste a path" : "Paste the file's path"}
         value=${path} onInput=${(e) => setPath(e.target.value)} disabled=${busy} />
@@ -316,11 +324,11 @@ function Collect({ game, category, group, model }) {
           : plan.textures.to_store ? html`<b>${plural(plan.textures.to_store, "texture")}</b> to keep, about <b>${bytesText(plan.textures.bytes)}</b>${
             plan.textures.present ? html`<span class="muted"> · ${plural(plan.textures.present, "texture")} kept already</span>` : null}`
           : html`<span class="muted">Every one of the game's ${plural(plan.textures.listed, "texture")} is kept already.</span>`}</p>` : null}
-        <p class="muted">Into <span class="note-path" id="collect-folder">${plan.folder}</span> · <a href=${routeHash("settings")} id="collect-change-folder" onClick=${close}>change where</a></p>`
+        <p class="muted">Into <span class="note-path" id="collect-folder">${plan.folder}</span> · <a href=${routeHash("settings:library")} id="collect-change-folder" onClick=${close}>change where</a></p>`
       : html`<p id="collect-plan-text"><b>${plural(plan.models, "model")}</b> · ${plural(plan.files, "file")} · ${bytesText(plan.bytes)}
           ${plan.present ? html`<span class="muted"> · ${plan.to_copy ? `${plural(plan.present, "file")} already there, ${bytesText(plan.bytes_to_copy)} to copy` : "all already there"}</span>` : null}</p>
         <p class="muted" id="collect-plan-kinds">${kinds.join(" · ")}</p>
-        <p class="muted">Into <span class="note-path" id="collect-folder">${plan.folder}</span> · <a href=${routeHash("settings")} id="collect-change-folder" onClick=${close}>change where</a></p>`}
+        <p class="muted">Into <span class="note-path" id="collect-folder">${plan.folder}</span> · <a href=${routeHash("settings:library")} id="collect-change-folder" onClick=${close}>change where</a></p>`}
     </div>
     ${busy ? html`<p class="muted" id="collect-progress">${progress || (packages ? "Importing…" : "Copying…")}</p>` : null}
   <//>`;
@@ -392,7 +400,7 @@ function ModelFiles({ model, variant }) {
       : !plan ? html`<p class="muted">Working out which files to export…</p>`
       : html`${opts.game_files ? html`<p id="model-files-plan-text">${plural(plan.files, "file")} · ${bytesText(plan.bytes)} before compression</p>` : null}
         ${opts.package && plan.configurable ? html`<p class="warn-text">A configurable model has no package of its own: export one of its parts for that.</p>` : null}
-        <p class="muted">Into <span class="note-path" id="model-files-dest">${plan.dest}</span> · <a href=${routeHash("settings")} onClick=${close}>change where</a></p>`}
+        <p class="muted">Into <span class="note-path" id="model-files-dest">${plan.dest}</span> · <a href=${routeHash("settings")} onClick=${close} title="Settings › General › Exports">change where</a></p>`}
     </div>
     ${busy ? html`<p class="muted" id="model-files-progress">${progress || "Exporting…"}</p>` : null}
   <//>`;
@@ -649,16 +657,24 @@ function Combine({ model: base }) {
   const [folder, setFolder] = useState(base.group ? `${base.category}/${base.group.replace(/ \/ /g, "/")}` : base.category);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [related, setRelated] = useState([]); // the models that go with it (its set, its character's parts): offered first
+  useEffect(() => {
+    let live = true;
+    api("model_related", { id: base.id }).then((r) => live && setRelated(r.items.filter((i) => !i.configurable && i.game === base.game)), () => {});
+    return () => { live = false; };
+  }, [base.id]);
   useEffect(() => {
     let live = true;
     const t = setTimeout(() => {
-      api("models_query", { game: base.game, q, limit: 80 }).then((r) => live && setFound(r), (e) => live && setError(String(e.message || e)));
+      api("models_query", { game: base.game, q, limit: 80, related: false }).then((r) => live && setFound(r), (e) => live && setError(String(e.message || e)));
     }, 200);
     return () => { live = false; clearTimeout(t); };
   }, [q]);
   const isPicked = (i) => picked.some((p) => p.id === i.id);
   const toggle = (i) => setPicked(isPicked(i) ? picked.filter((p) => p.id !== i.id) : [...picked, i]);
-  const items = (found?.items || []).filter((i) => i.id !== base.id && !i.configurable);
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const first = related.filter((i) => words.every((w) => `${i.label} ${i.name} ${i.relation}`.toLowerCase().includes(w)));
+  const items = [...first, ...(found?.items || []).filter((i) => i.id !== base.id && !i.configurable && !first.some((r) => r.id === i.id))];
   const submit = async () => {
     if (!picked.length) { setError("Choose the models to add to it first."); return; }
     const [category, ...rest] = folder.replace(/\\/g, "/").split("/").map((x) => x.trim()).filter(Boolean);
@@ -687,13 +703,75 @@ function Combine({ model: base }) {
     <ul class="picker-list" id="combine-results" aria-label="Models">${items.map((i) => html`<li key=${i.id}>
       <label class=${isPicked(i) ? "picker-item selected" : "picker-item"} data-model=${i.stem}>
         <input type="checkbox" checked=${isPicked(i)} disabled=${busy} onChange=${() => toggle(i)} />
-        <span>${i.label}<small class="muted">${i.category}${i.group ? ` › ${i.group}` : ""} · ${i.name}</small></span></label></li>`)}
+        <span>${i.label}${i.relation ? html` <span class="card-tag related-tag" title="It goes with this model">${i.relation}</span>` : null}<small class="muted">${i.category}${i.group ? ` › ${i.group}` : ""} · ${i.name}</small></span></label></li>`)}
       ${found && !items.length ? html`<li class="muted picker-empty">No models match.</li>` : null}</ul>
     ${picked.length ? html`<p id="combine-picked">With ${picked.map((p) => p.label).join(", ")}.</p>` : null}
     <label class="field-block"><span>Name</span><input id="combine-name" value=${name} disabled=${busy} onInput=${(e) => setName(e.target.value)} /></label>
     <label class="field-block"><span>Folder</span><input id="combine-folder" list="combine-places" value=${folder} disabled=${busy} onInput=${(e) => setFolder(e.target.value)}
         placeholder="Kind/Group, e.g. Characters/Bosses" />
       <datalist id="combine-places">${placesOf(base.game).map((p) => html`<option key=${p} value=${p} />`)}</datalist></label>
+  <//>`;
+}
+
+/** The holder a newly attached model goes on: the first socket, else a hand (the right one first), else the origin. */
+function firstHolder(sockets, bones) {
+  if (sockets.length) return `socket:${sockets[0]}`;
+  const hands = bones.filter((b) => /hand/i.test(b));
+  const right = hands.find((b) => /(^|[^a-z])r(ight)?([^a-z]|$)|right/i.test(b));
+  const pick = right || hands[0];
+  return pick ? `bone:${pick}` : "";
+}
+
+/** Attach a model of the library to one of the open model's bones or sockets (a sword in a hand): it follows
+ * the pose and is part of the model from then on. Kept in the library overlay; its place is set on the Pose tab. */
+function Attach({ sid, game, model: base, items = [], bones = [], sockets = [] }) {
+  const [q, setQ] = useState("");
+  const [found, setFound] = useState(null);
+  const [picked, setPicked] = useState(null);
+  const [holder, setHolder] = useState(() => firstHolder(sockets, bones));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    let live = true;
+    const t = setTimeout(() => {
+      api("models_query", { game, q, limit: 80 }).then((r) => live && setFound(r), (e) => live && setError(String(e.message || e)));
+    }, 200);
+    return () => { live = false; clearTimeout(t); };
+  }, [q]);
+  const list = (found?.items || []).filter((i) => i.id !== base?.id && !i.configurable);
+  const submit = async () => {
+    if (!picked) { setError("Choose the model to attach first."); return; }
+    const [kind, ...rest] = holder.split(":");
+    const name = rest.join(":");
+    const place = { bone: kind === "bone" ? name : null, socket: kind === "socket" ? name : null, offset_mm: [0, 0, 0], rotate: [0, 0, 0], scale: 1 };
+    setBusy(true); setError(null);
+    try {
+      await api("attach_save", { sid, items: [...items, { file: picked.file, label: picked.label, place }] });
+      close();
+      ui.set({ attachRev: (ui.get().attachRev || 0) + 1 });
+      toast(`${picked.label} is attached: the Pose tab moves, turns and sizes it`, { ms: 5000 });
+    } catch (e) {
+      setBusy(false);
+      setError(String(e.message || e));
+    }
+  };
+  return html`<${Dialog} title=${`Attach a model to ${base?.label || "this model"}`} id="attach-dialog" onSubmit=${submit} busy=${busy} error=${error}
+      submitLabel=${busy ? "Attaching…" : picked ? `Attach ${picked.label}` : "Attach"}>
+    <p class="muted">A weapon in a hand, a shield on an arm: the model you choose goes on a bone or socket of this one, follows
+      its pose, and goes through Mesh, Displace and Export with it. Nothing of either model's files is changed.</p>
+    <label class="field-block"><span>Find models of ${game}</span>
+      <input type="search" id="attach-search" value=${q} disabled=${busy} placeholder="Part of a name: sword, shield, wp_a" onInput=${(e) => setQ(e.target.value)} /></label>
+    <ul class="picker-list" id="attach-results" aria-label="Models">${list.map((i) => html`<li key=${i.id}>
+      <label class=${picked?.id === i.id ? "picker-item selected" : "picker-item"} data-model=${i.stem}>
+        <input type="radio" name="attach-pick" checked=${picked?.id === i.id} disabled=${busy} onChange=${() => setPicked(i)} />
+        <span>${i.label}<small class="muted">${i.category}${i.group ? ` › ${i.group}` : ""} · ${i.name}</small></span></label></li>`)}
+      ${found && !list.length ? html`<li class="muted picker-empty">No models match.</li>` : null}</ul>
+    <label class="field-block" title="Where it goes: it follows that bone (or socket) through every pose. Sockets are the points the game fits parts to."><span>Held by</span>
+      <select id="attach-dialog-holder" value=${holder} disabled=${busy} onChange=${(e) => setHolder(e.target.value)}>
+        <option value="">The model's origin</option>
+        ${sockets.length ? html`<optgroup label="Sockets">${sockets.map((n) => html`<option key=${n} value=${`socket:${n}`}>${n}</option>`)}</optgroup>` : null}
+        ${bones.length ? html`<optgroup label="Bones">${bones.map((n) => html`<option key=${n} value=${`bone:${n}`}>${n}</option>`)}</optgroup>` : null}
+      </select></label>
   <//>`;
 }
 
@@ -708,8 +786,12 @@ export function Dialogs() {
   if (dialog.type === "model-files") return html`<${ModelFiles} key=${dialog.model.id} model=${dialog.model} variant=${dialog.variant} />`;
   if (dialog.type === "arrange") return html`<${Arrange} key=${dialog.model.id} model=${dialog.model} />`;
   if (dialog.type === "combine") return html`<${Combine} key=${dialog.model.id} model=${dialog.model} />`;
+  if (dialog.type === "attach") return html`<${Attach} key=${dialog.sid} ...${dialog} />`;
   if (dialog.type === "arrange-folder") return html`<${ArrangeFolder} key=${`${dialog.category}/${dialog.group || ""}`} ...${dialog} />`;
   if (dialog.type === "texture-picker") return html`<${TexturePicker} key=${`${dialog.sid}:${dialog.material}:${dialog.role}`} ...${dialog} />`;
   if (dialog.type === "unpack") return html`<${Unpack} key=${dialog.path} path=${dialog.path} game=${dialog.game} added=${dialog.added} />`;
+  if (dialog.type === "collection-add") return html`<${CollectionAdd} models=${dialog.models} />`;
+  if (dialog.type === "collection-name") return html`<${CollectionName} collection=${dialog.collection} models=${dialog.models} />`;
+  if (dialog.type === "tag") return html`<${TagDialog} models=${dialog.models} />`;
   return null;
 }

@@ -85,8 +85,12 @@ class Store:
             self._index_loose(loose)
         self._index_install(cache)
         self.game = game or self._game_from_files()
-        self.profile: Profile = profile(self.game)
         self._images: dict[str, list[str]] | None = None
+
+    @property
+    def profile(self) -> Profile:
+        """The game's profile, read each time so a change in the settings folder applies to the next model opened."""
+        return profile(self.game)
 
     # -- indexing ------------------------------------------------------------
 

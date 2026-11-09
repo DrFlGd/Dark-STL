@@ -103,7 +103,7 @@ def scan_folder_kept(root: str | os.PathLike, game: str | None = None,
                 kept.state[imp.key] = state
     if not found and not notes:
         notes.append("No models were found in this folder. Choose the game's folder (unpacked), or a folder of "
-                     "extracted model files such as .partsbnd, .chrbnd, .objbnd, .flver or .obj.")
+                     "extracted model files such as .partsbnd, .chrbnd, .objbnd, .flver, .fbx, .gltf or .obj.")
     return sorted(found, key=lambda e: e.sort_key), notes, kept
 
 
@@ -222,15 +222,42 @@ class Library:
     # files a model under the user's own name and place (see darkstl.overlay): called with each model, it may
     # change its label, category and group, which original_place() keeps as the game had them
     arrange: Callable[["Library", CatalogEntry], None] | None = field(default=None, repr=False, compare=False)
+    # gives each model (and each configurable model) the user's tags, star and collections (see
+    # darkstl.library_collections), which the search looks through
+    mark: Callable[["Library", CatalogEntry], None] | None = field(default=None, repr=False, compare=False)
+    rev: int = field(default=0, repr=False, compare=False)  # counts the changes, for what's worked out from them
+    _games: dict[str, list[CatalogEntry]] | None = field(default=None, repr=False)  # game -> its entries
 
     def _changed(self) -> None:
+        self.rev += 1
         self._by_id = self._full = self._first = self._configs = self._all = self._root = self._by_path = None
+        self._games = None
         self._overview = {}
         if self.arrange is not None and self.entries:
             for e in self.entries:
                 self.arrange(self, e)
             self.entries.sort(key=lambda e: e.sort_key)
             self._by_id = self._full = self._first = self._configs = self._all = self._root = None
+        if self.mark is not None:
+            for e in self.entries:
+                self.mark(self, e)
+
+    def remark(self, entries: list[CatalogEntry] | None = None) -> None:
+        """Give models their tags, star and collections again (the user changed them): ``entries``, or all."""
+        if self.mark is None:
+            return
+        for e in entries if entries is not None else self.all_entries():
+            self.mark(self, e)
+
+    def game_entries(self, game: str) -> list[CatalogEntry]:
+        """A game's models and configurable models, the same list until the library changes (importers index
+        it for :meth:`Importer.related`)."""
+        if self._games is None:
+            by: dict[str, list[CatalogEntry]] = {}
+            for e in self.all_entries():
+                by.setdefault(e.game, []).append(e)
+            self._games = by
+        return self._games.get(game, [])
 
     def rearrange(self) -> None:
         """File every model again by the user's names and places (they changed)."""
@@ -277,6 +304,9 @@ class Library:
                                         got.group or (be.group if be else ""), f"config:{got.id}", got.label,
                                         Path(got.base.file), importer=be.importer if be else "",
                                         packed=be.packed if be else False, config=got))
+        if self.mark is not None:
+            for e in out:
+                self.mark(self, e)
         return sorted(out, key=lambda e: e.sort_key)
 
     def all_entries(self) -> list[CatalogEntry]:

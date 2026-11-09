@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 from ...model import CatalogEntry
 from ..base import ScanProgress
 from .formats import resources as res
-from .games import PROFILES, game_of_container_version
+from .games import PROFILES, game_of_container_version, profile
 from .store import META, Store, open_store
 
 MODEL_TYPES = ("baseModel", "model")
@@ -21,7 +21,7 @@ def detect_game(folder: Path) -> str | None:
     folder = Path(folder)
     if folder.name.lower() == "base":
         folder = folder.parent
-    for p in PROFILES.values():
+    for p in (profile(g) for g in PROFILES):
         if any((folder / exe).is_file() for exe in p.executables):
             return p.game
     base = folder / "base"

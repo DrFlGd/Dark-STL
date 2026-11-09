@@ -139,7 +139,7 @@ class IdTechImporter(Importer):
         if any(e.packed for e in found if e.importer == self.key) and oodle.located() is None:
             notes.append("DOOM's resources are compressed with Oodle. Dark STL uses the game's own "
                          "oo2core_8_win64.dll (beside DOOMEternalx64vk.exe); it wasn't found, so point to it in "
-                         "Settings > Oodle.")
+                         "Settings › Game tools › Oodle.")
         return notes
 
     def can_open(self, path: Path) -> bool:

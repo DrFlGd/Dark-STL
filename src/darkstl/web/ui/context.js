@@ -3,11 +3,16 @@
 export const ctx = {};
 export function setContext(values) { Object.assign(ctx, values); }
 
-/** Routes: home | settings | about | search (the search across every game; its words in the hash: #/search?q=…)
- *  | browse:<game>[/<category>[/<group>]] (parts URI-encoded) | model:<id>[@<variant>] */
+/** Routes: home | settings[:library|:tools] (Settings' General, Library and Game tools) | about | search (the search
+ *  across every game; its words in the hash: #/search?q=…) | browse:<game>[/<category>[/<group>]] (parts
+ *  URI-encoded) | model:<id>[@<variant>] | collection:<id> | starred | queue (the bulk actions' queue) */
+export const SETTINGS_PAGES = ["library", "tools"];
+
 export function routeHash(route) {
   if (route === "home") return "#/";
   if (route.startsWith("browse:")) return `#/browse/${route.slice(7)}`;
+  if (route.startsWith("settings:")) return `#/settings/${route.slice(9)}`;
+  if (route.startsWith("collection:")) return `#/collection/${encodeURIComponent(route.slice(11))}`;
   if (route.startsWith("model:")) {
     const [id, variant] = route.slice(6).split("@");
     return `#/model/${encodeURIComponent(id)}${variant ? `?v=${variant}` : ""}`;
@@ -24,8 +29,13 @@ export function routeFromHash(hash) {
     const v = new URLSearchParams(query).get("v");
     return `model:${decodeURIComponent(rest[0])}${v ? `@${encodeURIComponent(v)}` : ""}`;
   }
-  return ["settings", "about", "search"].includes(first) ? first : "home";
+  if (first === "settings" && SETTINGS_PAGES.includes(rest[0])) return `settings:${rest[0]}`;
+  if (first === "collection" && rest[0]) return `collection:${decodeURIComponent(rest[0])}`;
+  return ["settings", "about", "search", "starred", "queue"].includes(first) ? first : "home";
 }
+
+/** collection:<id> -> its id */
+export const collectionOf = (route) => (route?.startsWith("collection:") ? route.slice(11) : null);
 
 /** The search across every game, for these words. */
 export const searchHash = (q) => `#/search${q ? `?q=${encodeURIComponent(q)}` : ""}`;

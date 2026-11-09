@@ -45,12 +45,32 @@ _NAMED_REFS = (".mesh", ".xbm", ".mi", ".mt", ".mlsetup", ".mlmask", ".mltemplat
                ".anims", ".morphtarget", ".physicalscene", ".es", ".hp")
 
 
+def _recognised_by() -> tuple[tuple[str, ...], re.Pattern]:
+    """The marker files and path pattern, with what a ``redengine`` game profile in the settings folder says over
+    them (see docs/profiles.md)."""
+    from ..profiles import overrides, profiles
+
+    data = overrides("redengine", GAME)
+    if not data:  # a profile under another name for the same engine also recognises the game's folders
+        data = next((p.data for p in profiles("redengine") if not p.shipped), {})
+    rec = data.get("recognise") if isinstance(data.get("recognise"), dict) else {}
+    markers = tuple(str(f) for f in rec.get("files") or []) + _MARKERS
+    pattern = _PATH_HINT
+    if rec.get("folder_pattern"):
+        try:
+            pattern = re.compile(f"{rec['folder_pattern']}|{_PATH_HINT.pattern}", re.IGNORECASE)
+        except re.error:
+            pass
+    return markers, pattern
+
+
 def detect_game(root: str | os.PathLike) -> str | None:
     root = Path(root)
+    markers, hint = _recognised_by()
     for candidate in [root, *list(root.parents)[:3]]:
-        if any((candidate / m).exists() for m in _MARKERS):
+        if any((candidate / m).exists() for m in markers):
             return GAME
-    if _PATH_HINT.search(str(root)):
+    if hint.search(str(root)):
         return GAME
     # a folder of files WolvenKit exported: depot paths starting with base\ or ep1\
     for d in DEPOT_ROOTS:

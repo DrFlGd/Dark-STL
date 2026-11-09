@@ -71,6 +71,17 @@ a.chip-btn.on { background: var(--sel); }
 .stage-tools .seg button:disabled { opacity: .45; cursor: not-allowed; }
 .stage-tools .seg button { padding: 5px 8px; font-size: 12.5px; }
 .stage-note .warn-note { max-width: 520px; pointer-events: auto; }
+/* the Thickness shading's panel: top left of the 3D view (the toast takes the top right) */
+.thickness-panel { position: absolute; top: 10px; left: 10px; z-index: 2; display: grid; gap: 8px; width: min(250px, calc(100% - 20px));
+  padding: 10px 12px; background: var(--panel); border: 1px solid var(--steel-2); border-radius: var(--radius-m);
+  box-shadow: 0 4px 16px rgba(0,0,0,.18); font-size: 12.5px; }
+.thickness-panel .field-block { display: grid; gap: 3px; }
+.thickness-panel .field-row { display: flex; gap: 6px; align-items: center; }
+.thickness-panel input[type="number"] { width: auto; flex: 1 1 80px; min-width: 0; }
+.thickness-panel .unit { white-space: nowrap; }
+.thick-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.thick-legend li { display: flex; gap: 6px; align-items: baseline; }
+.thick-swatch { flex: none; width: 10px; height: 10px; border-radius: 2px; border: 1px solid rgba(0,0,0,.25); transform: translateY(1px); }
 .variant-pick select { width: auto; max-width: 220px; }
 .tab-pad { padding: 12px 14px 24px; display: grid; gap: 16px; align-content: start; min-width: 0; }
 .tab-pad .insp-section { display: grid; gap: 8px; min-width: 0; }
@@ -222,6 +233,29 @@ a.chip-btn.on { background: var(--sel); }
 #cut-explode { width: 100%; }
 #finish-stats li > span:last-child { flex: none; text-align: right; }
 
+/* Clean tab: the steps taken, parts, hidden faces, thin sheets, faces picked, repairs and the transform */
+#clean-tab p.small { font-size: 12.5px; line-height: 1.4; margin: 0; }
+.clean-steps li { padding: 4px 0; }
+.clean-steps li > span:first-child { display: grid; }
+.clean-steps small, .sheet-list small { font-size: 11.5px; }
+.clean-step-name { font-weight: 600; }
+.sheet-list { max-height: 260px; overflow: auto; }
+.sheet-list li { padding: 2px 4px; border-radius: var(--radius-s); }
+.sheet-list li.hover { background: color-mix(in srgb, #2bb3c0 18%, transparent); box-shadow: inset 3px 0 0 #2bb3c0; }
+.sheet-list .check-row { flex: 1; min-width: 0; }
+.clean-xyz { gap: 6px; }
+.clean-xyz > .field-block { flex: 1 1 0; min-width: 0; }
+.clean-xyz > .field-block > span { font-size: 12.5px; }
+.clean-xyz .field-row input { min-width: 0; width: 100%; }
+.clean-turn, #clean-mirror { flex-wrap: wrap; gap: 6px; }
+#clean-mirror button[aria-pressed="true"], #clean-pick[aria-pressed="true"] { color: var(--star); border-color: var(--star); }
+.clean-repair-row { display: flex; gap: 8px; align-items: flex-end; }
+.clean-repair-row > .field-block { flex: 1 1 auto; min-width: 0; }
+.clean-repair-row > button { flex: none; margin-bottom: 2px; }
+.part-list-read li { padding: 2px 0; }
+.part-list-read .part-out { flex: none; font-size: 12px; }
+.game-mm { font-size: 11.5px; }
+
 /* Configure tab: a part per slot, presets, and the configuration's editor */
 .config-slot { display: grid; gap: 4px; margin-bottom: 10px; }
 .config-slot select, #preset-select { width: 100%; }
@@ -347,3 +381,134 @@ a.chip-btn.on { background: var(--sel); }
 .home-search .search { min-width: 220px; }
 .home-recent { margin-bottom: 12px; }
 .home-recent .card-location { display: flex; align-items: center; gap: 4px; }
+/* Pose tab: saved poses and attached models (a name, what it is, and its buttons), the bone tree, a bone's turns */
+.saved-poses { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.saved-pose { display: flex; gap: 6px; align-items: center; padding: 4px 6px; border: 1px solid var(--steel-2); border-radius: var(--radius-s, 6px); min-width: 0; }
+.saved-pose[aria-current="true"] { border-color: var(--accent-edge, #3a7bd5); background: var(--accent-soft, rgba(80, 140, 220, .12)); }
+.saved-pose form { flex: 1; min-width: 0; }
+.saved-pose form input { flex: 1; min-width: 0; }
+.saved-pose-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 13.5px; text-align: left; color: inherit; padding: 2px 0; }
+.saved-pose-name small { display: block; font-size: 11.5px; }
+.saved-pose-tools { display: flex; gap: 4px; flex: none; }
+.saved-pose-tools .compact { padding: 4px 8px; }
+#pose-saved h4, #pose-bones h4, #pose-attach h4 { margin: 4px 0 0; font-size: 13px; }
+.bone-list { max-height: 220px; overflow: auto; border: 1px solid var(--steel-2); border-radius: var(--radius-s, 6px); display: flex; flex-direction: column; }
+.bone-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; padding: 3px 6px; border: 0; border-radius: 0;
+  background: none; color: inherit; text-align: left; font: inherit; font-size: 12.5px; cursor: pointer; overflow-wrap: anywhere; }
+.bone-row:hover { background: var(--steel-1, rgba(127, 127, 127, .1)); }
+.bone-row[aria-selected="true"] { background: var(--accent-soft, rgba(80, 140, 220, .18)); font-weight: 600; }
+.bone-turned { color: var(--accent-edge, #d9a300); font-size: 10px; flex: none; }
+.bone-edit { display: grid; gap: 6px; padding: 8px 10px; border-radius: var(--radius-s, 6px); background: var(--panel); border: 1px solid var(--steel-2); min-width: 0; }
+.angle-field { display: grid; grid-template-columns: 6.6em minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 13px; }
+.angle-field label { font-weight: 600; }
+.angle-field input[type="range"] { width: 100%; min-width: 0; margin: 0; }
+.angle-number { display: flex; align-items: center; gap: 3px; }
+.angle-field input[type="number"] { width: 68px; padding: 5px 6px; border: 1px solid var(--steel-2); border-radius: var(--radius-s); background: var(--white);
+  color: var(--ink); font: inherit; font-size: 13px; }
+.offset-row { display: flex; gap: 6px; align-items: center; }
+.tab-pad .offset-row input[type="number"] { flex: 1 1 0; min-width: 0; width: 0; }
+/* attaching a model: the models of the game, one to choose */
+#attach-dialog { width: min(640px, 100%); }
+#attach-results { max-height: 34vh; margin-bottom: 8px; }
+#attach-results .picker-item { padding: 6px 8px; }
+#attach-results .picker-item input { flex: none; margin: 0; }
+
+
+/* Library II: marks on cards, related models, choosing several, collections, the queue, problems */
+.card-marks { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; min-width: 0; margin-top: 2px; }
+.card-star { color: var(--star, #d9a400); display: inline-flex; vertical-align: -1px; }
+.card-tag { display: inline-block; max-width: 11em; padding: 0 6px; border-radius: 99px; border: 1px solid var(--steel-2); background: var(--panel);
+  font-size: 11px; line-height: 16px; font-weight: 600; color: var(--graphite); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: none; }
+a.card-tag:hover { border-color: var(--graphite); color: var(--ink); }
+.card-related { justify-self: start; display: inline-flex; align-items: center; gap: 3px; font-size: 11.5px; font-weight: 600; text-decoration: none; }
+.card-related:hover { text-decoration: underline; }
+.mp-star { margin-left: 6px; }
+.summary-marks { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 6px 0 0; }
+.summary-collection { display: inline-flex; align-items: center; gap: 3px; text-decoration: none; }
+.related-list { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 4px; }
+.related-item { display: flex; align-items: center; gap: 8px; padding: 3px; border-radius: var(--radius-s); text-decoration: none; color: var(--ink); min-width: 0; }
+.related-item:hover { background: var(--steel); }
+.related-text { display: grid; min-width: 0; }
+.related-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.related-tag { margin-left: 4px; vertical-align: 1px; }
+.results .card[draggable="true"] { cursor: grab; }
+.results.ordered .card.drop-before, .results.ordered .row.drop-before { box-shadow: -4px 0 0 0 var(--tool); }
+.nav-link.drop-over { background: var(--sel); box-shadow: inset 0 0 0 2px var(--tool); }
+.selection-summary .selection-games { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.insp-actions-col { flex-direction: column; align-items: stretch; }
+.insp-actions-col > button { justify-content: flex-start; text-align: left; }
+.selection-list li { font-size: 13px; }
+.card-size { display: inline-flex; align-items: center; gap: 4px; color: var(--graphite); }
+.card-size input { width: 64px; accent-color: var(--tool); }
+@media (max-width: 900px) { .card-size { display: none; } }
+
+/* a card's picture turning while it's hovered: eight views side by side, shown one after another */
+.thumb { position: relative; }
+.thumb.turning > img { visibility: hidden; }
+.thumb-turn { position: absolute; top: 0; bottom: 0; left: 50%; transform: translateX(-50%); height: 100%; aspect-ratio: 1; overflow: hidden; }
+.thumb .thumb-turn img { height: 100%; width: 800%; max-width: none; object-fit: fill; animation: thumb-turn 2.4s steps(8) infinite; }
+@keyframes thumb-turn { to { transform: translateX(-100%); } }
+@media (prefers-reduced-motion: reduce) { .thumb .thumb-turn img { animation-duration: 8s; } }
+
+/* collections on Home */
+.home-collections { margin-bottom: 12px; }
+.home-card-head #home-new-collection { margin-left: auto; }
+.collection-tiles { --card: 190px; margin: 8px 0 0; }
+.home-card a.collection-tile { color: var(--ink); }
+#home-problems { margin-bottom: 12px; }
+
+/* the queue */
+.queue-page { max-width: 860px; }
+.queue-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.queue-item { padding: 10px 12px; border: 1px solid var(--steel-2); border-radius: var(--radius-m); background: var(--white); }
+.queue-item.queue-running { border-color: var(--tool); }
+.queue-line { display: flex; align-items: center; gap: 10px; }
+.queue-what { display: grid; min-width: 0; flex: 1; }
+.queue-actions { display: flex; gap: 6px; flex: none; }
+.queue-bar { height: 4px; margin-top: 8px; border-radius: 2px; background: var(--steel-2); overflow: hidden; }
+.queue-bar span { display: block; height: 100%; background: var(--tool); transition: width .3s; }
+.queue-note { margin: 6px 0 0; font-size: 13px; }
+.queue-failed { margin-top: 6px; font-size: 13px; }
+.queue-failed ul { margin: 6px 0 0; padding-left: 18px; }
+
+/* a game's problems, under its kinds */
+.problems { margin: 6px 0 18px; display: grid; gap: 10px; max-width: 980px; }
+.problems-title { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 16px; }
+.problems-title .muted { font-weight: 400; font-size: 13px; }
+.problems-unknown { margin: 0; font-size: 13px; }
+.problem-group { border: 1px solid var(--steel-2); border-radius: var(--radius-m); padding: 8px 10px; background: var(--white); display: grid; gap: 6px; }
+.problem-head { display: flex; align-items: center; gap: 8px; border: 0; background: none; padding: 2px 0; font: inherit; color: var(--ink); cursor: pointer; text-align: left; }
+.problem-head .nav-count { margin-left: 2px; }
+.fold-icon { display: inline-flex; transition: transform .12s; }
+.fold-icon.open { transform: rotate(90deg); }
+.problem-hint { margin: 0; font-size: 13px; }
+.problem-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.problem-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.problem-model { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; padding: 3px; border-radius: var(--radius-s); text-decoration: none; color: var(--ink); }
+.problem-model:hover { background: var(--steel); }
+.problem-text { display: grid; min-width: 0; }
+.problem-text > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.problem-fixes { display: flex; gap: 6px; flex: none; }
+.home-problem a { font-weight: 600; }
+
+/* the first start: a tile for each game */
+.first-run-sub { display: flex; align-items: baseline; gap: 8px; margin: 18px 0 8px; font-size: 16px; }
+.first-run-sub .muted { font-weight: 400; font-size: 13px; }
+.first-games { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.first-game { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--steel-2); border-radius: var(--radius-m); background: var(--white);
+  font: inherit; font-weight: 600; font-size: 13.5px; text-align: left; cursor: pointer; color: var(--ink); min-width: 0; }
+.first-game span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.first-game:hover { border-color: var(--graphite); }
+.first-game.on { border-color: var(--tool); box-shadow: 0 0 0 2px var(--tool); background: var(--sel); }
+.first-game-note { margin-top: 12px; }
+.first-game-note h2 { display: flex; align-items: center; gap: 8px; }
+
+/* Settings' pages */
+.settings-nav { display: flex; gap: 0; margin-bottom: 14px; align-self: start; max-width: 100%; overflow-x: auto; }
+.settings-tab { display: grid; padding: 7px 14px; text-decoration: none; color: var(--ink); font-weight: 700; font-size: 14px; }
+.settings-tab + .settings-tab { border-left: 1px solid var(--steel-2); }
+.settings-tab small { font-weight: 400; font-size: 11.5px; }
+.settings-tab.on { background: var(--sel); box-shadow: inset 0 -2px 0 var(--tool); }
+@media (max-width: 700px) { .settings-tab small { display: none; } }
+.tag-chips { flex-wrap: wrap; margin: 4px 0; }
+.tag-chip.off { opacity: .6; }

@@ -1,0 +1,14 @@
+{
+  "name": "Grand Theft Auto: San Andreas",
+  "short": "GTSA",
+  "engine": "renderware",
+  "recognise": {"files": ["gta_sa.exe", "gta-sa.exe", "data/gta.dat"], "folder_names": ["san andreas", "gtasa", "gta sa", "gta san andreas"]},
+  "level_files": ["data/default.dat", "data/gta.dat"],
+  "text": "text/american.gxt",
+  "car_colours": "data/carcols.dat",
+  "ped_animations": "ped.ifp",
+  "paint": [[60, 255, 0], [255, 0, 175], [0, 255, 255], [255, 0, 255]],
+  "lights": [[255, 175, 0], [0, 255, 200], [185, 255, 0], [255, 60, 0]],
+  "shared_textures": {"vehicles": ["vehicle"], "all": ["generic"]},
+  "bone_match": "id"
+}

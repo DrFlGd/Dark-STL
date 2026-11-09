@@ -35,8 +35,10 @@ importer and registering it in `importers/__init__.py`:
 | RE Engine (Capcom) | `.mesh` models (every generation from RE2 to RE Requiem, streamed buffers included), `.mdf2` materials, `.tex` textures, read from extracted files or from `.pak` archives through a community file list. Games in `importers/reengine/games.py` | Synthetic RE2 and RE4 files; real files next |
 | Wavefront OBJ | OBJ + MTL with PNG/JPG/TGA/DDS textures, from any other tool | Done |
 | glTF | `.gltf` (with its `.bin` and pictures) and `.glb`, as Blender, FModel and most tools export: each mesh a part placed by its node, base colour and normal textures (green up), Y up turned to Z up; a model too big to be in metres read as centimetres. Skinned meshes in their bind pose | Synthetic files (0.35.0) |
+| Unreal Engine 4/5 games, by game profile | Any Unreal 4/5 game's `.pak` files and IoStore containers (`.utoc`/`.ucas`), or files extracted from them, with the readers the Borderlands importer brought (skeletal and static meshes, textures, material instances, animations). What differs per game is its JSON profile (`importers/profiles/*.json`, see [profiles.md](profiles.md)): Returnal, Borderlands 3, Wonderlands and Borderlands 4 ship one; a folder of a game no profile names is added under the name the user types, sorted by `unreal-defaults.json`'s folder rules, and a profile for it is written into the settings folder. Names from the game's string tables | Synthetic files (0.49.0); Returnal and Borderlands 3 as before |
+| FBX | `.fbx`, binary (6.1 to 7.7) and text, as Blender, Maya, 3ds Max, Unreal and the modding tools write it, read by Dark STL's own reader (`importers/fbx/`): every mesh the scene places (a part per mesh and material), the file's axes and units turned into metres with Z up, materials' textures from the paths the file stores, by name in the export folder, or embedded in the file; skin clusters as skin weights with the skeleton and bind pose, and the file's animation stacks for the Pose tab and packages | Synthetic files (0.49.0) |
 | ActorX PSK/PSKX | UModel's and FModel's exports of Unreal models: points, wedges, faces and materials, mirrored from Unreal's frame like the Unreal games' own models; each material's textures found by name beside the model, from UModel's `.mat`, FModel's `.json` and UModel's `.props.txt` material files, then from texture names like the material's. The skeleton isn't read | Synthetic files (0.35.0) |
-| RenderWare (GTA III, Vice City, San Andreas) | `.img` archives, `.dff` models (parts, skins, vehicle frames), `.txd` textures, `.ifp` animations, `.ide`/`.ipl`/`.gxt` for kinds, areas and names. See Reading Grand Theft Auto files | Planned (0.50.0) |
+| RenderWare (GTA III, Vice City, San Andreas) | `.img` archives (with `.dir`, or `VER2`) read in place, `.dff` models (parts placed by frames, skins, vehicles with their wheels copied to every axle and their colours from `carcols.dat` as variants), `.txd` textures (DXT, paletted and raw rasters), `.ifp` animations for peds, `.ide`/`.ipl`/`.gxt` for kinds, areas and vehicle names. Per-game differences are JSON profiles in `importers/profiles/` (`gta3`, `gtavc`, `gtasa`), read by the shared profile loader. See Reading Grand Theft Auto files | Synthetic files (0.50.0) |
 | RAGE (GTA V, then GTA IV) | `.rpf` v7 and IMG3 archives with keys found in the user's executable, RSC7/RSC5 resources: `.ydr`/`.wdr`, `.ydd` ped components, `.yft` vehicles, `.ytd` textures, `.ycd` animations | Planned (0.51.0 GTA V, 0.52.0 GTA IV) |
 | id Tech 6/7/8 (DOOM, DOOM Eternal, DOOM: The Dark Ages) | `.resources` containers (IDCL; DOOM 2016's `.index`) and `.streamdb` with the game's Oodle, BIM textures, `.lwo` static and `.md6mesh` skinned models, `.md6skl` skeletons, `.md6anim` animations, `material2` decls. See Reading id Tech 6/7/8 files | DOOM Eternal built (0.53.0, synthetic files only); DOOM 2016 (0.54.0) and The Dark Ages (0.55.0) planned |
 
@@ -157,7 +159,14 @@ the tests call directly.
   A weapon model takes the name of the lowest row that uses it (the plain weapon, not its +1 or
   infusions); a character the name most of its rows give. The table is cached per folder by its
   files' sizes and dates. Packages keep the name, so a collected copy is named without the game.
-  Cyberpunk, Borderlands, Returnal and the RE Engine games give none yet.
+  From 0.49.0: the Unreal 4/5 games' string tables (`importers/unreal/names.py`: `StringTable` assets
+  whose keys end as a name, `Carbine_Name`, matched to the mesh of the same name, `SK_Carbine`, by the
+  `names` rules of the game's profile), Borderlands 1/2/TPS's localised text (`importers/borderlands/names.py`:
+  the `.INT` file beside each package, whose objects with a name text refer to the meshes they show,
+  followed into other packages), and Cyberpunk's on-screen text (`importers/redengine/names.py`:
+  `onscreens.json`, loose, WolvenKit's JSON or in `lang_en_text.archive`; a weapon's meshes are named after
+  the text that is exactly its model's name, as the game joins items to text in TweakDB, which isn't read).
+  The RE Engine games give none yet: their text (`.msg`) is joined to models through item data not read.
 - **The library index and the search across every game (0.44.0).** `library_index.py` keeps a
   JSON file per game (`<cache>/library/index-<game>-<hash>.json`) written at each scan: every model's
   names, kind, file and what's known of it (size in mm, vertices, triangles, parts, textures,
@@ -171,6 +180,47 @@ the tests call directly.
   triangles, parts, textures, animations and collected; a header sorts by it (again: the other way),
   and each page keeps its own sort in the preferences. Cards show "size · triangles" once known.
   Home has the search box and the last eight models opened above the game tiles.
+- **Collections, tags and stars (0.48.0).** `library_collections.py` keeps one file for the whole
+  library, `<settings>/library/collections.json`: named, ordered collections of models from any game,
+  tags per model and a star per model. A model is referred to by its game and its overlay key (its path
+  in the game, the same for the game's file, a collected copy and the package made from it; `config:<id>`
+  for a configurable model), so nothing is lost when a folder is rescanned, moved, collected or added
+  again: a model not in the library just isn't shown until it's back. The library gives every entry its
+  marks through a `mark` hook (`app/organise.py`), so cards, rows, the search (a tag is searched like a
+  name, and offered as a filter chip with Starred) and the library index show them. Page: right-click a
+  model (or the model page's ⋯) for *Add to collection…*, *Tag…* and *Star*; cards drag onto a
+  collection (or Starred) in the menu; a collection's page (`#/collection/<id>`, and `#/starred`)
+  lists its models in its own order, dragged into place under the sort *Collection order*; Home shows
+  them as tiles. Commands `collections`, `collection_create/rename/delete/add/remove/move`,
+  `models_tag`, `models_star`, `tag_rename`; `models_query` takes `collection`, `tags` and `starred`.
+- **Related models (0.48.0).** `Importer.related(entry, entries) -> [(relation, entry)]`:
+  FromSoftware armour sets (`hd/bd/am/lg` of one number and sex), a weapon and its `_1` sheath or
+  variant, a model and its low-detail copy, character and object variants (`catalog.family`); RE
+  Engine faces, bodies and hair of one character folder (`reengine/characters.character_part`);
+  packages ask the importer their model came from. The app adds a configurable model's base and
+  parts, and the configurable models a model is part of. `importers/base.index_entries` keeps a
+  per-importer index of the library so each lookup is a dictionary read. A card says "N related"
+  (a menu of them), the details panel and the model page's Model tab list them, and Combine
+  offers them first.
+- **Choosing several, and the queue (0.48.0).** Click chooses a model, Ctrl+click adds or takes one
+  off, Shift+click a run, Ctrl+A every model shown, Esc none (`useModelSelection` in `ui/models.js`).
+  With several chosen the command bar and their right-click menu offer *Collect into the app*,
+  *Export as GLB*, *Export packages*, *Enhance with the current settings*, *Add to collection…*,
+  *Tag…* and *Star*. The bulk actions go to the queue (`app/bulk.py`): one item per action (Collect
+  and packages one per game), run one after another as jobs of the job system, each model through
+  the same commands the page uses for one (a bulk export writes what Export would; a bulk enhance
+  generates with the settings that game's models were last generated with, `config.last_enhance`,
+  else the defaults, and saves a variation). A model that fails doesn't stop the rest; it's listed
+  with why. The Queue page (`#/queue`) shows each with its progress and Stop (a waiting one is taken
+  off); the running one is in the status bar. Commands `queue`, `queue_add`, `queue_stop`, `queue_clear`.
+- **Problems (0.48.0).** A game's page lists what needs a look, each with its fix (`problems`
+  command): its folders' notes (still packed: *Unpack…*; gone: *Remove*), models that couldn't be
+  read (*Export model files…*), model files gone since the scan (*Rescan*), models without textures
+  and textures not found (*Choose texture…* on the Textures tab, *Find textures…* adds a texture
+  folder and draws their previews again), and animations that couldn't be read. They're learnt as
+  previews are drawn and models opened, and kept in the library index (`error`, `missing_textures`,
+  `anim_error`; FromSoftware reports the texture slots that name a file it didn't find). Home has a
+  line for each game with any.
 - **Collect into the app.** A game install is tens of gigabytes; the files Dark STL reads for
   the models someone wants are a few megabytes. *Collect into the app…* (a game's ⋯ menu, a
   kind's or group's details, a model's right-click menu or the model page's ⋯ menu) copies the
@@ -188,12 +238,26 @@ the tests call directly.
 - **Previews.** Each card's picture is drawn by the engine the first time it scrolls into view
   (`thumbnails.py`: the model from the 3D view's angle, coloured from its albedo texture, long
   weapons laid corner to corner) and cached by file date, a few at a time so browsing stays quick.
+  Since 0.48.0 characters are drawn in the first frame of an idle-like animation (idle, wait, stand,
+  or FromSoftware's `a000_000000`) when they have one (Settings › General › Previews, on by
+  default; their previews are kept under a key of their own), and each preview gets a turntable:
+  eight views round the model in one strip (`thumbnails.turntable`, a z-buffered point scatter of
+  the shaded surface, 0.3 s for 19,000 triangles), drawn in the background from the model just
+  drawn, or when a card is first hovered (`thumb?turn=1`), and played on the card while it's
+  hovered. The browser's toolbar has a small, medium or large card size.
+- **Settings in three pages (0.48.0).** General (Exports, Model Painter, Previews, Appearance),
+  Library (Game folders, App library, Texture folders) and Game tools (Oodle, Unreal games, Game
+  archives): `#/settings`, `#/settings/library`, `#/settings/tools`. The first start shows a tile for
+  each game Dark STL reads; clicking one says what folder to choose for it, with *Add this game's
+  folder…*.
 - **The model page.** The 3D view with the game's textures (or clay, or wireframe), and the
   inspector's tabs in the order the work happens, in three groups on the rail (each tab's icon
   with its short name upright under it; icons only when the page is crowded): **Model**
-  (Configure, Model: parts, importer options, size, file; Textures; Pose: an animation and a
-  frame, with a slider, stepping and playback, only for models with animations), **Edit** (Mesh,
-  Displace, Finish, Cut) and **Export**. Since 0.43.0:
+  (Configure, Model: parts (a read-only list since 0.45.0, with a link to Clean, where parts are left
+  out), importer options, size, file; Textures; Pose: an animation and a frame, with a slider,
+  stepping and playback, bones turned on top, saved poses and attached models, for models with a
+  skeleton, sockets or models attached), **Edit** (Clean, Mesh, Displace, Finish, Cut; see
+  "Cleaning" below) and **Export**. Since 0.43.0:
   - *One place chooses the model worked on*: the Show buttons under the 3D view (Original,
     Enhanced, Finished, Pieces). Finish, Cut and Export say "Working on: Enhanced · change" (the
     link puts the keyboard on those buttons and makes them flash). Finish and Cut show a choice
@@ -269,7 +333,7 @@ animation's tracks (`CompressedTrackToSkeletonMapTable`) to bone names, matched 
 Animations are found by reading the header of every package that looks like one (name or folder)
 and keeping those importing the mesh's skeleton, cached per game
 (`unreal-animations-<hash>.json`, with each animation's length). When that finds none for a
-skeleton in a game that may name its animations otherwise (Returnal: `vfs.LOOK_THROUGH_FOR_ANIMATIONS`),
+skeleton in a game that may name its animations otherwise (Returnal: `look_through_for_animations` in its profile),
 or where nothing named like one is, every package whose name and folders don't rule it out is looked
 through once; with none found, the Pose tab lists what was read (`AnimIndex.survey`). Keys in Unreal's own codecs
 (constant or variable key spacing, per-track compression; float, fixed-point and interval
@@ -300,6 +364,52 @@ AnimSet isn't `bAnimRotationOnly` (the default) or names them in `UseTranslation
 (`ForceMeshTranslationBoneNames` keeps the mesh's); the root keeps its place on the floor. A
 skeletal mesh with bones shows the Pose tab until the game's AnimSets are listed, then only if
 one fits. Collect copies the packages its AnimSets are read from.
+
+**Posing freedom (0.47.0).** On top of an animation's frame, or on the bind pose of a model
+with no animations, any bone can be turned (`posing.py`, the same for every importer that gives a
+`Rig`: FromSoftware and RE Engine models with or without animations, Unreal 3/4/5 skeletal meshes
+whose animations are found, and the packages made of them). A turn is three
+angles in degrees about the bone's own axes, X then Y then Z (three.js's "XYZ" Euler order:
+`Rx · Ry · Rz`), kept by bone name in `MeshOptions.bones`. Each bone's local matrix is the bind
+pose's, replaced by the animation's where it moves the bone, then multiplied by its turn on the
+right; the hierarchy is composed again so children follow, and the bind-pose mesh is skinned with
+its own weights (`world · bind⁻¹`). Without turns the importers pose the model as before. A model
+made of others (configurable models, attached models) passes the turns to each part that has the
+bone (`SourceModel.adjusts_bones`).
+- *Mirror*: bones pair up by the side their names say (`L_`/`R_`, `_l`/`_r`, `Left`/`Right`,
+  ` L `/` R `, `.L`/`.R`, `LUpperArm`/`RUpperArm`, `_L1`/`_R1`), only when the partner exists. A turn
+  is carried across in the model's frame: `D = B·R·Bᵀ` with `B` the bone's bind rotation, reflected
+  across the plane the two bones lie apart in (`S·D·S`, the axis along which the pairs' pivots
+  differ most), then into the partner's frame (`R' = B'ᵀ·D'·B'`).
+- *In the page*: the Pose tab lists the bones as a tree (those that move none of the model's
+  vertices behind *Every bone*), with a find box; the chosen bone gets X, Y and Z sliders with
+  boxes to type in, *Mirror to …*, *Reset bone*; *Reset all*, *Mirror left → right* and back.
+  *Show bones in the 3D view* draws a ball at each bone's pivot (click one to choose it) and three.js's
+  `TransformControls` rotate gizmo, in the bone's local space, on the chosen one; a drag is composed
+  with the turn already there (`q_turn · q_drag`, a bone with mirrored axes conjugated) and sent when
+  it ends.
+- *Saved poses*: the animation, frame and turns kept under a name in the game's library overlay
+  (`poses` of the model's entry, with the skeleton's signature: a hash of its sorted bone names),
+  listed on the Pose tab to apply, rename or delete, and offered to every model of the game with
+  the same signature. The footer under the 3D view names the pose shown; Export's file name, the
+  Generate result's record and saved variations carry the turns.
+- *Attached models*: a model of the library held by a bone or socket of this one, with an offset
+  (millimetres, along the bone's axes), a turn and a scale (`attach.py`, kept in the overlay's
+  `attach` list of the model, by the attached model's path in the game). The model opened is then a
+  wrapper: the base's parts, materials and textures followed by each attached model's (named
+  "Label / part"), its bind-pose mesh weighted whole to the holding bone, posed with the rest, so it
+  follows every frame and turn and goes through Clean, Mesh, Displace, Finish, Cut and Export like
+  the model's own parts. What is attached is part of what the page opens (the overlay's signature for
+  the file); where each one sits is in `MeshOptions.attach`, so moving it only builds the mesh again.
+  A socket holds it where the socket is in the bind pose. Up to 16 per model.
+- *GLB export*: the original model exported as GLB carries its skeleton in the pose shown (each
+  bone's local matrix in the export frame, Y up and scaled like the mesh), the posed mesh bound to it
+  with its four largest weights per vertex, so Blender opens it posed and rigged. An enhanced model's
+  GLB carries the skeleton in its pose without weights (remeshing doesn't keep them).
+- *With the Clean tab (0.45.0)*: the pose, the bones' turns and the attached models make the mesh
+  the Clean tab's steps work on (pose → Clean → Mesh). Its transform (print height, turn, mirror,
+  move, on the floor) is kept as a matrix with the result (`clean.Cleaned.affine`), which moves the
+  bones shown on the Pose tab and the GLB's skeleton with the model.
 
 The library groups models by their FromSoftware naming:
 
@@ -401,8 +511,8 @@ scan time and kept in the settings folder, as the Oodle library is.
   special and cutscene characters), `cars` → Vehicles (group from the type: car, bike, boat,
   heli, plane, trailer), `weap` → Weapons, `objs`/`tobj`/`anim` → Map pieces and props, grouped
   by the `.ide` file's area (`data/maps/LA/...`, `SF`, `vegas`, `generic`), `hier` →
-  Cutscene objects. The `.ipl` files say where each map object is placed; the scan uses them to
-  list the objects each map area places. A `.dff` no `.ide` names (SA's `player.img` clothes,
+  Cutscene objects. The `.ipl` files (text, and San Andreas' binary `bnry` streams in `gta3.img`)
+  say where each map object is placed; a map object's information names the area that places it. A `.dff` no `.ide` names (SA's `player.img` clothes,
   upgrades, `_l` LODs) goes under Other, low-detail copies hidden as for other games.
 - **Vehicles.** A car's frames name its pieces (`chassis`, `door_lf_hi_ok`, `bonnet_dummy`,
   `wheel_rf_dummy`...). Each atomic is a part placed by its frame; `_dam` (damaged) and `_vlo`
@@ -420,13 +530,14 @@ scan time and kept in the settings folder, as the Oodle library is.
   them (the `.ide`'s animation file).
 - **Names.** Vehicles' `.ide` lines carry a text key resolved through the game's `.gxt`
   (III: `TKEY`/`TDAT` UTF-16; VC: tables; SA: version 8 tables keyed by the CRC32 of the key),
-  so `landstal` shows as "Landstalker". Weapons get their names from the `.gxt` weapon keys
-  where there is one; peds and map pieces keep their model names.
+  so `landstal` shows as "Landstalker". Weapons, peds and map pieces keep their model names (the
+  games' text names weapons by slot, not by model).
 - **Differences between the three games** (archive version, IFP and GXT format, colour
   placeholders, executable and folder layout, where `ped.ifp` lives) are a game profile each.
-  They are written as JSON in the format of the game profiles from 0.49.0 (`importers/profiles/`,
-  engine backend `renderware`), so a profile override in the settings folder works for them
-  too. Bully: Scholarship Edition and Manhunt are RenderWare games that could follow with a
+  They are JSON files in the shared profile folder (`importers/profiles/gta3.json`, `gtavc.json`,
+  `gtasa.json`) naming their engine backend (`renderware`), read by the same loader as the other
+  games' profiles: a file of the same name in the settings folder's `profiles/` folder replaces one
+  (see `docs/profiles.md`). Bully: Scholarship Edition and Manhunt are RenderWare games that could follow with a
   profile and their own archive readers.
 - **Collect.** A package keeps the mesh with its parts and skeleton, the baked paint variants,
   every texture the model reads (its dictionary, parents, `vehicle.txd` and `generic.txd`
@@ -645,8 +756,8 @@ and folders carry over.
 mask, `farmhash.py` the fingerprint the mask is keyed by, `index6.py` DOOM 2016's `.index` (0.54.0), `streamdb.py`, `image.py`, `geometry.py` vertex masks
 and streams, `staticmodel.py`, `md6model.py`, `md6skel.py`, `md6anim.py`, `decl.py` the decl
 parser), `games.py` (the three profiles: executable, container version, hash scheme, unit,
-normal green, what is shared; `<settings>/profiles/<game>.json` overrides any of them, e.g.
-`{"unit": 0.01}`, until R7's JSON profiles take over), `store.py` (a
+normal green, what is shared; a game profile in the settings folder with `"engine": "idtech"`
+changes the unit, normal green and executables, see docs/profiles.md), `store.py` (a
 game's index: names → live copies, streamed pieces, loose extracted files), `materials.py`,
 `catalog.py`, `animation.py` (poses for the Pose tab and packages) and `__init__.py`.
 
@@ -713,6 +824,51 @@ used, so the side stays straight instead of swelling into a bulge. This is on by
   mirrored UV seam and reports the error of each method. At 70k vertices integration on the
   mesh cuts the error against v0.1 by 14 to 59 % on every scene; edge keeping and the blur
   clean-up measured worse on these scenes, so they are off by default.
+- **Thin parts (0.46.0).** Relief is sized by the texture alone, so a claw tip a few
+  millimetres thick can be given more relief than it is thick, pushing its two sides through
+  each other, and a cape a few millimetres from the body can be pushed into it. Before the
+  vertices move, `geometry/room.py` measures every vertex's room on both sides: a ball
+  touching the surface at the vertex is grown inward and outward until it meets another part
+  of the surface (the shrinking-ball method of Ma et al. 2012 on the evenly spaced vertices,
+  with a KD-tree for nearest points). Inward room is half the thickness behind the vertex;
+  outward room is half the gap to whatever is in front of it. Each height *h* is then capped
+  softly by the room *R* on its side: *h' = uR tanh(h / uR)*, where *u* is "Room the relief
+  may use" (Displace › More settings, 80 % by default). Small heights stay as they were, large
+  ones bend away from the room and none reach it, and the cap fades out where nothing was met
+  within the distance looked, so open and thick areas keep all their relief. Each vertex only
+  looks 8 times as far as the largest relief two rings around it, so vertices that barely move
+  cost next to nothing; on dense meshes the room is measured at about 150,000 vertices and the
+  rest take the tightest of those near them. Where a part is thinner than the vertex spacing
+  (a blade's edge, the last millimetre of a point) the cap alone still leaves folds, so the
+  move directions of vertices using much of their room are blended with their neighbours',
+  and triangles still crossing are found (`geometry/intersect.py`) and the heights around them
+  damped, a few rounds. The Enhanced panel and the warnings say how many vertices were lowered
+  and by how much. The test bench's thin scenes (a 4 mm blade, three 60 mm claws, a cape 3 mm
+  behind a body; normal maps of 3-texel relief) count the triangle pairs that pass through
+  each other, at 70k vertices:
+
+  | Scene | Relief | Crossing before | Without | Cap and calmer directions | With (repaired) | Relief kept | Vertices lowered | Seconds (thin parts / whole step) |
+  |---|---|---|---|---|---|---|---|---|
+  | Blade | 2.57 mm | 0 | 6,145 | 450 | 0 | 87.1 % | 17,963 | 1.1 / 1.8 |
+  | Claws | 1.38 mm | 0 | 6,171 | 0 | 0 | 98.4 % | 1,452 | 1.0 / 1.6 |
+  | Cape | 4.45 mm | 0 | 245 | 0 | 0 | 94.1 % | 10,788 | 1.3 / 2.0 |
+
+  At 1M vertices (4 cores) keeping thin parts adds 6.7 to 9.0 s to a 10 to 12 s displacement
+  (claws 11.2 → 17.9 s, blade 11.9 → 21.4 s, cape 10.2 → 17.9 s), and every crossing found
+  (2,104, 9,384 and 88) is repaired; 88 to 99 % of the relief is kept. Displacement of the
+  relief bench's panels is unchanged (nothing on them is thin).
+- **Thickness shading (0.46.0).** The 3D view's *Thickness* shading colours the model by the
+  thickness behind each point, against the thinnest wall the printer makes (0.8 mm unless
+  changed) at the height it will be printed (typed in the small panel over the view; when empty,
+  the size shown: the game's, or the print height the Clean tab scaled it to): red under it, orange to yellow up to two and four times it, clay beyond. Single
+  sheets (capes, banners: no thickness of their own) are red. It is measured the same way as
+  the room above, inward only and against surfaces facing towards or away from the point (so a
+  box's corner doesn't make its walls look thin), on an evenly spaced stand-in of up to 300k
+  points for coarse game meshes. Game parts overlap, so a closed part counts as solid
+  throughout, a ball inside it ends only where it does (not against another part pushed into
+  it), and surfaces hidden inside another closed part are left out (shown as thick enough).
+  The engine sends the thickness with the mesh (`model_mesh` with `thickness=1`, one float per
+  vertex in the packed mesh); the page recolours at once when the height or the wall changes.
 - **Height / grayscale maps.** Used directly, with a chosen height range in millimetres.
 - **Green channel.** DirectX and OpenGL normal maps flip green. FromSoftware's games all use
   DirectX, so their models use that. For other models it is detected per texture (the
@@ -725,6 +881,64 @@ used, so the side stays straight instead of swelling into a bulge. This is on by
   known up to a constant on each UV island, so each island is shifted so the islands agree
   along their seams as well as possible, and what still differs is faded smoothly into each
   island over a few vertex spacings.
+
+### Cleaning (Clean tab, before step 1)
+
+Game models carry what shouldn't be printed: a body under the armour, a lining inside a cuirass, capes
+and cloth with no thickness (often inside a bigger part, not a part of their own), stray faces. The
+**Clean** tab (first in the Edit group, `clean.py`) takes them off before the Mesh step, and sets the
+model's print size. Since 0.45.0.
+
+- **A list of steps per model.** Each step is a JSON object (`op` and its settings) kept in the
+  page's prefs (`cleanPlans`, the last 20 models) and saved with each variation (`mesh.clean`). The
+  engine does the list again on the model as built and posed (`SourceModel.build_mesh`: after the
+  pose and the parts, before everything else), so a step can be taken away at any time, and the
+  list is part of every cache key (`MeshOptions.clean`, keyed by a hash of the list). The tab shows
+  each step as a row with what it did ("removed 2 parts, 1,204 faces") and a button that takes it
+  away. Steps run in order; the transform runs last.
+- **Faces by stable ids.** A step that removes faces records them as part index and the face's place
+  in that part (`part << 32 | index`, kept as runs per part), so it finds the same faces with other
+  parts left out, and finds nothing (saying so) when its part is off. Faces a step adds (filled
+  holes) get ids in a part of their own (`1 << 20` plus a hash of the step).
+- **Parts in or out**: the part checkboxes (moved here from the Model tab) and *Remove parts hidden
+  inside others*: a connected shell whose sample points are 99% inside another part's closed shape.
+  The inside test is a winding number from rays cast along a slightly turned axis over a binned grid
+  of the other part's triangles; open shells are closed first where their openings are small
+  (`_closed`), so an armour piece open at the neck still counts as a shape.
+- **Hidden faces** deeper than a depth (mm): each face's centre and corners are tested inside every
+  other part's shape, and the distance to that shape's surface (a KD-tree over triangle samples plus
+  the exact closest point, searched no further than the depth) must reach the depth. Faces close to
+  an opening (an arm entering a sleeve) stay.
+- **Thin sheets** (Jerred's cloth with little or no thickness): (a) *open* shells whose openings
+  would take more than 30% of their area to close (a cape); (b) *two-sided* cloth, two layers within
+  0.02 mm of each other back to back; (c) a *thin* layer, where the surface behind a face (the
+  closest opposing face, along its inward normal) is nearer than the thickness asked for. Thin faces
+  are joined across edges and with the faces facing them, and narrow rim slivers between the two
+  sides join too, so a flap of cloth in a bigger part comes out as one region. The tab lists regions
+  biggest first (at most 40, the smaller ones counted), each highlighted in the 3D view when pointed
+  at; the ones ticked (none to start with) are removed as one step.
+- **Pick and remove**: a click on the model picks the face under it and spreads across edges where
+  the surface bends less than an angle (`FaceGraph.flood`); Shift+click adds, Alt+click takes away;
+  the picked faces show in the 3D view and are removed as one step. The 3D view's triangles are
+  matched to the engine's faces through the order the mesh is sent in (sorted by material).
+- **Repair**: small holes filled (openings up to a size closed with a fan to their middle, taking the
+  material and texture coordinates around them), duplicate two-sided faces dropped (the same
+  triangle twice, either way round), vertices welded within a distance (faces that close up
+  dropped), flipped faces turned (each surface's faces made to agree, outwards on a closed one, by
+  2-colouring the doubled edge graph and choosing per shell by volume or by the shading normals).
+- **Transform** (one step, changed in place): print height (mm, after the turns) or scale, quarter
+  turns and free angles about X, Y, Z, mirror across X, Y, Z, move (mm), stand on the floor. From then
+  on the model is in print millimetres: the stage footer, Model › Size, the Textures and Displace
+  readouts and Export show print millimetres with the game's own muted beside them, and finders
+  (hidden faces, sheets) measure on the model as it is shown.
+- **Command line**: `--clean` steps on `export` and `enhance`: `hidden-parts`, `hidden-faces[:mm]`,
+  `sheets[:mm]`, `holes[:mm]`, `duplicates[:mm]`, `weld[:mm]`, `normals`, `scale:`, `height:`,
+  `rotate:x,y,z`, `mirror:xyz`, `floor`. Finders there work by rule (what they find now) rather than
+  by recorded faces.
+- **The app's side**: `model_stats` (also `clean_check`) does the list and returns each step's row;
+  `clean_find` (a job: hidden parts, hidden faces, sheets), `clean_select` (a click's flood) and
+  `clean_ids` (the 3D view's triangles as stable ids). Addresses of meshes name the list by the page's
+  hash of it, which the engine learns from the JSON sent first (the last 64 kept).
 
 ### Making it watertight (Finish tab, before cutting or export)
 
@@ -845,6 +1059,16 @@ src/darkstl/
                 on disk or inside a pak, and its animations), materials.py (texture roles from slot
                 types), catalog.py (classifies models by the engine's folder layout), animation.py
                 (.motlist / .mot motions -> poses, skinning)
+    profiles/   game profiles: the loader (__init__.py: shipped files, the settings folder's over them,
+                extends, overrides for the engines kept in code) and the shipped *.json (docs/profiles.md)
+    unreal/     Unreal 4/5 games by profile: profile.py (a profile's rules: sorting into kinds and groups,
+                release, keys, names), catalog.py (recognising a game's folder, listing its models,
+                probing an unknown game), names.py (string tables), __init__.py (UnrealImporter, the
+                generic importer Returnal's derives from)
+    returnal/   Returnal: the Unreal importer with Returnal's profile
+    fbx/        FBX: reader.py (binary and text node trees), scene.py (objects, connections, geometry
+                layers, transforms, axes and units, skins, bind poses, animation curves), __init__.py
+                (FbxImporter: meshes, materials and textures, skeleton, animations)
     wavefront.py  OBJ + MTL
     gltf.py     glTF 2 (.gltf, .glb) from Blender, FModel and other tools
     psk.py      ActorX .psk/.pskx from UModel and FModel, and their material files
@@ -855,7 +1079,8 @@ src/darkstl/
                 game's index of live resources, or a collected copy), materials.py (material2 decls
                 -> texture roles), catalog.py, animation.py (poses), DOOM Eternal so far
   geometry/     TriMesh, subdivision, isotropic remesh, UV seam matching, closest-point queries,
-                displacement
+                displacement, room.py (room around thin parts, thickness, keeping thin parts from
+                clipping), intersect.py (triangles passing through each other)
   textures/     DDS decoding, normal map -> height, grayscale height, UV coverage, texel size
   library.py    the library: game folders scanned by every importer, by game, kind and group
   configs.py    configurable models: configuration lists, finding their files, assembling a choice
@@ -866,19 +1091,25 @@ src/darkstl/
   overlay.py    the library overlay: the user's own changes per game (names, folders, textures) and
                 the names the game gives its models
   library_index.py  the library index: every model of a game with its size and counts, for the search
+  library_collections.py  the user's collections, tags and stars, across every game
                 and the list's columns
   variations.py saved variations: enhanced models kept beside the model's package
   thumbnails.py preview pictures for the library's cards, cached on disk
   pipeline.py   the three steps with their settings
+  clean.py      the Clean tab's steps: hidden parts and faces, thin sheets, picked faces, repairs, transform
   cut.py        the model made solid and cut into pieces with joints (manifold3d)
   export.py     STL, OBJ, PLY, GLB writers
   cli.py        command line
   app/          the desktop app: service.py (the page's commands), server.py (local web
                 server), meshpack.py (meshes for the 3D view), config.py, desktop.py (window),
-                painter.py (where Model Painter is, and opening an export in it)
+                painter.py (where Model Painter is, and opening an export in it),
+                organise.py (collections, tags, stars, related models, problems), bulk.py
+                (the queue of bulk actions)
   web/          the page: Model Library's interface (styles.css, ui/ layout, inspector,
                 menus) with Dark STL's pages: home.js, browser.js, search.js (every game),
-                models.js (cards, list rows and columns), modelpage.js, configure.js, settings.js
+                models.js (cards, list rows and columns, choosing several), modelpage.js,
+                configure.js, clean.js, settings.js, organise.js (collections, tags, bulk menus,
+                related), collection.js (a collection's page, Starred), queue.js, problems.js
 tests/          synthetic game files built byte by byte (no game data in the repo)
 ```
 
@@ -928,7 +1159,13 @@ differs:
       pieces are watertight since 0.9.0 (openings closed, open surfaces thickened, parts
       united); the same could be offered for the whole model
 - [x] Cut into pieces with joints (flat, pegs, dowels, magnets, key) and a clearance per cut
-- [ ] Thin-part thickening for blades and capes
+- [x] Clean tab (0.45.0): parts in or out, parts and faces hidden inside others, thin sheets (open,
+      two-sided, thin) listed and removed, faces picked in the 3D view, holes, duplicates, weld,
+      flipped faces, print height and placement; a list of steps per model, done again on every build
+- [x] Thin parts kept from being displaced through themselves or into close parts (room per
+      vertex, soft cap, calmer directions, crossing repair; bench thin scenes) (0.46.0)
+- [x] Thickness shading: what is too thin to print at a chosen height (0.46.0)
+- Thickening thin parts for printing is print finishing, which moved to Model Painter (0.43.0)
 - [x] Per-material strength and on/off in the material list
 - [x] Use detail normal maps as well as the main normal map (blend maps still to do)
 - [ ] Height-map preview painted on the model before running the full step
@@ -945,10 +1182,21 @@ differs:
       and the handoff to Model Painter (For Model Painter GLB, Open in Model Painter)
 - [x] In-game names (weapon, armour and character names from the game's text and param files):
       FromSoftware games (0.44.0)
-- [ ] In-game names for the other importers (Cyberpunk, Borderlands, Returnal, RE Engine)
+- [x] In-game names for the other importers (0.49.0): the Unreal games' string tables (Returnal,
+      Borderlands 3, Wonderlands, Borderlands 4 and any other), Borderlands 1/2/TPS's `.INT` text, Cyberpunk's
+      weapons from its on-screen text
+- [ ] In-game names for the RE Engine games (their `.msg` text joined through the item data)
+- [x] Import breadth (0.49.0): game profiles as JSON (below, from the backlog), any Unreal 4/5 game through
+      the generic importer, FBX files
 - [x] One search across every game, with filters, a list view with sortable columns, sizes and
       counts on the cards, and Recent on Home (0.44.0)
-- [ ] Batch queue: enhance and export a whole group with one set of settings
+- [x] Library II (0.48.0): collections, tags and stars across games; related models (armour sets,
+      sheaths, low-detail copies, a character's parts); turntable and posed previews, card sizes;
+      choosing several models and the queue (Collect, Export as GLB, Export packages, Enhance with
+      the current settings); each game's Problems; first-run game tiles; Settings in three pages
+- [x] Posing freedom (0.47.0): bones turned on top of a frame or the bind pose (sliders and a
+      rotate gizmo), mirrored left ↔ right by name, saved poses offered to models with the same
+      skeleton, library models attached to a bone or socket, the GLB keeping the skeleton posed
 - [ ] Read Elden Ring MATBIN files for exact material maps
 - [ ] Dark Souls II (FLVER2 with its own texture layout)
 - [ ] Importers for other game families, added as they are needed
@@ -998,7 +1246,7 @@ The plan in the backlog entry below, built in stages:
 The plan is in Reading Grand Theft Auto files above.
 
 - [x] Plan: formats, importer layout, kinds and names, Collect, phases
-- [ ] RenderWare trilogy: GTA III, Vice City, San Andreas (0.50.0)
+- [x] RenderWare trilogy: GTA III, Vice City, San Andreas (0.50.0), on synthetic files
 - [ ] GTA V: RPF7 with keys from the executable, peds as configurable models, vehicles, posing (0.51.0)
 - [ ] GTA IV and Episodes from Liberty City on the shared RAGE reader (0.52.0)
 - [ ] Trilogy Definitive Edition as a profile on the generic Unreal importer
@@ -1016,19 +1264,19 @@ The plan is in Reading id Tech 6/7/8 files above.
 - [ ] DOOM: The Dark Ages: version 13 containers, its stream ids and changed layouts (0.55.0)
 - [ ] Check each on Jerred's installs
 
+- [x] **Game files instead of per-game code** (raised by Jerred on 2026-11-07, built in 0.49.0). A JSON
+      profile per game names the engine backend (`unreal4`, `unreal5`, `unreal3`, `fromsoft`, `reengine`,
+      `redengine`) and its settings: the files and folder names that say a folder is the game, the engine
+      release, AES keys and type mappings, how folders and names sort models into kinds and groups, texture
+      role names, the normal maps' green direction, which text names models, and what Collect copies.
+      Shipped in `importers/profiles/`, replaced or added to from `<settings>/profiles/`. The Unreal 4/5
+      games (Returnal, Borderlands 3, Wonderlands, Borderlands 4) are read entirely from theirs, and a
+      generic Unreal importer reads any other with `unreal-defaults.json`; the FromSoftware, RE Engine and
+      Cyberpunk tables stay in code and take a profile's overrides. Engine readers stay code. The format is
+      in [profiles.md](profiles.md).
+
 ### Backlog (on hold)
 
-- [ ] **Game files instead of per-game code.** Most of what makes a game differ from others on
-      the same engine is settings: its folder layout and executable, engine release, AES key and
-      type mappings, how folders and names sort models into groups, texture role suffixes
-      (`_BaseColor`, `_N`, ...), the normal maps' green direction, and what Collect copies. Move
-      those into a JSON file per game that names the engine backend it uses (`unreal4`,
-      `unreal3`, `fromsoft`, `reengine`, `redengine`): shipped with the app, overridable from a
-      settings folder (like configurations), so a game is added or tuned without a release.
-      Engine readers stay code, and format quirks (unversioned packages, compressed packages,
-      appearance files) are still fixed there. Start with the Unreal 4/5 games (Returnal,
-      Borderlands 3, Wonderlands, Borderlands 4) and a generic Unreal fallback, then the other
-      engines. Raised by Jerred on 2026-11-07, held for now.
 - [ ] **Model packages between the importers and the editor** (approved by Jerred on 2026-11-07
       and being built in stages, see Phase 5). Importers convert a game model
       into a self-contained package (glTF for mesh, skeleton and animations; a JSON sidecar for
@@ -1059,6 +1307,11 @@ The plan is in Reading id Tech 6/7/8 files above.
 
 ## Known limits today
 
+- GTA III, Vice City and San Andreas have only been read from synthetic files so far. Not read
+  yet: a car's wheels kept in the shared `wheels.dff` (when its own file has none; most cars carry
+  their own), San Andreas' player clothes put together as one figure (they are listed one by one
+  under Characters / Player clothes), night vertex colours, reflection and specular maps, and
+  console (PS2, Xbox) files. Cutscene animations (`cuts.img`) aren't offered on the Pose tab.
 - Of the real game files, Dark Souls Remastered weapons and Bloodborne characters, objects and
   armour have been loaded so far (Phase 1). The RE Engine importer has only seen synthetic files.
 - RE Engine: `.pak` archives with an encrypted table of contents (Monster Hunter Wilds and later)
@@ -1068,10 +1321,29 @@ The plan is in Reading id Tech 6/7/8 files above.
   `.motfsm2` setups (rather than in the motlists themselves) are not used.
 - Output is not guaranteed watertight (pieces cut on the Cut tab are); most slicers repair it,
   but Phase 2 adds a proper fix.
+- Keeping thin parts measures room on the evenly spaced mesh, so parts thinner than about two
+  vertex spacings are handled by the repair step rather than the cap, and lose more of their
+  relief there. The Thickness shading counts an open part (most game parts have openings at
+  the neck or cuffs) as a single sheet where its inward ball ends against the front of another
+  part pushed into it; closed parts don't have this problem.
+- Clean tab steps record faces by part and place in the part: a model whose importer later builds it
+  differently (or a configurable model with other parts chosen) may find other faces there; each
+  step's row says what it removed, so such a step can be taken away and made again. Thin sheets
+  are measured on the model as it is: cloth thicker than the thickness asked for is a solid.
 - Without an anibnd beside the model, skinned meshes (characters, armor) are shown in their
   bind pose, which is a T or A pose. Armour pieces take the player's animations
   (`c0000.anibnd`) only when that archive is copied next to them.
 - Animations that use root motion are shown in place; cloth simulated in the game keeps its
   bind pose.
+- Posing freedom: turning bones needs a skeleton and the bind-pose mesh's skin weights. Unreal
+  skeletal meshes with no animations found, Cyberpunk models, and glTF and PSK files from other
+  tools (read in their bind pose without weights) have no bones to turn yet (FBX files' do, from 0.49.0). Packages made
+  before 0.47.0 of models without animations kept no skeleton: collect them again to turn their
+  bones. A socket holds an attached model where the socket is in the bind pose (sockets aren't
+  posed); attach to a bone to have it follow. Mirroring works out the plane from the bind pose's
+  pairs of bones, so a skeleton whose sides aren't mirror images in its bind pose mirrors only
+  roughly. Attaching is for library models (not files opened on their own, or configurable
+  models). An enhanced model's GLB has the skeleton without skin weights, and none when the Clean
+  tab's transform moved or sized the model it was made from.
 - Isotropic remeshing needs the optional `pyacvd` package; the app falls back to subdivision
   without it. The Windows app includes it, with only the parts of VTK it uses.

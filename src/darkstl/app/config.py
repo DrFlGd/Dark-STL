@@ -60,6 +60,8 @@ class Config:
     library_dir: str = ""  # where collected copies of game files go (empty: the app's own folder)
     model_painter: str = ""  # Model Painter's program, to open exports in (empty: found by itself, painter.py)
     prefs: dict = field(default_factory=dict)  # the page's own preferences
+    posed_previews: bool = True  # draw characters' previews in a resting frame of an idle animation
+    last_enhance: dict = field(default_factory=dict)  # game -> the settings it was last generated with (bulk Enhance)
     path: Path | None = field(default=None, repr=False, compare=False)
 
     @classmethod
@@ -69,10 +71,13 @@ class Config:
             raw = json.loads(path.read_text("utf-8"))
         except (OSError, ValueError):
             raw = {}
-        keys = ("game_folders", "texture_dirs", "oodle", "export_dir", "library_dir", "model_painter", "prefs")
+        keys = ("game_folders", "texture_dirs", "oodle", "export_dir", "library_dir", "model_painter", "prefs",
+                "posed_previews", "last_enhance")
         known = {k: raw[k] for k in keys if k in raw}
         cfg = cls(**known)
         cfg.game_folders = [f for f in cfg.game_folders if isinstance(f, dict) and f.get("path")]
+        cfg.posed_previews = bool(cfg.posed_previews)
+        cfg.last_enhance = cfg.last_enhance if isinstance(cfg.last_enhance, dict) else {}
         cfg.path = path
         return cfg
 

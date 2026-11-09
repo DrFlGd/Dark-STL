@@ -17,7 +17,7 @@ from ...collect import RelatedFile
 from ...errors import FormatError
 from ...geometry.mesh import TriMesh, weld
 from ...model import CatalogEntry, MeshOptions, Part, Rig, SourceModel, Texture, frame_matrix
-from ..base import Importer, ScanProgress
+from ..base import Importer, ScanProgress, index_entries, made_by, source_path
 from . import animation, catalog, files, materials
 from . import games as profiles
 from .formats import mdf as mdffmt
@@ -56,7 +56,9 @@ class REEngineImporter(Importer):
     key = "reengine"
     name = "Capcom RE Engine (.mesh)"
     file_filter = "RE Engine models (*.mesh *.mesh.*)"
-    games = profiles.GAMES
+    @property
+    def games(self) -> tuple[str, ...]:  # with those the settings folder's game profiles add
+        return profiles.game_names()
 
     def detect_game(self, folder: Path) -> str | None:
         return profiles.detect_game(folder)
@@ -90,6 +92,26 @@ class REEngineImporter(Importer):
         from .characters import characters_from_folders
 
         return from_folders(entries, game) + characters_from_folders(entries, game)
+
+    def related(self, entry: CatalogEntry, entries: list[CatalogEntry]) -> list[tuple[str, CatalogEntry]]:
+        """A character's other parts (body, face, hair...), each kept in a folder of its own below the
+        character's folder."""
+        from .characters import character_part
+
+        def part(e: CatalogEntry):
+            return character_part(e, source_path(e)) if made_by(e, self.key) else None
+
+        mine = part(entry)
+        if mine is None:
+            return []
+        index = index_entries(entries, self.key, lambda e: (part(e) or (None,))[0])
+        out = []
+        for e in index.get(mine[0], []):
+            if e is entry:
+                continue
+            slot = part(e)[1]
+            out.append((f"Same character: {slot.replace('_', ' ')}", e))
+        return out
 
     def can_open(self, path: Path) -> bool:
         return files.is_mesh_file(Path(path))
@@ -176,7 +198,8 @@ class REEngineImporter(Importer):
             name=asset.name, path=Path(path), importer=self.key, build=build, game=game, parts=parts,
             materials=[materials.to_material(i) for i in infos],
             textures={k: _texture(ref) for k, ref in asset.textures.items()},
-            info=info, notes=notes, animations=anims, rig=_rig(anims) if anims is not None else None,
+            info=info, notes=notes, animations=anims,
+            rig=_rig(anims) if anims is not None else _bind_rig(mesh.bones, asset.name) if skinned else None,
         )
 
     def describe(self, path: Path) -> list[str] | None:
@@ -285,6 +308,22 @@ def _rig(anims) -> Rig:
         return list(anims.names_), g @ anims.local_pose(anim, anims.clamp(anim, frame)) @ gi
 
     return Rig(list(anims.names_), anims.parents.copy(), g @ anims.local @ gi, g @ anims.bind_world @ gi, pose_locals)
+
+
+def _bind_rig(bones, name: str) -> Rig:
+    """A skinned mesh's bones without motions to pose them: for bone adjustments on its bind pose."""
+    from ...posing import compose_hierarchy
+
+    g = frame_matrix(GAME_TO_EXPORT)
+    gi = np.linalg.inv(g)
+    parents = np.array([b.parent for b in bones], np.int64)
+    local = animation.bind_locals(bones)
+
+    def pose_locals(anim: str, frame: int):
+        raise FormatError(f"{name} has no animations to pose it with")
+
+    return Rig([b.name for b in bones], parents, g @ local @ gi, g @ compose_hierarchy(local, parents) @ gi,
+               pose_locals)
 
 
 __all__ = ["REEngineImporter", "mesh_summary"]
