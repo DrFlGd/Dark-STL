@@ -182,8 +182,9 @@ function GameProfiles({ s, reload }) {
   return html`<section class="ls-section" id="settings-profiles">
     <h2>Game profiles</h2>
     <p class="muted">Each Unreal Engine game Dark STL reads has a profile: a JSON file saying which files show a folder is the game, its engine release and keys,
-      and how the folders it keeps its models in sort them into kinds and groups. A file in the profiles folder replaces Dark STL's own of the same name, and
-      a new file adds a game, so a game can be added or tuned without waiting for a new version (the format is in docs/profiles.md).
+      how the folders it keeps its models in sort them into kinds and groups, and which of its text names them. A file in the profiles folder replaces Dark STL's own of the same name, and
+      a new file adds a game, so a game can be added or tuned without waiting for a new version (the format is in docs/profiles.md). A profile there for a
+      FromSoftware, RE Engine or Cyberpunk game changes how its folder is recognised, or adds a game of the same engine.
       Unreal games you add that Dark STL doesn't know get a profile here when you add their folder. Rescan a game's folder after changing its profile.</p>
     ${p.user.length ? html`<ul class="ls-list" id="profiles-user">${p.user.map((x) => html`<li key=${x.path}>
         <span>${x.name}${" "}<span class="muted">${x.defaults ? "every Unreal game's defaults" : x.engine}${x.replaces ? " · replaces Dark STL's" : ""}</span>${" "}<span class="note-path">${x.file}</span></span>

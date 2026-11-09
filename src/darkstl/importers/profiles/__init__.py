@@ -127,13 +127,13 @@ def _read(path: Path, shipped: bool) -> Profile | None:
     except (OSError, ValueError) as exc:
         _problems.append(f"{path.name}: {exc}")
         return None
-    if not isinstance(data, dict) or not data.get("name") or not data.get("engine"):
-        _problems.append(f"{path.name}: a profile needs a name and an engine")
+    if not isinstance(data, dict) or not data.get("name") or not (data.get("engine") or data.get("extends")):
+        _problems.append(f"{path.name}: a profile needs a name and an engine (or a profile it extends)")
         return None
     if int(data.get("format") or FORMAT) > FORMAT:
         _problems.append(f"{path.name}: made for a newer Dark STL (format {data.get('format')})")
         return None
-    return Profile(str(data["name"]).strip(), str(data["engine"]).strip().lower(), data, path, shipped,
+    return Profile(str(data["name"]).strip(), str(data.get("engine") or "").strip().lower(), data, path, shipped,
                    bool(data.get("defaults")))
 
 
@@ -202,12 +202,34 @@ def _resolve_extends(found: list[Profile]) -> list[Profile]:
             data["importer"] = base.importer
         return data
 
+    def engine_of(p: Profile, depth: int = 0) -> str:
+        base = by_name.get(str(p.data.get("extends") or "").strip().lower())
+        if p.engine or base is None or base is p or depth > 8:
+            return p.engine
+        return engine_of(base, depth + 1)
+
     out = []
     for p in found:
         if p.data.get("extends"):
-            p = Profile(p.name, p.engine, resolved(p), p.source, p.shipped, p.defaults)
+            p = Profile(p.name, engine_of(p), resolved(p), p.source, p.shipped, p.defaults)
+        if not p.engine:
+            _problems.append(f"{p.source.name if p.source else p.name}: a profile needs an engine")
+            continue
         out.append(p)
     return out
+
+
+def shipped_profiles() -> list[Profile]:
+    """The profiles that come with Dark STL, as shipped (whether or not the settings folder replaces them)."""
+    with _lock:
+        known = _cache.get("shipped")
+    if known is None:
+        saved = list(_problems)
+        known = [p for p in (_read(f, True) for f in _listing(SHIPPED)) if p is not None]
+        _problems[:] = saved
+        with _lock:
+            _cache["shipped"] = known
+    return list(known)
 
 
 def problems() -> list[str]:

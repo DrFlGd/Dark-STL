@@ -318,6 +318,68 @@ def test_settings_and_themes(page, app, weapon_dir):  # noqa: F811
     page.wait_for_selector("#about-head")
 
 
+def test_an_unreal_game_without_a_profile_is_added_by_name_and_its_profile_shown(page, app, tmp_path):
+    from test_profiles import _unreal_game
+
+    opened = []
+    app.service.host.open_path = opened.append
+    root = _unreal_game(tmp_path, "Moonfall", folder="Moonfall Deluxe")
+    page.goto(app.url + "#/settings")
+    page.wait_for_selector("#settings-profiles")
+    assert page.locator("#profiles-none").count() == 1
+    page.click("#settings-add-folder")
+    page.fill("#folder-path", str(root))
+    page.wait_for_selector("#folder-unreal")
+    assert "its project is Moonfall" in page.inner_text("#folder-unreal")
+    # the install folder's name is suggested, and can be changed
+    page.wait_for_selector("#folder-game-name")
+    assert page.input_value("#folder-game-name") == "Moonfall Deluxe"
+    page.fill("#folder-game-name", "Moon Fall")
+    page.click("#add-folder-dialog-ok")
+    page.wait_for_selector('#kind-tiles [data-sub="Weapons"]', timeout=60000)
+    assert page.locator('#kind-tiles [data-sub="Characters"]').count() == 1
+    # its profile is listed in Settings, and shown when asked
+    page.goto(app.url + "#/settings")
+    page.wait_for_selector("#profiles-user")
+    assert "Moon Fall" in page.inner_text("#profiles-user")
+    page.click("#profiles-user button")
+    page.wait_for_function("document.querySelector('#profiles-user button') && !document.querySelector('#profiles-user button').disabled")
+    assert opened and opened[-1].endswith("moon-fall.json")
+    # a shipped profile copied to be changed: listed as the user's, replacing Dark STL's
+    page.click("#profiles-shipped summary")
+    row = page.locator("#profiles-shipped li", has_text="Returnal")
+    row.locator(".profile-copy").click()
+    page.wait_for_selector("#profiles-user li:has-text('Returnal')")
+    assert "replaces Dark STL's" in page.inner_text("#profiles-user")
+    assert opened[-1].endswith("returnal.json")
+    page.click("#profiles-open")
+    page.wait_for_function("document.querySelector('#profiles-open') && !document.querySelector('#profiles-open').disabled")
+    assert opened[-1].endswith("profiles")
+
+
+def test_an_fbx_model_opens_with_its_textures_and_poses(page, app, tmp_path):
+    import synth_fbx
+
+    folder = tmp_path / "export"
+    (folder / "textures").mkdir(parents=True)
+    (folder / "textures" / "Skin_D.png").write_bytes(synth_fbx.png((200, 50, 50, 255)))
+    (folder / "textures" / "Cloth_N.png").write_bytes(synth_fbx.png((128, 128, 255, 255)))
+    (folder / "strip.fbx").write_bytes(synth_fbx.skinned_quad_scene(animated=True))
+    opened = app.service.call("model_open", {"path": str(folder / "strip.fbx")})
+    page.goto(f"{app.url}#/model/{quote(opened['id'], safe='')}")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    assert page.locator("#stage-error").count() == 0
+    page.click("#rail-textures")
+    page.wait_for_selector("text=Skin_D")
+    page.click("#rail-pose")
+    page.wait_for_selector("#pose-anim")
+    assert page.locator("#pose-anim option").all_inner_texts()[0].startswith("Wave")
+    page.select_option("#pose-anim", "Wave")
+    page.wait_for_selector("#pose-frame")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    assert page.locator("#stage-error").count() == 0
+
+
 def test_previews_stay_shown_and_a_job_stops_from_the_status_bar(page, app, weapon_dir):  # noqa: F811
     app.service.call("folder_add", {"path": str(weapon_dir)})
     page.goto(app.url + "#/browse/Dark%20Souls%20III/Weapons")

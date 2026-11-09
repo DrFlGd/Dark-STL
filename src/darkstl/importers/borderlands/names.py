@@ -91,34 +91,42 @@ def text_files(root: Path) -> list[Path]:
     return out[:MAX_FILES]
 
 
+def _props_refs(props, depth: int) -> list:
+    return [r for name in props.names() for v in props.all(name) for r in _refs(v, depth + 1)]
+
+
 def _refs(value, depth: int = 0) -> list:
-    """The object references in a property's value (in arrays and structs too)."""
+    """The object references in a property's value (in structs and arrays too). An array's elements aren't typed
+    in the file: they're read as tagged structs, else as references when every one is a reference to an object
+    of one class."""
     from .formats.props import ArrayValue, ObjectRef, StructValue
 
     if isinstance(value, ObjectRef):
         return [value] if value else []
     if depth > 2:
         return []
-    out = []
     if isinstance(value, StructValue):
         try:
-            for name in value.props.names():
-                out += [r for v in value.props.all(name) for r in _refs(v, depth + 1)]
-        except (FormatError, ValueError, IndexError, KeyError):
-            return out
-    elif isinstance(value, ArrayValue):
-        for getter in (value.objects, value.structs):
-            try:
-                items = getter()
-            except (FormatError, ValueError, IndexError, KeyError, TypeError):
-                continue
-            for item in items:
-                if hasattr(item, "names") and not isinstance(item, ObjectRef):  # a struct's Props
-                    out += [r for n in item.names() for v in item.all(n) for r in _refs(v, depth + 1)]
-                else:
-                    out += _refs(item, depth + 1)
-            break
-    return out
+            return _props_refs(value.props(), depth)
+        except (FormatError, ValueError, IndexError, KeyError, EOFError):
+            return []
+    if isinstance(value, ArrayValue) and value.count:
+        try:
+            return [r for item in value.structs() for r in _props_refs(item, depth)]
+        except (FormatError, ValueError, IndexError, KeyError, EOFError, UnicodeDecodeError):
+            pass
+        if len(value.raw) != 4 * value.count:
+            return []
+        refs = value.objects()
+        n_exports, n_imports = len(value.pkg.exports), len(value.pkg.imports)
+        if not all(r.ref and -n_imports <= r.ref <= n_exports for r in refs):
+            return []
+        try:
+            classes = {r.class_name for r in refs}
+        except (IndexError, ValueError):
+            return []
+        return refs if len(classes) == 1 else []
+    return []
 
 
 def meshes_named(root: Path, cache: Path | None = None, fresh: bool = False) -> dict[str, str]:

@@ -408,18 +408,22 @@ class Service:
         from ..importers import profiles
 
         folder = profiles.settings_folder()
-        every = profiles.all_profiles()
-        user = {p.name.lower() for p in every if not p.shipped}
-        shipped_files = {p.name.lower() for p in profiles._listing(profiles.SHIPPED)}
+        mine = [p for p in profiles.all_profiles() if not p.shipped]
+        shipped = profiles.shipped_profiles()
+        my_names = {p.name.lower() for p in mine}
+        my_files = {p.source.name.lower() for p in mine if p.source}
+        shipped_names = {p.name.lower() for p in shipped}
+        shipped_files = {p.source.name.lower() for p in shipped if p.source}
 
         def row(p) -> dict:
             return {"name": p.name, "engine": p.engine, "file": p.source.name if p.source else "",
                     "path": str(p.source) if p.source else "", "defaults": p.defaults}
 
         return {"dir": str(folder) if folder else "",
-                "shipped": [{**row(p), "replaced": p.name.lower() in user} for p in every if p.shipped],
-                "user": [{**row(p), "replaces": bool(p.source and p.source.name.lower() in shipped_files)}
-                         for p in every if not p.shipped],
+                "shipped": [{**row(p), "replaced": p.name.lower() in my_names
+                             or bool(p.source and p.source.name.lower() in my_files)} for p in shipped],
+                "user": [{**row(p), "replaces": p.name.lower() in shipped_names
+                          or bool(p.source and p.source.name.lower() in shipped_files)} for p in mine],
                 "problems": profiles.problems()}
 
     def cmd_profile_copy(self, args: dict) -> dict:
@@ -431,6 +435,8 @@ class Service:
 
         name = str(args.get("name") or "")
         prof = next((p for p in profiles.all_profiles() if p.name == name), None)
+        if prof is None or (args.get("shipped") and not prof.shipped):
+            prof = next((p for p in profiles.shipped_profiles() if p.name == name), prof)
         folder = profiles.settings_folder()
         if prof is None or prof.source is None or folder is None:
             raise AppError(f"There is no game profile called {name}.")

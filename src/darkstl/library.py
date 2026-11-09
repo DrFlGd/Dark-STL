@@ -103,7 +103,7 @@ def scan_folder_kept(root: str | os.PathLike, game: str | None = None,
                 kept.state[imp.key] = state
     if not found and not notes:
         notes.append("No models were found in this folder. Choose the game's folder (unpacked), or a folder of "
-                     "extracted model files such as .partsbnd, .chrbnd, .objbnd, .flver or .obj.")
+                     "extracted model files such as .partsbnd, .chrbnd, .objbnd, .flver, .fbx, .gltf or .obj.")
     return sorted(found, key=lambda e: e.sort_key), notes, kept
 
 
