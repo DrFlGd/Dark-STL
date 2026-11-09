@@ -35,6 +35,8 @@ importer and registering it in `importers/__init__.py`:
 | RE Engine (Capcom) | `.mesh` models (every generation from RE2 to RE Requiem, streamed buffers included), `.mdf2` materials, `.tex` textures, read from extracted files or from `.pak` archives through a community file list. Games in `importers/reengine/games.py` | Synthetic RE2 and RE4 files; real files next |
 | Wavefront OBJ | OBJ + MTL with PNG/JPG/TGA/DDS textures, from any other tool | Done |
 | glTF | `.gltf` (with its `.bin` and pictures) and `.glb`, as Blender, FModel and most tools export: each mesh a part placed by its node, base colour and normal textures (green up), Y up turned to Z up; a model too big to be in metres read as centimetres. Skinned meshes in their bind pose | Synthetic files (0.35.0) |
+| Unreal Engine 4/5 games, by game profile | Any Unreal 4/5 game's `.pak` files and IoStore containers (`.utoc`/`.ucas`), or files extracted from them, with the readers the Borderlands importer brought (skeletal and static meshes, textures, material instances, animations). What differs per game is its JSON profile (`importers/profiles/*.json`, see [profiles.md](profiles.md)): Returnal, Borderlands 3, Wonderlands and Borderlands 4 ship one; a folder of a game no profile names is added under the name the user types, sorted by `unreal-defaults.json`'s folder rules, and a profile for it is written into the settings folder. Names from the game's string tables | Synthetic files (0.49.0); Returnal and Borderlands 3 as before |
+| FBX | `.fbx`, binary (6.1 to 7.7) and text, as Blender, Maya, 3ds Max, Unreal and the modding tools write it, read by Dark STL's own reader (`importers/fbx/`): every mesh the scene places (a part per mesh and material), the file's axes and units turned into metres with Z up, materials' textures from the paths the file stores, by name in the export folder, or embedded in the file; skin clusters as skin weights with the skeleton and bind pose, and the file's animation stacks for the Pose tab and packages | Synthetic files (0.49.0) |
 | ActorX PSK/PSKX | UModel's and FModel's exports of Unreal models: points, wedges, faces and materials, mirrored from Unreal's frame like the Unreal games' own models; each material's textures found by name beside the model, from UModel's `.mat`, FModel's `.json` and UModel's `.props.txt` material files, then from texture names like the material's. The skeleton isn't read | Synthetic files (0.35.0) |
 | RenderWare (GTA III, Vice City, San Andreas) | `.img` archives, `.dff` models (parts, skins, vehicle frames), `.txd` textures, `.ifp` animations, `.ide`/`.ipl`/`.gxt` for kinds, areas and names. See Reading Grand Theft Auto files | Planned (0.50.0) |
 | RAGE (GTA V, then GTA IV) | `.rpf` v7 and IMG3 archives with keys found in the user's executable, RSC7/RSC5 resources: `.ydr`/`.wdr`, `.ydd` ped components, `.yft` vehicles, `.ytd` textures, `.ycd` animations | Planned (0.51.0 GTA V, 0.52.0 GTA IV) |
@@ -157,7 +159,14 @@ the tests call directly.
   A weapon model takes the name of the lowest row that uses it (the plain weapon, not its +1 or
   infusions); a character the name most of its rows give. The table is cached per folder by its
   files' sizes and dates. Packages keep the name, so a collected copy is named without the game.
-  Cyberpunk, Borderlands, Returnal and the RE Engine games give none yet.
+  From 0.49.0: the Unreal 4/5 games' string tables (`importers/unreal/names.py`: `StringTable` assets
+  whose keys end as a name, `Carbine_Name`, matched to the mesh of the same name, `SK_Carbine`, by the
+  `names` rules of the game's profile), Borderlands 1/2/TPS's localised text (`importers/borderlands/names.py`:
+  the `.INT` file beside each package, whose objects with a name text refer to the meshes they show,
+  followed into other packages), and Cyberpunk's on-screen text (`importers/redengine/names.py`:
+  `onscreens.json`, loose, WolvenKit's JSON or in `lang_en_text.archive`; a weapon's meshes are named after
+  the text that is exactly its model's name, as the game joins items to text in TweakDB, which isn't read).
+  The RE Engine games give none yet: their text (`.msg`) is joined to models through item data not read.
 - **The library index and the search across every game (0.44.0).** `library_index.py` keeps a
   JSON file per game (`<cache>/library/index-<game>-<hash>.json`) written at each scan: every model's
   names, kind, file and what's known of it (size in mm, vertices, triangles, parts, textures,
@@ -271,7 +280,7 @@ animation's tracks (`CompressedTrackToSkeletonMapTable`) to bone names, matched 
 Animations are found by reading the header of every package that looks like one (name or folder)
 and keeping those importing the mesh's skeleton, cached per game
 (`unreal-animations-<hash>.json`, with each animation's length). When that finds none for a
-skeleton in a game that may name its animations otherwise (Returnal: `vfs.LOOK_THROUGH_FOR_ANIMATIONS`),
+skeleton in a game that may name its animations otherwise (Returnal: `look_through_for_animations` in its profile),
 or where nothing named like one is, every package whose name and folders don't rule it out is looked
 through once; with none found, the Pose tab lists what was read (`AnimIndex.survey`). Keys in Unreal's own codecs
 (constant or variable key spacing, per-track compression; float, fixed-point and interval
@@ -991,6 +1000,16 @@ src/darkstl/
                 on disk or inside a pak, and its animations), materials.py (texture roles from slot
                 types), catalog.py (classifies models by the engine's folder layout), animation.py
                 (.motlist / .mot motions -> poses, skinning)
+    profiles/   game profiles: the loader (__init__.py: shipped files, the settings folder's over them,
+                extends, overrides for the engines kept in code) and the shipped *.json (docs/profiles.md)
+    unreal/     Unreal 4/5 games by profile: profile.py (a profile's rules: sorting into kinds and groups,
+                release, keys, names), catalog.py (recognising a game's folder, listing its models,
+                probing an unknown game), names.py (string tables), __init__.py (UnrealImporter, the
+                generic importer Returnal's derives from)
+    returnal/   Returnal: the Unreal importer with Returnal's profile
+    fbx/        FBX: reader.py (binary and text node trees), scene.py (objects, connections, geometry
+                layers, transforms, axes and units, skins, bind poses, animation curves), __init__.py
+                (FbxImporter: meshes, materials and textures, skeleton, animations)
     wavefront.py  OBJ + MTL
     gltf.py     glTF 2 (.gltf, .glb) from Blender, FModel and other tools
     psk.py      ActorX .psk/.pskx from UModel and FModel, and their material files
@@ -1096,7 +1115,12 @@ differs:
       and the handoff to Model Painter (For Model Painter GLB, Open in Model Painter)
 - [x] In-game names (weapon, armour and character names from the game's text and param files):
       FromSoftware games (0.44.0)
-- [ ] In-game names for the other importers (Cyberpunk, Borderlands, Returnal, RE Engine)
+- [x] In-game names for the other importers (0.49.0): the Unreal games' string tables (Returnal,
+      Borderlands 3, Wonderlands, Borderlands 4 and any other), Borderlands 1/2/TPS's `.INT` text, Cyberpunk's
+      weapons from its on-screen text
+- [ ] In-game names for the RE Engine games (their `.msg` text joined through the item data)
+- [x] Import breadth (0.49.0): game profiles as JSON (below, from the backlog), any Unreal 4/5 game through
+      the generic importer, FBX files
 - [x] One search across every game, with filters, a list view with sortable columns, sizes and
       counts on the cards, and Recent on Home (0.44.0)
 - [x] Posing freedom (0.47.0): bones turned on top of a frame or the bind pose (sliders and a
@@ -1169,19 +1193,19 @@ The plan is in Reading id Tech 6/7/8 files above.
 - [ ] DOOM: The Dark Ages: version 13 containers, its stream ids and changed layouts (0.55.0)
 - [ ] Check each on Jerred's installs
 
+- [x] **Game files instead of per-game code** (raised by Jerred on 2026-11-07, built in 0.49.0). A JSON
+      profile per game names the engine backend (`unreal4`, `unreal5`, `unreal3`, `fromsoft`, `reengine`,
+      `redengine`) and its settings: the files and folder names that say a folder is the game, the engine
+      release, AES keys and type mappings, how folders and names sort models into kinds and groups, texture
+      role names, the normal maps' green direction, which text names models, and what Collect copies.
+      Shipped in `importers/profiles/`, replaced or added to from `<settings>/profiles/`. The Unreal 4/5
+      games (Returnal, Borderlands 3, Wonderlands, Borderlands 4) are read entirely from theirs, and a
+      generic Unreal importer reads any other with `unreal-defaults.json`; the FromSoftware, RE Engine and
+      Cyberpunk tables stay in code and take a profile's overrides. Engine readers stay code. The format is
+      in [profiles.md](profiles.md).
+
 ### Backlog (on hold)
 
-- [ ] **Game files instead of per-game code.** Most of what makes a game differ from others on
-      the same engine is settings: its folder layout and executable, engine release, AES key and
-      type mappings, how folders and names sort models into groups, texture role suffixes
-      (`_BaseColor`, `_N`, ...), the normal maps' green direction, and what Collect copies. Move
-      those into a JSON file per game that names the engine backend it uses (`unreal4`,
-      `unreal3`, `fromsoft`, `reengine`, `redengine`): shipped with the app, overridable from a
-      settings folder (like configurations), so a game is added or tuned without a release.
-      Engine readers stay code, and format quirks (unversioned packages, compressed packages,
-      appearance files) are still fixed there. Start with the Unreal 4/5 games (Returnal,
-      Borderlands 3, Wonderlands, Borderlands 4) and a generic Unreal fallback, then the other
-      engines. Raised by Jerred on 2026-11-07, held for now.
 - [ ] **Model packages between the importers and the editor** (approved by Jerred on 2026-11-07
       and being built in stages, see Phase 5). Importers convert a game model
       into a self-contained package (glTF for mesh, skeleton and animations; a JSON sidecar for
@@ -1237,7 +1261,7 @@ The plan is in Reading id Tech 6/7/8 files above.
   bind pose.
 - Posing freedom: turning bones needs a skeleton and the bind-pose mesh's skin weights. Unreal
   skeletal meshes with no animations found, Cyberpunk models, and glTF and PSK files from other
-  tools (read in their bind pose without weights) have no bones to turn yet. Packages made
+  tools (read in their bind pose without weights) have no bones to turn yet (FBX files' do, from 0.49.0). Packages made
   before 0.47.0 of models without animations kept no skeleton: collect them again to turn their
   bones. A socket holds an attached model where the socket is in the bind pose (sockets aren't
   posed); attach to a bone to have it follow. Mirroring works out the plane from the bind pose's

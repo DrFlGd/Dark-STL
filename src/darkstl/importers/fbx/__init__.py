@@ -410,13 +410,17 @@ class FbxImporter(NamedTextures, LoosePictures, Importer):
                 return s.start + np.asarray(frames, np.float64) / fps
 
             def pose_locals(anim: str, frame: int):
+                if anim not in by_name:
+                    raise FormatError(f"{path.stem} has no animation called {anim}" if by_name
+                                      else f"{path.stem} has no animations to pose it with")
                 n = by_name[anim][2]
                 return list(names), locals_at(anim, times_of(anim, [min(max(int(frame), 0), n - 1)]))[0]
 
             def pose_all(anim: str):
                 return list(names), locals_at(anim, times_of(anim, np.arange(by_name[anim][2])))
 
-            rig = Rig(names, parents, bind_local, bind_world, pose_locals, pose_all)
+            # without animations it keeps its bones, for bone adjustments on its bind pose (the Pose tab)
+            rig = Rig(names, parents, bind_local, bind_world, pose_locals, pose_all if by_name else None)
             if infos:
                 anims = FbxAnimations(infos, names)
 

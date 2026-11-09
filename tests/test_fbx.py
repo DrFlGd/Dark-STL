@@ -101,6 +101,15 @@ def test_its_animations_pose_it(tmp_path):
     assert model.rig.pose_all("Wave")[1].shape == (31, 2, 4, 4)
 
 
+def test_its_bones_can_be_turned_without_animations(tmp_path):
+    model = open_model(_folder(tmp_path, F.skinned_quad_scene()))
+    turned = model.build_mesh(MeshOptions(bones={"Tip": (0.0, 0.0, 90.0)}))
+    assert (4.0, 4.0, 0.0) in _points(turned) and (8.0, 0.0, 0.0) not in _points(turned)
+    assert {(0.0, 0.0, 0.0), (0.0, 4.0, 0.0)} <= _points(turned)
+    with pytest.raises(Exception, match="no animations"):
+        model.rig.pose_locals("Wave", 0)
+
+
 def test_a_model_without_a_skin_has_no_skeleton(tmp_path):
     model = open_model(_folder(tmp_path, F.skinned_quad_scene(with_skin=False)))
     assert model.rig is None and model.animations is None
