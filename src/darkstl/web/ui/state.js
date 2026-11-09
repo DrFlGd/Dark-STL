@@ -35,11 +35,8 @@ export const ui = createStore({
   tipsOpen: null,          // per model page tab: its explanation open (true) or folded (false); unset: open until its job has run
   enhance: null,           // the Mesh, Textures and Displace tabs' settings, kept between models
   exportOpts: null,        // the Export tab's settings
-  paintPreview: null,      // { sid, settings }: show the model in the Export tab's paint colours (painted 3MF)
   texturePreview: null,    // { sid, key }: the Textures tab's chosen texture draped over every part of the model
   view: null,              // the 3D view's shading and edges
-  cutOpts: null,           // the Cut tab's settings: the model cut, sheet and wall thickness, the joint new cuts get
-  cutPlans: null,          // per model id: its cuts [{ id, normal, point, joint }] (the last 20 models)
   cleanPlans: null,        // per model id: its Clean tab steps [{ op, ... }] (the last 20 models)
   configChoices: null,     // per configurable model id: the part chosen in each slot { slot: option }
   configEdit: null,        // the configurable model whose configuration is being edited (Configure tab)
@@ -51,8 +48,24 @@ export const ui = createStore({
 let prefs = null;
 const KEY = "ds-ui";
 const KEPT = ["skin", "theme", "layout", "sort", "sorts", "recent", "lod", "cardSize", "open", "navCollapsed", "inspector", "inspectorTab",
-  "inspectorWidth", "catPanel", "catPanelWidth", "catPanelModel", "tipsOpen", "enhance", "exportOpts", "view", "cutOpts", "cutPlans", "cleanPlans", "configChoices",
-  "paintOpts", "paintSources", "showBones"];
+  "inspectorWidth", "catPanel", "catPanelWidth", "catPanelModel", "tipsOpen", "enhance", "exportOpts", "view", "cleanPlans", "configChoices",
+  "showBones"];
+/** Finish, Cut and the painted 3MF moved to Model Painter in 0.55.0: their folded explanations, and a painted 3MF
+ *  chosen as the export format with its paint settings, are let go (their own settings aren't KEPT, so they go
+ *  with the next save); a model page last left on Finish or Cut opens on Export, the way across to Model Painter. */
+const RETIRED_TIPS = ["finish", "cut", "paint"];
+function withoutRetired(patch) {
+  if (["finish", "cut"].includes(patch.inspectorTab?.model)) patch.inspectorTab = { ...patch.inspectorTab, model: "export" };
+  if (patch.exportOpts && typeof patch.exportOpts === "object") {
+    const { paint: _paint, ...rest } = patch.exportOpts;
+    if (String(rest.format || "").toLowerCase() === ".3mf") delete rest.format;
+    patch.exportOpts = rest;
+  }
+  if (patch.tipsOpen && typeof patch.tipsOpen === "object") {
+    patch.tipsOpen = Object.fromEntries(Object.entries(patch.tipsOpen).filter(([k]) => !RETIRED_TIPS.includes(k)));
+  }
+  return patch;
+}
 
 /** Load saved preferences (call once the platform store exists). */
 export function initState(store) {
@@ -60,6 +73,7 @@ export function initState(store) {
   const saved = prefs.get(KEY, {}) || {};
   const patch = {};
   for (const k of KEPT) if (saved[k] !== undefined && saved[k] !== null) patch[k] = saved[k];
+  withoutRetired(patch);
   if (!SKINS.some(([v]) => v === patch.skin)) delete patch.skin;
   if (!THEMES.some(([v]) => v === patch.theme)) delete patch.theme;
   ui.set(patch);

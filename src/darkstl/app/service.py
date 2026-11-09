@@ -37,9 +37,10 @@ from .. import configs
 from .. import overlay
 from .. import package
 from .. import posing
+from .. import retired
 from .. import variations
 from ..errors import FormatError
-from ..export import FORMATS, ExportOptions, export_mesh, write_palette_png
+from ..export import FORMATS, PAINTED_3MF_MOVED, ExportOptions, export_mesh
 from ..geometry.mesh import TriMesh
 from ..library import Library, Snapshot, detect_game, folder_relation, known_games
 from ..library_collections import Collections
@@ -197,10 +198,6 @@ class Session:
     result_id: str = ""  # names the result for the page, which keeps the meshes it has shown
     mesh_key: tuple | None = None
     mesh: TriMesh | None = None
-    cut: Any = None  # CutResult: the pieces last cut from this model
-    cut_id: str = ""
-    finished: Any = None  # finish.FinishResult: the model last made watertight (Finish tab)
-    finished_id: str = ""
     used_bones: Any = None  # the bones whose turns move the mesh (and their parents), once worked out
     raw: TriMesh | None = None  # the last mesh built, before its clean-up
     raw_key: tuple | None = None
@@ -446,7 +443,7 @@ def mesh_stats(mesh: TriMesh) -> dict:
 # ------------------------------------------------------------------ service
 
 class Service(OrganiseCommands, QueueCommands):
-    BYTES = {"model_mesh", "texture", "thumb", "texture_crop", "paint_texture", "texture_preview", "variation_thumb"}
+    BYTES = {"model_mesh", "texture", "thumb", "texture_crop", "texture_preview", "variation_thumb"}
     # opening a model and what its page shows first: library previews pause while these run
     FOREGROUND = {"model_open", "model_mesh", "model_stats", "model_animations", "texture", "texture_info",
                   "texture_maps", "texture_crop"}
@@ -454,9 +451,6 @@ class Service(OrganiseCommands, QueueCommands):
     KEEP_MESHES = 2  # evened-out meshes kept, so other displacement settings are tried without making them again
     KEEP_UPSCALED = 8  # normal maps made ready (cleaned up, upsampled) kept, within KEEP_UPSCALED_BYTES
     KEEP_UPSCALED_BYTES = 768 << 20
-    KEEP_CUTS = 3  # cut models kept, so going back to a set of cuts is instant
-    KEEP_SOLIDS = 1  # the model made solid (big), so moving a cut doesn't make it solid again
-    KEEP_FINISHED = 2  # models made watertight, so switching between two settings is instant
 
     def __init__(self, config: Config, cache: Path, host: Host | None = None):
         self.config = config
@@ -475,10 +469,6 @@ class Service(OrganiseCommands, QueueCommands):
         self.generated: OrderedDict[tuple, Any] = OrderedDict()  # EnhanceResult by generated_key(), newest last
         self.meshes: OrderedDict[tuple, Any] = OrderedDict()  # step 1's evened-out meshes (Resampled) by mesh_key()
         self.upscaled: OrderedDict[tuple, Any] = OrderedDict()  # normal maps made ready (UpscaledMap) by _upscale_key()
-        self.cuts: OrderedDict[tuple, Any] = OrderedDict()  # CutResult by the model cut and the cut settings
-        self.solids: OrderedDict[tuple, Any] = OrderedDict()  # cut.Solid by the model made solid and the sheet thickness
-        self.finished: OrderedDict[tuple, Any] = OrderedDict()  # finish.FinishResult by the model and the settings
-        self.palettes: OrderedDict[tuple, dict] = OrderedDict()  # suggested paint palettes by model, parts and count
         self.cache = Path(cache)
         self.snapshots = Path(cache) / "library"  # what each folder's last scan found (library.Snapshot)
         self.collect_plans: OrderedDict[str, tuple[float, collect.Plan]] = OrderedDict()  # by _plan_key()
@@ -527,7 +517,6 @@ class Service(OrganiseCommands, QueueCommands):
                          "available": acvd_available(), "missing": "needs pyacvd"}],
             "open_patterns": _dialog_patterns(),
             "fast_solver": _importable("pyamg"),
-            "cutting": _importable("manifold3d"),
             "ai_runtime": _importable("onnxruntime"),
             "first_run": not self.config.game_folders,
             "dialogs": bool(self.host.dialogs),
@@ -538,7 +527,7 @@ class Service(OrganiseCommands, QueueCommands):
         return dict(self.config.prefs)
 
     def cmd_prefs_set(self, args: dict) -> dict:
-        self.config.prefs = dict(args.get("prefs") or {})
+        self.config.prefs = retired.prefs(args.get("prefs") or {})
         self.config.save()
         return {}
 
@@ -2081,8 +2070,6 @@ class Service(OrganiseCommands, QueueCommands):
                 log.debug("stats of %s", entry.path, exc_info=True)
         out.update({"sid": sid, "id": model_id, "entry": self._entry_json(entry) if entry else None,
                     "enhanced": self._result_json(session) if session.result is not None else None,
-                    "cut": self._cut_json(session) if session.cut is not None else None,
-                    "finished": self._finished_json(session) if session.finished is not None else None,
                     "configurable_as": self._configurable_as(path) if config is None else [],
                     "assigned": self._assigned_json(session)})
         return out
@@ -2976,8 +2963,8 @@ class Service(OrganiseCommands, QueueCommands):
         return {"items": items, "reopen": after != before}
 
     def cmd_model_mesh(self, args: dict) -> bytes:
-        """A mesh for the 3D view (``which``: original, enhanced, finished or pieces); ``thickness=1`` sends the
-        thickness behind each vertex along, for the Thickness shading."""
+        """A mesh for the 3D view (``which``: original or enhanced); ``thickness=1`` sends the thickness behind
+        each vertex along, for the Thickness shading."""
         session = self._session(args)
         uv = str(args.get("uv", "1")) not in ("0", "false", "")
         thick = str(args.get("thickness", "0")) not in ("0", "false", "")
@@ -2991,15 +2978,7 @@ class Service(OrganiseCommands, QueueCommands):
             if session.result is None:
                 raise AppError("This model hasn't been generated yet.")
             return pack(session.result.displaced, uv, {"which": "enhanced"})
-        if which == "finished":
-            if session.finished is None:
-                raise AppError("This model hasn't been made watertight yet.")
-            return pack(session.finished.mesh, False, {"which": "finished"})
-        if which == "pieces":
-            if session.cut is None:
-                raise AppError("This model hasn't been cut yet.")
-            pieces = [{"name": p.name, "kind": p.kind, "center": p.stats()["center_mm"]} for p in session.cut.pieces]
-            return pack(session.cut.combined(), False, {"which": "pieces", "pieces": pieces})
+        _shown_kind(which)
         return pack(session.build(mesh_options(_parse_lists(args))), uv, {"which": "original"})
 
     def cmd_texture(self, args: dict) -> bytes:
@@ -3146,7 +3125,7 @@ class Service(OrganiseCommands, QueueCommands):
         settings = self._enhance_settings(s, options)
         only_mesh = args.get("step") == "mesh"
         if session.entry is not None and s and not args.get("bulk"):  # for Enhance with the current settings
-            self.config.last_enhance = {**(self.config.last_enhance or {}), session.entry.game: dict(s)}
+            self.config.last_enhance = {**(self.config.last_enhance or {}), session.entry.game: retired.settings(s)}
             self.config.save()
         if only_mesh:  # what step 1 depends on alone, so step-2 settings don't make it again
             s = {**{k: s[k] for k in MESH_SETTINGS if k in s}, "step": "mesh"}
@@ -3330,18 +3309,6 @@ class Service(OrganiseCommands, QueueCommands):
             if key[:2] == (session.sid, file):
                 session.result, session.result_id = result, _key_id(key)
                 break
-        with self.lock:
-            cuts = list(self.cuts.items())
-        for key, result in reversed(cuts):
-            if key[:2] == (session.sid, file):
-                session.cut, session.cut_id = result, _key_id(key)
-                break
-        with self.lock:
-            finished = list(self.finished.items())
-        for key, result in reversed(finished):
-            if key[:2] == (session.sid, file):
-                session.finished, session.finished_id = result, _key_id(key)
-                break
 
     def _result_json(self, session: Session) -> dict:
         r = session.result
@@ -3430,7 +3397,7 @@ class Service(OrganiseCommands, QueueCommands):
         return {"job": self.jobs.start(f"Saving {name}", run).id}
 
     def cmd_variation_open(self, args: dict) -> dict:
-        """Show a kept variation as the model's enhanced model (to view, export, finish or cut it)."""
+        """Show a kept variation as the model's enhanced model (to view or export it)."""
         from ..pipeline import EnhanceResult
 
         folder, _variant, session = self._variations_place(args)
@@ -3480,35 +3447,29 @@ class Service(OrganiseCommands, QueueCommands):
     PRESETS = {"painter": "For Model Painter"}  # one-click exports: what each writes is set in cmd_export
 
     def cmd_export(self, args: dict) -> dict:
-        """Export the model shown (``which``) in a ``format`` and ``units``, or as a ``preset``: "painter" writes a
-        GLB with the textures and materials (Y up, in metres as glTF is), named ``<name>_for_painter.glb``, for
-        Model Painter."""
+        """Export the model shown (``which``: original or enhanced) in a ``format`` and ``units``, or as a
+        ``preset``: "painter" writes a GLB with the textures and materials (Y up, in metres as glTF is), named
+        ``<name>_for_painter.glb``, for Model Painter, which makes it watertight, cuts it and paints it."""
         session = self._session(args)
-        which = args.get("which", "enhanced")
+        which = str(args.get("which") or "enhanced")
         preset = str(args.get("preset") or "")
         if preset and preset not in self.PRESETS:
             raise AppError(f"There's no export preset '{preset}'.")
+        _shown_kind(which)
         if preset == "painter":
-            if which == "pieces":
-                raise AppError("Model Painter takes one model: show the Enhanced, Original or Finished model to hand "
-                               "it over.")
             # (mm: a GLB is written in metres, glTF's own unit, unless asked for other units)
-            args = {**args, "format": ".glb", "units": "mm", "textures": which != "finished", "paint": None}
-        if which == "pieces":
-            return self._export_pieces(session, args)
+            args = {**args, "format": ".glb", "units": "mm", "textures": True}
         if which == "enhanced":
             if session.result is None:
                 raise AppError("Generate the enhanced model first, or export the original.")
             mesh = session.result.displaced
-        elif which == "finished":
-            if session.finished is None:
-                raise AppError("Make the model watertight first (Finish tab).")
-            mesh = session.finished.mesh
         else:
             mesh = session.build(mesh_options(args))
         if mesh.n_faces == 0:
             raise AppError("There's nothing to export: no parts are switched on.")
         ext = str(args.get("format") or ".stl").lower()
+        if ext in retired.FORMATS:
+            raise AppError(PAINTED_3MF_MOVED)
         if ext not in FORMATS:
             raise AppError(f"Can't export {ext} files.")
         scale = UNITS.get(str(args.get("units") or "mm"), 1000.0)
@@ -3517,28 +3478,17 @@ class Service(OrganiseCommands, QueueCommands):
         if preset == "painter":
             base += "_for_painter"
         model = session.model
-        paint = paint_settings(args.get("paint") or {}) if ext == ".3mf" else None
-        finished = session.finished if which == "finished" else None
 
         def run(job: Job):
-            opts = ExportOptions(scale=scale, material_names=[m.name for m in model.materials], paint=paint,
-                                 progress=job.report)
-            if ext == ".3mf" and finished is not None:
-                # no textures of its own: painted from the textured model it was made from
-                opts.paint_from = self._surface_colours(model, finished.source, paint, job)
-            elif ext == ".3mf":
-                opts.textures = _paint_textures(model, mesh, paint)
-            elif args.get("textures", True) and ext in (".obj", ".glb"):
+            opts = ExportOptions(scale=scale, material_names=[m.name for m in model.materials], progress=job.report)
+            if args.get("textures", True) and ext in (".obj", ".glb"):
                 opts.textures = _albedo(model, mesh)
             out_mesh = mesh
             if ext == ".glb":  # the skeleton too, standing in the pose the mesh is in
                 out_mesh, opts.skeleton, opts.skin = self._export_skeleton(session, which, args, mesh)
             job.report(0.2, "Writing")
             path = export_mesh(out_mesh, _free_name(folder / f"{base}{ext}"), opts)
-            out = {"path": str(path), "bytes": path.stat().st_size}
-            if opts.painting is not None:
-                out["paint"] = {**opts.painting.stats(), "palette_file": str(path.with_name(f"{path.stem}_palette.png"))}
-            return out
+            return {"path": str(path), "bytes": path.stat().st_size}
 
         return {"job": self.jobs.start(f"Exporting {base}{ext}", run, stoppable=True).id}
 
@@ -3584,65 +3534,6 @@ class Service(OrganiseCommands, QueueCommands):
         skin = mesh.metadata.get("skin")
         return mesh, (list(rig.names), rig.parents, world), skin
 
-    # ------------------------------------------------------------ painting (3MF)
-
-    def _paint_mesh(self, session: Session, args: dict):
-        """The mesh whose surface the palette is weighed over: the original with the chosen parts."""
-        return session.build(mesh_options(_parse_lists(args)))
-
-    def cmd_paint_palette(self, args: dict) -> dict:
-        """The colours that stand best for the model's textures over its surface (paint.suggest_palette),
-        for the Finish tab's swatches; kept per model, parts and the settings that change them. ``settings``
-        is the paint settings (or only ``colours``, the count)."""
-        from .. import paint as painting
-
-        session = self._session(args)
-        settings = paint_settings(_json_arg(args.get("settings")) or {"colours": args.get("colours") or 4})
-        mesh = self._paint_mesh(session, args)
-        key = (session.sid, session.mesh_key, settings.colours, settings.colour_key())
-        with self.lock:
-            if key in self.palettes:
-                return self.palettes[key]
-        textures = _paint_textures(session.model, mesh, settings)
-        try:
-            palette, coverage = painting.suggest_palette(mesh, textures, settings.colours, None, settings)
-        except ValueError as exc:
-            raise AppError(str(exc)) from None
-        out = {"colours": [painting.hex_colour(c) for c in palette], "coverage": [round(float(c), 4) for c in coverage]}
-        with self.lock:
-            self.palettes[key] = out
-            while len(self.palettes) > 32:
-                self.palettes.popitem(last=False)
-        return out
-
-    def cmd_paint_texture(self, args: dict) -> bytes:
-        """A material's colour texture reduced to the palette, as a PNG for the 3D view (the Export tab's
-        preview of the painted model). ``settings`` is the paint settings as JSON."""
-        from .. import paint as painting
-
-        session = self._session(args)
-        key = str(args.get("key") or "")
-        tex = session.model.textures.get(key)
-        if tex is None:
-            raise AppError(f"No texture '{key}' in this model.")
-        settings = paint_settings(_json_arg(args.get("settings")) or {})
-        if not settings.palette:
-            settings.palette = self.cmd_paint_palette({**args, "settings": _settings_dict(settings)})["colours"]
-        size = int(args.get("max") or 2048)
-        cache_key = (session.sid, "paint", key, settings.key(), size)
-        with self.lock:
-            if cache_key in self.textures_png:
-                return self.textures_png[cache_key]
-        palette = np.array([painting.parse_colour(c) for c in settings.palette], np.uint8)
-        img = painting._shrink(painting._rgb(tex.decode()), size)
-        index = painting.cleanup(painting.quantize(img, palette, settings), len(palette), settings.cleanup)
-        data = texture_png(palette[index], size)
-        with self.lock:
-            self.textures_png[cache_key] = data
-            while len(self.textures_png) > 48:
-                self.textures_png.popitem(last=False)
-        return data
-
     def _forget_models(self) -> None:
         with self.lock:
             self.sessions.clear()
@@ -3651,198 +3542,6 @@ class Service(OrganiseCommands, QueueCommands):
             self.generated.clear()
             self.meshes.clear()
             self.upscaled.clear()
-            self.cuts.clear()
-            self.solids.clear()
-            self.finished.clear()
-            self.palettes.clear()
-
-    # ------------------------------------------------------------ cutting into pieces
-
-    def _cut_source(self, session: Session, args: dict) -> tuple[TriMesh, tuple]:
-        """The model the Cut tab cuts, and what it depends on: the enhanced model shown, or the original
-        with the parts, options and pose chosen, or the model made watertight (Finish tab)."""
-        if args.get("from") == "finished":
-            if session.finished is None:
-                raise AppError("Make the model watertight first (Finish tab), or cut another model.")
-            return session.finished.mesh, ("finished", session.finished_id)
-        if args.get("from", "enhanced") == "enhanced":
-            if session.result is None:
-                raise AppError("Make the enhanced model first (Mesh or Displace tab), or cut the original.")
-            return session.result.displaced, ("enhanced", session.result_id)
-        options = mesh_options(args)
-        return session.build(options), ("original", _options_key(options))
-
-    def cmd_cut(self, args: dict) -> dict:
-        """Cut the model into pieces along the planes given, with each cut's joint (a job). The model made solid
-        and each set of cuts are kept, so moving one cut only cuts again, and going back to one is instant."""
-        from .. import cut as cutting
-
-        if not cutting.available():
-            raise AppError("Cutting needs the manifold3d package, which this copy of the app doesn't have.")
-        session = self._session(args)
-        data = args.get("cut") or {}
-        try:
-            settings = cutting.settings_from_json(data)
-        except (ValueError, KeyError, TypeError) as e:
-            raise AppError(f"These cuts can't be read: {e}") from None
-        if not settings.cuts:
-            raise AppError("Add a cut first.")
-        mesh, source = self._cut_source(session, args)
-        # the textured model the pieces can be painted from: the one cut, or the one the Finished model was made from
-        textured = session.finished.source if source[0] == "finished" else mesh
-        file = _file_id(session.model.path)
-        skey = (session.sid, file, source, settings.sheet_mm)
-        key = (*skey, json.dumps(data, sort_keys=True, default=str))
-        with self.lock:
-            kept = self.cuts.get(key)
-            solid = self.solids.get(skey)
-
-        def run(job: Job):
-            result = kept
-            if result is None:
-                made = solid
-                if made is None:
-                    made = cutting.make_solid(mesh, settings.sheet_mm, lambda f, m: job.report(0.6 * f, m))
-                    job.check()
-                    with self.lock:
-                        self.solids[skey] = made
-                        while len(self.solids) > self.KEEP_SOLIDS:
-                            self.solids.popitem(last=False)
-                start = 0.6 if solid is None else 0.0
-                result = cutting.cut_solid(made, settings, lambda f, m: job.report(start + (1 - start) * f, m))
-                result.source = textured
-                job.check()
-                with self.lock:
-                    self.cuts[key] = result
-                    self.cuts.move_to_end(key)
-                    while len(self.cuts) > self.KEEP_CUTS:
-                        self.cuts.popitem(last=False)
-            session.cut, session.cut_id = result, _key_id(key)
-            return {**self._cut_json(session), "kept": kept is not None, "solid_reused": solid is not None}
-
-        name = session.model.variant or session.model.name
-        return {"job": self.jobs.start(f"Cutting {name}", run, stoppable=True).id}
-
-    # ------------------------------------------------------------ finishing for printing
-
-    def cmd_finish(self, args: dict) -> dict:
-        """Make the model watertight (a job): every part made solid and joined, the surfaces inside one another
-        removed, hollows filled, and as asked gaps closed and loose bits removed. Each result is kept."""
-        from .. import finish
-
-        if not finish.available():
-            raise AppError("Making models watertight needs the manifold3d package, which this copy of the app doesn't have.")
-        session = self._session(args)
-        settings = finish.settings_from_json(args.get("watertight") or {})
-        src = "original" if args.get("from") == "original" else "enhanced"
-        if src == "enhanced" and session.result is None:
-            raise AppError("Make the enhanced model first (Mesh or Displace tab), or use the original.")
-        mesh, source = self._cut_source(session, {**args, "from": src})
-        if mesh.n_faces == 0:
-            raise AppError("There's nothing to make watertight: no parts are switched on.")
-        key = (session.sid, _file_id(session.model.path), source, settings.key())
-        with self.lock:
-            kept = self.finished.get(key)
-
-        def run(job: Job):
-            result = kept
-            if result is None:
-                try:
-                    result = finish.make_watertight(mesh, settings, lambda f, m: job.report(f, m))
-                except ValueError as e:
-                    raise AppError(str(e)) from None
-                result.source = mesh
-                job.check()
-                with self.lock:
-                    self.finished[key] = result
-                    self.finished.move_to_end(key)
-                    while len(self.finished) > self.KEEP_FINISHED:
-                        self.finished.popitem(last=False)
-            session.finished, session.finished_id = result, _key_id(key)
-            return {**self._finished_json(session), "kept": kept is not None}
-
-        name = session.model.variant or session.model.name
-        return {"job": self.jobs.start(f"Making {name} watertight", run, stoppable=True).id}
-
-    def _finished_json(self, session: Session) -> dict:
-        r = session.finished
-        return {"id": session.finished_id, "stats": r.stats(), "notes": list(r.notes)}
-
-    def _cut_json(self, session: Session) -> dict:
-        r = session.cut
-        return {"id": session.cut_id, "pieces": [{**p.stats(), "index": i} for i, p in enumerate(r.pieces)],
-                "notes": list(r.notes), "joints": list(r.joints)}
-
-    def cmd_cut_state(self, args: dict) -> dict:
-        """The pieces last cut from this model, if any are kept."""
-        session = self._session(args)
-        return self._cut_json(session) if session.cut is not None else {"id": "", "pieces": []}
-
-    def _surface_colours(self, model: SourceModel, source: TriMesh | None, paint, job: Job, span: float = 0.45):
-        """The colours of the textured model a Finished model or cut pieces were made from, to paint them."""
-        from .. import paint as painting
-
-        if source is None:
-            raise AppError("Make the model again (Finish or Cut tab) to paint it.")
-        textures = _paint_textures(model, source, paint)
-        try:
-            return painting.surface_colours(source, textures, paint, lambda f, m: job.report(span * f, m))
-        except ValueError as exc:
-            raise AppError(str(exc)) from None
-
-    def _export_pieces(self, session: Session, args: dict) -> dict:
-        from .. import cut as cutting
-        from .. import paint as painting
-
-        if session.cut is None:
-            raise AppError("Cut the model first (Cut tab).")
-        ext = str(args.get("format") or ".stl").lower()
-        if ext not in FORMATS:
-            raise AppError(f"Can't export {ext} files.")
-        scale = UNITS.get(str(args.get("units") or "mm"), 1000.0)
-        parent = Path(args.get("folder") or self.config.export_folder)
-        base = _safe_name(str(args.get("name") or Path(session.model.variant or session.model.name).stem))
-        lay_flat = bool(args.get("lay_flat", True))
-        pieces = list(session.cut.pieces)
-        cut = session.cut
-        model = session.model
-        paint = paint_settings(args.get("paint") or {}) if ext == ".3mf" else None
-
-        def run(job: Job):
-            folder = _free_name(parent / f"{base}_pieces")
-            folder.mkdir(parents=True, exist_ok=True)
-            paths, total = [], 0
-            colours = None
-            out: dict = {}
-            if ext == ".3mf":
-                # every piece painted from the textured model the cut model came from, with the one palette
-                colours = self._surface_colours(model, cut.source, paint, job, 0.3)
-                write_palette_png(colours.palette, colours.coverage, folder / f"{base}_palette.png")
-            start = 0.3 if colours is not None else 0.0
-            leaves = split = 0
-            notes: list[str] = []
-            for i, piece in enumerate(pieces):
-                job.report(start + (1 - start) * i / len(pieces), f"Writing {piece.name}")
-                job.check()
-                mesh = cutting.print_pose(piece) if lay_flat else piece.mesh
-                slug = piece.name.lower().replace(" ", "")
-                opts = ExportOptions(scale=scale, paint=paint, paint_from=colours, palette_png=False)
-                path = export_mesh(mesh, folder / f"{base}_{slug}{ext}", opts)
-                if opts.painting is not None:
-                    leaves += opts.painting.leaves
-                    split += opts.painting.split_faces
-                paths.append(str(path))
-                total += path.stat().st_size
-            if colours is not None:
-                coverage = colours.coverage if colours.coverage is not None else np.full(len(colours.palette), 1 / len(colours.palette))
-                if leaves > painting.MANY_LEAVES:
-                    notes.append(f"The paint has {leaves / 1e6:.1f} million pieces in all, which can make the slicer slow.")
-                out["paint"] = {"colours": [painting.hex_colour(c) for c in colours.palette],
-                                "coverage": [round(float(c), 4) for c in coverage], "split_faces": split, "leaves": leaves,
-                                "notes": notes, "palette_file": str(folder / f"{base}_palette.png")}
-            return {"path": str(folder), "files": paths, "bytes": total, **out}
-
-        return {"job": self.jobs.start(f"Exporting {len(pieces)} pieces of {base}", run, stoppable=True).id}
 
 
 def _problem_text(exc: BaseException) -> str:
@@ -3928,68 +3627,14 @@ def _parse_lists(args: dict) -> dict:
     return out
 
 
-def paint_settings(s: dict):
-    """paint.PaintSettings from the page's or the CLI's settings dict."""
-    from ..paint import MAX_COLOURS, PaintSettings, parse_colour
-
-    out = PaintSettings()
-    try:
-        out.colours = int(s.get("colours") or out.colours)
-        palette = [str(c) for c in (s.get("palette") or []) if str(c).strip()]
-        if palette:
-            for c in palette:
-                parse_colour(c)
-            out.palette = palette
-        out.print_height_mm = float(s.get("print_height_mm") or out.print_height_mm)
-        out.feature_mm = float(s.get("feature_mm") or out.feature_mm)
-        out.cleanup = str(s.get("cleanup") or out.cleanup)
-        out.max_depth = int(s.get("max_depth") or out.max_depth)
-        out.tolerance = float(s.get("tolerance") or 0)
-        out.min_share = float(s.get("min_share") or 0)
-        out.brightness = float(s.get("brightness") or 0)
-        out.contrast = float(1 if s.get("contrast") is None else s.get("contrast"))
-        out.saturation = float(1 if s.get("saturation") is None else s.get("saturation"))
-        sources = s.get("sources") or {}
-        if not isinstance(sources, dict):
-            raise ValueError("sources is material -> texture")
-        out.sources = {str(int(k)): str(v) for k, v in sources.items() if v not in (None, "")} or None
-    except (TypeError, ValueError) as exc:
-        raise AppError(f"Paint settings: {exc}") from None
-    if not 2 <= out.colours <= MAX_COLOURS or (out.palette and not 1 <= len(out.palette) <= MAX_COLOURS):
-        raise AppError(f"Choose between 2 and {MAX_COLOURS} colours.")
-    if out.print_height_mm <= 0 or out.feature_mm <= 0:
-        raise AppError("The print height and the feature size must be above zero.")
-    if out.cleanup not in ("none", "light", "strong"):
-        raise AppError("Clean-up is none, light or strong.")
-    out.max_depth = min(max(out.max_depth, 1), 16)
-    if not 0 <= out.tolerance <= 50:
-        raise AppError("The colour tolerance is 0 to 50.")
-    if not 0 <= out.min_share <= 50:
-        raise AppError("The smallest colour share is 0 to 50%.")
-    if not (-1 <= out.brightness <= 1 and 0 <= out.contrast <= 3 and 0 <= out.saturation <= 3):
-        raise AppError("Brightness is -1 to 1; contrast and saturation 0 to 3.")
-    return out
-
-
-def _settings_dict(settings) -> dict:
-    """paint.PaintSettings back as the settings dict paint_settings reads."""
-    from dataclasses import asdict
-
-    return asdict(settings)
-
-
-def _paint_textures(model: SourceModel, mesh: TriMesh, settings) -> dict[int, np.ndarray]:
-    """Material -> the colour texture it is painted from (its own, or the one the settings choose)."""
-    from ..paint import colour_textures
-
-    try:
-        textures = colour_textures(model, mesh, settings)
-    except ValueError as exc:
-        raise AppError(str(exc)) from None
-    if not textures:
-        raise AppError("This model has no colour textures to paint from"
-                       + (" (every material is set to not painted)." if settings and settings.sources else "."))
-    return textures
+def _shown_kind(which: str) -> None:
+    """Refuses a model the 3D view no longer shows: the Finished model and the Pieces went with Finish and Cut
+    (moved to Model Painter in 0.55.0)."""
+    if which in ("finished", "pieces"):
+        raise AppError("Finish and Cut moved to Model Painter: export the Original or Enhanced model for Model "
+                       "Painter (Export tab) to make it watertight or cut it there.")
+    if which not in ("original", "enhanced"):
+        raise AppError(f"There's no '{which}' model: show the Original or Enhanced model.")
 
 
 def _albedo(model: SourceModel, mesh: TriMesh) -> dict[int, np.ndarray]:

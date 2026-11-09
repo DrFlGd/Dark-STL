@@ -469,139 +469,14 @@ def test_previews_stay_shown_and_a_job_stops_from_the_status_bar(page, app, weap
     assert page.text_content("#mesh-run") == "Even out the vertices"
 
 
-def test_cut_a_model_into_pieces_with_joints_and_export_them(page, app, tmp_path):
-    pytest.importorskip("manifold3d")
-    from test_cut import figure_obj
+def figure_obj(folder: Path) -> Path:
+    """A small figure 66 mm tall (a body, a head and arms 8 mm thick, overlapping as game parts do) as an OBJ."""
+    from test_clean import box, sphere, write_obj
 
-    shots = os.environ.get("DARKSTL_SCREENSHOTS")
-    path = figure_obj(tmp_path)
-    opened = app.service.call("model_open", {"path": str(path)})
-    page.goto(f"{app.url}#/model/{quote(opened['id'], safe='')}")
-    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
-    page.click("#rail-cut")
-    page.wait_for_selector("#cut-none")
-    # the original is cut: it's the model shown (nothing has been generated)
-    assert page.get_attribute("#cut-working", "data-which") == "original" and page.locator("#cut-from").count() == 0
-    page.click('#cut-add [data-axis="z"]')
-    page.wait_for_selector('#cut-list li[data-cut="1"][aria-selected="true"]')
-    page.wait_for_function("window.__viewer.cutGroup.children.length === 1")  # drawn after the list shows
-    assert "across z · 0.00 mm from the middle · Pegs" in page.text_content("#cut-list")
-    # moved to the waist with the number box, then dragged in the 3D view a little way up
-    page.fill("#cut-position-mm", "-10")
-    page.press("#cut-position-mm", "Tab")
-    page.wait_for_selector("#cut-list :text('-10.00 mm from the middle')")
-    page.wait_for_timeout(400)  # the view settles (it eases to a stop)
-    corner = page.evaluate(PLANE_CORNER)
-    page.mouse.move(*corner)
-    page.mouse.down()
-    page.mouse.move(corner[0], corner[1] - 6, steps=4)
-    page.mouse.up()
-    page.wait_for_function("!document.querySelector('#cut-list').textContent.includes('-10.00 mm')")
-    page.fill("#cut-position-mm", "-12")
-    page.press("#cut-position-mm", "Tab")
-    # a second cut through the neck, with magnets and a looser clearance
-    page.click('#cut-add [data-axis="z"]')
-    page.fill("#cut-position-mm", "13")
-    page.press("#cut-position-mm", "Tab")
-    page.click('#cut-joint [data-value="magnets"]')
-    page.wait_for_selector("#cut-magnet-d")
-    page.fill("#cut-magnet-d", "5")
-    page.press("#cut-magnet-d", "Tab")
-    page.fill("#cut-clearance", "0.3")
-    page.press("#cut-clearance", "Tab")
-    page.wait_for_selector("#cut-list :text('Magnets, 0.30 mm clearance')")
-    page.wait_for_function("window.__viewer.cutGroup.children.length === 2")  # drawn after the list shows
-    if shots:
-        page.screenshot(path=os.path.join(shots, "cut-planes.png"))
-    page.click("#cut-run")
-    page.wait_for_selector("#cut-result", timeout=60000)
-    page.wait_for_selector("text=Cut into 3 pieces")
-    page.wait_for_selector('#show-which [data-value="pieces"][aria-pressed="true"]')
-    page.wait_for_selector("#stage-canvas:not([data-loading])")
-    assert page.locator("#piece-list li").count() == 3
-    page.wait_for_function("window.__viewer.mesh.children.length === 3")
-    page.wait_for_function("window.__viewer.cutGroup.children.length === 0")  # the planes aren't drawn over the pieces
-    page.fill("#cut-explode", "0.6")
-    page.dispatch_event("#cut-explode", "input")
-    assert page.evaluate("window.__viewer.mesh.children[0].position.length()") > 0
-    if shots:
-        page.screenshot(path=os.path.join(shots, "cut-pieces.png"))
-    # cutting again with the same planes is instant
-    page.click("#cut-run")
-    page.wait_for_selector("text=Cut with these planes already: shown")
-    # each piece in its own file
-    # while the pieces are shown, Cut offers its own choice of the model to cut (the one cut last)
-    assert page.get_attribute('#cut-from [aria-pressed="true"]', "data-value") == "original"
-    page.click('#cut-next [data-next="export"]')
-    page.wait_for_selector('#export-working[data-which="pieces"]')
-    page.fill("#export-folder", str(tmp_path / "out"))
-    page.press("#export-folder", "Tab")
-    page.click("#export-run")
-    page.wait_for_selector("#export-done", timeout=60000)
-    assert "3 files in figure_pieces" in page.text_content("#export-done")
-    files = sorted(p.name for p in (tmp_path / "out" / "figure_pieces").iterdir())
-    assert files == ["figure_piece1.stl", "figure_piece2.stl", "figure_piece3.stl"]
-    # the cuts are remembered for the model (in the settings, saved as they change)
-    for _ in range(100):
-        plans = (app.service.call("prefs_get", {}).get("ds-ui") or {}).get("cutPlans") or {}
-        if len(plans.get(opened["id"], [])) == 2:
-            break
-        page.wait_for_timeout(50)
-    page.reload()
-    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
-    page.wait_for_selector("#rail-cut")
-    if not page.locator("#cut-tab").count():  # (it may be open already: the tab last saved; clicking it would fold it)
-        page.click("#rail-cut")
-    page.wait_for_selector("#cut-list")
-    assert page.locator("#cut-list li").count() == 2
-
-
-def test_make_a_model_watertight_then_export_and_cut_it(page, app, tmp_path):
-    pytest.importorskip("manifold3d")
-    from test_cut import figure_obj
-
-    shots = os.environ.get("DARKSTL_SCREENSHOTS")
-    opened = app.service.call("model_open", {"path": str(figure_obj(tmp_path))})
-    page.goto(f"{app.url}#/model/{quote(opened['id'], safe='')}")
-    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
-    assert page.get_attribute('#show-which [data-value="finished"]', "disabled") is not None
-    page.click("#rail-finish")
-    page.wait_for_selector("#finish-tab")
-    assert page.get_attribute("#finish-working", "data-which") == "original"
-    assert page.locator("#finish-from").count() == 0
-    assert page.is_checked("#finish-hollows") and not page.is_checked("#finish-gaps")
-    page.check("#finish-gaps")
-    page.wait_for_selector("#finish-gap-mm")
-    page.uncheck("#finish-gaps")
-    page.click("#finish-run")
-    page.wait_for_selector("#finish-result", timeout=60000)
-    page.wait_for_selector("text=Made watertight")
-    page.wait_for_selector('#show-which [data-value="finished"][aria-pressed="true"]')
-    page.wait_for_selector("#stage-canvas:not([data-loading])")
-    assert "3 parts joined into one" in page.text_content("#finish-result")
-    assert page.text_content("#finish-stats").count("1") >= 1
-    if shots:
-        page.screenshot(path=os.path.join(shots, "finish-tab.png"))
-    # other settings: shown as made with other ones until made again
-    page.check("#finish-loose")
-    page.wait_for_selector("#finish-stale")
-    page.uncheck("#finish-loose")
-    page.wait_for_selector("#finish-stale", state="detached")
-    # shown, Finish offers its own choice of the model it works from (it can't take the Finished one)
-    assert page.get_attribute('#finish-from [aria-pressed="true"]', "data-value") == "original"
-    assert page.get_attribute('#finish-from [data-value="enhanced"]', "disabled") is not None
-    # Export and Cut work on it while it's shown
-    page.click('#finish-next [data-next="export"]')
-    page.wait_for_selector('#export-working[data-which="finished"]')
-    assert page.get_attribute("#export-name", "placeholder") == "figure_watertight"
-    page.fill("#export-folder", str(tmp_path / "out"))
-    page.press("#export-folder", "Tab")
-    page.click("#export-run")
-    page.wait_for_selector("#export-done", timeout=60000)
-    assert (tmp_path / "out" / "figure_watertight.stl").exists()
-    page.click("#rail-cut")
-    page.wait_for_selector("#cut-tab")
-    assert page.get_attribute("#cut-working", "data-which") == "finished"
+    body = box((-0.012, -0.012, 0.0), (0.012, 0.012, 0.050), n=6)
+    head = sphere((0, 0, 0.057), 0.009, nu=32, nv=16)
+    arms = box((-0.028, -0.004, 0.038), (0.028, 0.004, 0.046), n=6)
+    return write_obj(folder / "figure.obj", [("body", body), ("head", head), ("arms", arms)])
 
 
 THICK_RED = """() => {
@@ -613,8 +488,6 @@ THICK_RED = """() => {
 
 
 def test_the_thickness_view_shows_what_is_too_thin_to_print(page, app, tmp_path):
-    from test_cut import figure_obj
-
     shots = os.environ.get("DARKSTL_SCREENSHOTS")
     opened = app.service.call("model_open", {"path": str(figure_obj(tmp_path))})
     page.goto(f"{app.url}#/model/{quote(opened['id'], safe='')}")
@@ -794,10 +667,11 @@ def test_clean_a_model_up_step_by_step(page, app, tmp_path):
 
 
 def test_the_model_page_reads_in_the_order_the_work_happens(browser, app, weapon_dir, tmp_path):  # noqa: F811
-    """On a 1280 x 720 window: the rail's tabs in their groups, one place to choose the model worked on,
-    explanations folded once a tab's job has run, the Next strip, toasts clear of the footer, the game's tree folded
-    beside the model, and the Export tab's handoff to Model Painter (a stand-in program that writes down what it was
-    started with)."""
+    """On a 1280 x 720 window: the rail's tabs in their groups (Edit is Clean, Mesh, Displace: Finish and Cut moved to
+    Model Painter), one place to choose the model worked on (Original or Enhanced), explanations folded once a tab's
+    job has run, the Next strip, toasts clear of the footer, the game's tree folded beside the model, and the Export
+    tab, which leads with the handoff to Model Painter (a stand-in program that writes down what it was started
+    with)."""
     from darkstl.app import painter
 
     shots = os.environ.get("DARKSTL_SCREENSHOTS")
@@ -816,7 +690,11 @@ def test_the_model_page_reads_in_the_order_the_work_happens(browser, app, weapon
     assert groups == ["Model", "Edit", "Export"]
     tabs = page.eval_on_selector_all("#inspector .rail-tab", "els => els.map((e) => [e.dataset.tab, e.dataset.group])")
     assert tabs == [["model", "Model"], ["textures", "Model"], ["clean", "Edit"], ["mesh", "Edit"], ["displace", "Edit"],
-                    ["finish", "Edit"], ["cut", "Edit"], ["export", "Export"]]
+                    ["export", "Export"]]
+    assert page.locator("#rail-finish, #rail-cut").count() == 0
+    # the Show buttons under the 3D view: the Original and the Enhanced model, nothing else
+    shows = page.eval_on_selector_all("#show-which button", "els => els.map((e) => [e.dataset.value, e.textContent, e.disabled])")
+    assert shows == [["original", "Original", False], ["enhanced", "Enhanced", True]]
     assert page.eval_on_selector("#rail-mesh .rail-name", "e => getComputedStyle(e).writingMode") == "horizontal-tb"
     assert page.eval_on_selector("#inspector .rail", "e => e.getBoundingClientRect().width") == 64
 
@@ -866,23 +744,33 @@ def test_the_model_page_reads_in_the_order_the_work_happens(browser, app, weapon
     if shots:
         page.screenshot(path=os.path.join(shots, "displace-1280.png"))
 
-    # Finish works on the model shown: no picker of its own; "change" goes to the footer's
-    page.click('#displace-next [data-next="finish"]')
-    page.wait_for_selector('#finish-working[data-which="enhanced"]')
-    assert page.locator("#finish-from").count() == 0
-    page.click("#finish-working .working-change")
+    # Displace's Next strip goes on to Export, and nowhere else
+    assert page.eval_on_selector_all("#displace-next button", "els => els.map((e) => e.dataset.next)") == ["export"]
+    assert page.locator("#show-which [data-value]").count() == 2 and not page.is_disabled('#show-which [data-value="enhanced"]')
+
+    # Export works on the model shown: "change" goes to the footer's Show buttons
+    page.click('#displace-next [data-next="export"]')
+    page.wait_for_selector('#inspector[data-tab="export"] #export-working[data-which="enhanced"]')
+    assert page.locator("#export-which").count() == 0
+    page.click("#export-working .working-change")
     assert page.evaluate("!!document.activeElement.closest('#show-which')")
     page.wait_for_selector("#show-which.flash")
     page.click('#show-which [data-value="original"]')
-    page.wait_for_selector('#finish-working[data-which="original"]')
-    if shots:
-        page.screenshot(path=os.path.join(shots, "finish-1280.png"))
+    page.wait_for_selector('#export-working[data-which="original"]')
     page.click('#show-which [data-value="enhanced"]')
+    page.wait_for_selector('#export-working[data-which="enhanced"]')
+    # it leads with For Model Painter, which says where watertight, cutting and painting are now; then Save a file
+    sections = page.eval_on_selector_all("#export-tab > section", "els => els.map((e) => e.id)")
+    assert sections == ["export-painter", "export-file"]
+    assert page.inner_text("#painter-why") == ("To make it watertight, cut it into pieces or paint it for a colour printer, "
+                                               "export it for Model Painter.")
+    formats = page.eval_on_selector_all("#export-format option", "els => els.map((e) => e.value)")
+    assert formats == [".stl", ".obj", ".ply", ".glb"]
+    assert page.locator("#export-lay-flat, #paint-summary").count() == 0
+    if shots:
+        page.screenshot(path=os.path.join(shots, "export-tab-1280.png"))
 
     # Export: the folder shown short, edited whole; the For Model Painter preset; then Open in Model Painter
-    page.click("#rail-export")
-    page.wait_for_selector('#export-working[data-which="enhanced"]')
-    assert page.locator("#export-which").count() == 0
     out = tmp_path / "exports" / "for printing" / "weapons"
     page.fill("#export-folder", str(out))
     page.press("#export-folder", "Tab")
@@ -910,7 +798,9 @@ def test_the_model_page_reads_in_the_order_the_work_happens(browser, app, weapon
     page.click("#export-painter-run")
     page.wait_for_selector("#painter-open", timeout=60000)
     assert page.locator("#painter-hint").count() == 0
-    page.wait_for_selector("#export-next #export-show")  # beside Show in folder
+    # the Next strip after the export: Open in Model Painter first (the main step), Show in folder beside it
+    nexts = page.eval_on_selector_all("#export-next button", "els => els.map((e) => [e.id, e.classList.contains('primary')])")
+    assert nexts == [["painter-open", True], ["export-show", False]]
     if shots:
         page.screenshot(path=os.path.join(shots, "export-painter-1280.png"))
     page.click("#painter-open")
@@ -938,14 +828,44 @@ def test_the_model_page_reads_in_the_order_the_work_happens(browser, app, weapon
     page.close()
 
 
-PLANE_CORNER = """() => {
-  const v = window.__viewer;
-  const g = v.cutGroup.children[0];
-  const size = g.children[0].geometry.parameters.width;
-  const at = g.localToWorld(new g.position.constructor(size * 0.42, size * 0.42, 0)).project(v.camera);
-  const r = v.canvas.getBoundingClientRect();
-  return [r.left + (at.x + 1) / 2 * r.width, r.top + (1 - at.y) / 2 * r.height];
-}"""
+def test_preferences_saved_before_finish_and_cut_moved_still_open_the_model_page(browser, app, weapon_dir):  # noqa: F811
+    """Preferences an earlier version saved with the model page left on Finish, a painted 3MF chosen as the export
+    format with its paint settings, and the Cut and paint tabs' own settings: the page opens on Export with STL
+    chosen, nothing fails, and the next save leaves those out."""
+    from test_app import wait
+
+    wait(app.service, app.service.call("folder_add", {"path": str(weapon_dir)})["job"])
+    item = next(i for i in app.service.call("models_query", {"game": "Dark Souls III", "limit": 100})["items"]
+                if i["stem"] == "wp_a_0300")
+    # (put there as they were, past the engine's own clean-up of a settings file it reads)
+    app.service.config.prefs = {"ds-ui": {
+        "inspector": {"model": "open"}, "inspectorTab": {"model": "finish"},
+        "exportOpts": {"format": ".3mf", "units": "mm", "textures": True, "folder": "",
+                       "paint": {"colours": 4, "feature": 1.5}},
+        "tipsOpen": {"finish": False, "cut": False, "paint": True, "mesh": False},
+        "cutOpts": {"joint": "dowel", "clearance": 0.2}, "cutPlans": {item["id"]: [{"axis": "z", "at": 0.5}]},
+        "paintOpts": {"colours": 6}, "paintSources": {item["id"]: "albedo"}, "paintPreview": True, "paintShow": True,
+        "finishOpts": {"watertight": True}}}
+    page = browser.new_page(viewport={"width": 1400, "height": 900})
+    page.goto(app.url + f"#/model/{item['id']}")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    page.wait_for_selector('#inspector[data-tab="export"] #export-tab')
+    assert page.input_value("#export-format") == ".stl"
+    assert page.locator("#rail-finish, #rail-cut, #paint-summary").count() == 0
+    # the next save of the page's preferences leaves the retired ones out
+    page.click("#rail-mesh")
+    page.wait_for_selector('#inspector[data-tab="mesh"]')
+    for _ in range(100):
+        saved = app.service.config.prefs.get("ds-ui") or {}
+        if (saved.get("inspectorTab") or {}).get("model") == "mesh":
+            break
+        page.wait_for_timeout(50)
+    assert saved["inspectorTab"]["model"] == "mesh"
+    assert not {"cutOpts", "cutPlans", "paintOpts", "paintSources", "paintPreview", "paintShow", "finishOpts"} & set(saved)
+    assert "paint" not in saved["exportOpts"] and saved["exportOpts"].get("format") != ".3mf"
+    assert not {"finish", "cut", "paint"} & set(saved.get("tipsOpen") or {})
+    assert page.evaluate("window.__errors") == []
+    page.close()
 
 
 def test_unpack_a_packed_game(page, packed_ds3):  # noqa: F811
@@ -1209,119 +1129,6 @@ def test_collect_keeps_every_texture_of_the_game_after_saying_how_much(page, app
         page.select_option("#collect-scope", "game")
     page.check('[data-collect="all_textures"]')
     page.wait_for_selector("#collect-plan-textures :text('kept already')", timeout=30000)
-
-
-def test_export_a_painted_3mf(page, app, tmp_path):
-    """The Finish tab's paint settings: the suggested palette's swatches, the tolerance and the colour adjust, the
-    texture each material is painted from, a colour changed by hand, the colours shown on the model; then the
-    Export tab writes the painted 3MF and its palette picture with them."""
-    from test_paint import make_two_colour_game
-    from darkstl.export import read_3mf
-
-    game = make_two_colour_game(tmp_path)
-    shots = os.environ.get("DARKSTL_SCREENSHOTS")
-
-    def slide(sel, value):
-        page.evaluate("""([sel, v]) => { const i = document.querySelector(sel); i.value = v;
-            i.dispatchEvent(new Event('input', { bubbles: true })); i.dispatchEvent(new Event('change', { bubbles: true })); }""",
-                      [sel, str(value)])
-
-    def swatches(n):
-        page.wait_for_function(f"document.querySelectorAll('#paint-swatches .paint-swatch').length === {n}", timeout=30000)
-
-    def first_swatch(colour):
-        # the swatches are drawn again after each change: wait through the moment there are none
-        page.wait_for_function(f"(document.querySelector('#paint-swatches .paint-swatch')?.title || '')"
-                               f".startsWith('Filament 1: {colour}')", timeout=30000)
-
-    page.wait_for_selector("#first-run")
-    page.click("#first-add-folder")
-    page.fill("#folder-path", str(game))
-    page.wait_for_selector("text=Recognised as Dark Souls III.")
-    page.click("#add-folder-dialog-ok")
-    page.wait_for_selector('#kind-tiles [data-sub="Weapons"]')
-    page.click('[data-sub="Weapons"]')
-    page.wait_for_selector(".results [data-model]")
-    page.locator(".results [data-model]").first.click()
-    page.wait_for_selector("#model-summary")
-    page.click("#summary-open")
-    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
-    page.click("#rail-finish")
-    page.wait_for_selector("#paint-section #paint-options")
-    page.wait_for_selector("#paint-swatches .paint-swatch", timeout=30000)
-    assert page.locator("#paint-swatches .paint-swatch").count() == 2  # 4 asked for, but the texture has two colours
-    page.fill("#paint-colours-n", "2")
-    page.press("#paint-colours-n", "Tab")
-    swatches(2)
-    titles = [page.get_attribute(f"#paint-swatches .paint-swatch:nth-child({i + 1})", "title") for i in range(2)]
-    assert titles[0].startswith("Filament 1: #DE0202") and titles[1].startswith("Filament 2: #0202DE")
-    # the colours on the model: the 3D view's textures come from the paint preview
-    with page.expect_request(lambda r: "paint_texture" in r.url and "colours" in r.url) as seen:
-        page.check("#paint-preview")
-    assert seen.value.response().ok
-    page.wait_for_selector("#stage-canvas:not([data-loading])")
-    # without saturation the red and blue are two greys, which a wide tolerance merges into one
-    page.click("#paint-adjust summary")
-    slide("#paint-saturation", 0)
-    page.wait_for_function("/^Filament 1: #(..)\\1\\1/.test(document.querySelector('#paint-swatches .paint-swatch')?.title || '')",
-                           timeout=30000)
-    slide("#paint-tolerance", 20)
-    swatches(1)
-    assert page.text_content("#paint-tolerance-value") == "20"
-    slide("#paint-tolerance", 0)
-    page.click("#paint-adjust-reset")
-    swatches(2)
-    first_swatch("#DE0202")
-    if shots:
-        page.evaluate("document.getElementById('paint-section').scrollIntoView()")
-        page.wait_for_timeout(1500)
-        page.screenshot(path=os.path.join(shots, "finish-paint-settings.png"))
-    # a material painted from no texture: nothing is left to paint
-    page.select_option('[data-paint-material="0"]', "none")
-    page.wait_for_selector("#paint-error:has-text('not painted')", timeout=30000)
-    page.select_option('[data-paint-material="0"]', "")
-    swatches(2)
-    # a colour changed by hand is used, and can be given back
-    page.evaluate("""() => { const i = document.querySelector('#paint-swatches .paint-swatch input'); i.value = '#00ff00'; i.dispatchEvent(new Event('change', { bubbles: true })); }""")
-    first_swatch("#00FF00")
-    assert not page.is_disabled("#paint-suggest")
-    page.fill("#paint-feature", "1")
-    page.press("#paint-feature", "Tab")
-    # the Export tab shows the colours and writes the file with them
-    page.click("#rail-export")
-    page.select_option("#export-format", ".3mf")
-    page.wait_for_selector("#paint-summary #export-swatches .paint-swatch")
-    assert page.get_attribute("#export-swatches .paint-swatch", "title").startswith("Filament 1: #00FF00")
-    if shots:
-        page.screenshot(path=os.path.join(shots, "export-painted.png"))
-    page.fill("#export-folder", str(tmp_path / "out"))
-    page.press("#export-folder", "Tab")
-    page.click("#export-run")
-    page.wait_for_selector("#export-done", timeout=60000)
-    page.wait_for_selector("#export-paint-done")
-    assert "Filament slots 1 to 2" in page.text_content("#export-paint-done")
-    verts, faces, strings, palette = read_3mf(tmp_path / "out" / "WP_A_0300.3mf")
-    assert palette == ["#00FF00", "#0202DE"] and (tmp_path / "out" / "WP_A_0300_palette.png").exists()
-    page.click("#paint-settings")  # back to the Finish tab's settings
-    page.wait_for_selector("#paint-section")
-    page.click("#paint-suggest")
-    first_swatch("#DE0202")
-    assert page.is_disabled("#paint-suggest")
-    # the Finished model is painted from the textured model it was made from
-    page.uncheck("#paint-preview")
-    page.click("#finish-run")
-    page.wait_for_selector("#finish-result", timeout=60000)
-    page.click("#rail-export")
-    page.wait_for_selector('#export-working[data-which="finished"]')  # the model shown since it was made
-    page.wait_for_selector("#paint-from-note")
-    page.click("#export-run")
-    page.wait_for_selector("#export-paint-done", timeout=60000)
-    if shots:
-        page.screenshot(path=os.path.join(shots, "export-painted-finished.png"))
-    verts, faces, strings, palette = read_3mf(tmp_path / "out" / "WP_A_0300_watertight.3mf")
-    assert palette == ["#DE0202", "#0202DE"] and any(len(x) > 1 for x in strings)
-    page.select_option("#export-format", ".stl")
-    page.wait_for_selector("#paint-summary", state="detached")
 
 
 def test_the_texture_picker_assigns_a_texture_by_name(page, app, weapon_dir):  # noqa: F811

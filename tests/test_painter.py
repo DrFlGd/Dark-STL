@@ -57,9 +57,9 @@ def test_the_painter_preset_writes_a_textured_y_up_glb(service, tmp_path):  # no
     assert Path(third["path"]).name == "sword_for_painter (2).glb"
 
 
-def test_the_painter_preset_takes_one_model(service, tmp_path):  # noqa: F811
+def test_the_painter_preset_takes_the_original_or_enhanced_model(service, tmp_path):  # noqa: F811
     m = opened(service)
-    with pytest.raises(AppError, match="Model Painter takes one model"):
+    with pytest.raises(AppError, match="Finish and Cut moved to Model Painter"):  # no Finished model or Pieces since 0.55.0
         service.call("export", {"sid": m["sid"], "which": "pieces", "preset": "painter", "folder": str(tmp_path)})
     with pytest.raises(AppError, match="no export preset"):
         service.call("export", {"sid": m["sid"], "which": "original", "preset": "slicer", "folder": str(tmp_path)})

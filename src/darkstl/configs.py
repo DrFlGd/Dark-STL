@@ -4,7 +4,7 @@ Weapons in Cyberpunk 2077, the RE Engine games and Borderlands are kept as a bod
 separate part models (magazines, sights, barrels, stocks, muzzles). A :class:`Configuration`
 says which model is the base and, for each slot, which part models fit it and where they go.
 Choosing one option per slot gives an assembled model: a :class:`~darkstl.model.SourceModel` like
-any other, so the Mesh, Displace, Cut and Export steps work on it unchanged.
+any other, so the Clean, Mesh, Displace and Export steps work on it unchanged.
 
 Where configurations come from, the later overriding the earlier when two share a game and id:
 

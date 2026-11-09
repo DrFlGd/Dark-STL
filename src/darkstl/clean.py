@@ -3,7 +3,7 @@
 Game models carry what a print doesn't want: the body under the armour, linings inside a coat, cloth with no
 thickness (capes, loincloths, two-sided sheets), the same triangles twice, small holes, faces turned inside
 out, and the game's own size and placement. Cleaning fixes the source model, so every step after it (Mesh,
-Displace, Finish, Cut, Export, Model Painter) gets a better input.
+Displace, Export, and Model Painter's watertight, cutting and painting) gets a better input.
 
 A model's clean-up is a list of recorded operations (:class:`CleanList`), replayed in order on the model as
 it is built and posed (:func:`apply`), before Mesh. Operations that remove faces record them by stable ids:
@@ -29,7 +29,7 @@ millimetres are divided by its scale, so "0.5 mm thick" means 0.5 mm on the prin
 metres (export frame, Z up), as everywhere else.
 
 The topology helpers at the top (half-edges, boundary loops, filling them, repeated faces, connected parts)
-are shared with :mod:`darkstl.cut` and :mod:`darkstl.finish`.
+are what the operations are built on.
 """
 
 from __future__ import annotations

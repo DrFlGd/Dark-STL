@@ -19,7 +19,7 @@ else as the picture the importer decoded (PNG); an animation as the local matric
 frame, which any skeleton with those bone names can be posed with (:mod:`darkstl.posing`).
 
 Packages are listed and opened by :class:`darkstl.importers.package.PackageImporter` like any other
-model, and everything after import (Generate, Cut, Finish, Pose, Export) works on them unchanged.
+model, and everything after import (Clean, Generate, Pose, Export) works on them unchanged.
 """
 
 from __future__ import annotations

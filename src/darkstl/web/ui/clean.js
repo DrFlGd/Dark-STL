@@ -186,7 +186,7 @@ export function CleanTab({ m, args, stats, run, setRun, call, follow, clean, set
     <section class="insp-section"><h3>Clean up the model <${TipButton} tab="clean" /></h3>
       <${Tip} tab="clean" summary="Take off what shouldn't be printed and set the model's size, before its vertices are evened out.">Each step
         goes in the list below and is done again whenever the model is built, with the parts, options and pose chosen, so a step
-        can be taken away later. Mesh, Displace, Finish, Cut and Export all work on the cleaned model.<//>
+        can be taken away later. Mesh, Displace and Export all work on the cleaned model.<//>
       ${which !== "original" ? html`<p class="insp-note" id="clean-which">The 3D view shows the ${which} model. Clean works on the model
         before the Mesh step: <button type="button" class="link-btn" id="clean-show-original" onClick=${toOriginal}>show it</button>
         to see what each step does. The enhanced model is made again from the cleaned one when you generate it.</p>` : null}
@@ -293,7 +293,7 @@ export function CleanTab({ m, args, stats, run, setRun, call, follow, clean, set
 
     <section class="insp-section" id="clean-transform"><h3>Size and placement</h3>
       <${NumberField} id="clean-height" label="Print height" value=${t.height_mm || 0} step=${5} min=${0} max=${100000} unit="mm (0: the game's size)"
-        title="Scales the model so it stands this tall (after the turns below). Displace, Finish, Cut and Export then work in these millimetres."
+        title="Scales the model so it stands this tall (after the turns below). Displace and Export then work in these millimetres."
         onChange=${(v) => setT({ height_mm: Math.max(0, v) })} />
       ${t.height_mm ? null : html`<${NumberField} id="clean-scale" label="Scale" value=${Math.round((t.scale || 1) * 10000) / 100} step=${5} min=${0.01} max=${100000} unit="% of the game's size"
         title="One game metre is 1000 mm at 100%." onChange=${(v) => setT({ scale: Math.max(0.0001, v / 100) })} />`}

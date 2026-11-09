@@ -124,7 +124,7 @@ function Engine({ part }) {
     </section>
     <section class="ls-section" id="settings-painter">
       <h2>Model Painter</h2>
-      <p class="muted">Model Painter paints models for colour printing and finishes them for printing. The Export tab's <i>Export for Model Painter</i>${" "}
+      <p class="muted">Model Painter makes models watertight, cuts them into pieces with joints and paints them for colour printing. The Export tab's <i>Export for Model Painter</i>${" "}
         writes a GLB with the textures, and <i>Open in Model Painter</i> opens it there. Dark STL finds Model Painter where its installer or its portable
         zip put it; if yours is somewhere else, choose its program here. Get it from${" "}<a href="https://github.com/DrFlGd/Model-Painter/releases" target="_blank" rel="noreferrer">Model Painter's releases</a>.</p>
       <p id="painter-status">${s.model_painter_found ? html`${Icon.check(14)} ${s.model_painter ? "Using" : "Found"}: <span class="note-path">${s.model_painter_found}</span>`

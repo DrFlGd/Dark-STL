@@ -12,12 +12,12 @@ export function About() {
   <div class="pages"><div class="library-settings about-page">
     <section class="ls-section">
       <h2>What it does</h2>
-      <p>Dark STL lists the models in your games (FromSoftware's, Cyberpunk 2077, the RE Engine games, Borderlands, Returnal, Grand Theft Auto III, Vice City, San Andreas, IV and V, DOOM Eternal and DOOM: The Dark Ages) by game and kind, shows them with their textures, and makes print-ready meshes from them in two steps:</p>
+      <p>Dark STL lists the models in your games (FromSoftware's, Cyberpunk 2077, the RE Engine games, Borderlands, Returnal, Grand Theft Auto III, Vice City, San Andreas, IV and V, DOOM Eternal and DOOM: The Dark Ages) by game and kind, lets you file, tag and search them, shows them with their textures, cleans them up, and raises their detail for printing in two steps:</p>
       <ol class="how-list">
         <li><b>Even out the vertices.</b> Game models put few vertices on large flat areas and many on small details. Dark STL spreads the number of vertices you choose evenly over the surface, so detail can go anywhere.</li>
         <li><b>Raise the texture detail.</b> The game paints fine relief (scratches, engravings, stitching, scales) into its normal maps. Dark STL turns that into height and moves each vertex by it.</li>
       </ol>
-      <p>Then it exports STL for your slicer, or OBJ, PLY or GLB.</p>
+      <p>Then it exports STL for your slicer, or OBJ, PLY or GLB. To make a model watertight, cut it into pieces or paint it for a colour printer, it hands the model to ${link("https://github.com/DrFlGd/Model-Painter", "Model Painter")} (Export › Export for Model Painter).</p>
     </section>
     <section class="ls-section">
       <h2>Games and files</h2>

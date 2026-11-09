@@ -153,7 +153,6 @@ a.chip-btn.on { background: var(--sel); }
 .working-on { margin: 0; font-size: 13.5px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 4px; }
 .working-on small { flex-basis: 100%; font-size: 12.5px; line-height: 1.4; margin-top: 2px; }
 .working-change { color: var(--tool); font-weight: 600; }
-.from-pick .seg { align-self: start; justify-self: start; }
 #show-which.flash { animation: picker-flash 1.3s ease-out; }
 @keyframes picker-flash { 0%, 40% { box-shadow: 0 0 0 3px var(--tool); } 100% { box-shadow: 0 0 0 3px transparent; } }
 
@@ -216,23 +215,6 @@ a.chip-btn.on { background: var(--sel); }
 .compare-divider span:last-child { left: 6px; }
 .compare-empty { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; text-align: center; padding: 12px; }
 
-/* Cut tab: the planes, each cut's joint, and the pieces made */
-.cut-add { flex-wrap: wrap; gap: 6px; }
-.cut-list li { cursor: pointer; }
-.cut-list li > span:first-child, .piece-list li > span:first-child { display: grid; }
-.cut-list li.selected { background: color-mix(in srgb, #e0913a 16%, transparent); box-shadow: inset 3px 0 0 #e0913a; }
-.cut-list small, .piece-list small { font-size: 11.5px; }
-#cut-edit .field-row { flex-wrap: wrap; gap: 6px; }
-#cut-edit input[type="range"] { flex: 1 1 120px; min-width: 0; }
-.compact-number { width: 84px; }
-.joint-seg { flex-wrap: wrap; }
-.joint-seg button { flex: 1 1 auto; }
-.piece-list li > span:first-child { grid-template-columns: auto 1fr; column-gap: 8px; align-items: center; }
-.piece-list li > span:first-child small { grid-column: 2; }
-.piece-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; grid-row: span 2; }
-#cut-explode { width: 100%; }
-#finish-stats li > span:last-child { flex: none; text-align: right; }
-
 /* Clean tab: the steps taken, parts, hidden faces, thin sheets, faces picked, repairs and the transform */
 #clean-tab p.small { font-size: 12.5px; line-height: 1.4; margin: 0; }
 .clean-steps li { padding: 4px 0; }
@@ -269,22 +251,6 @@ a.chip-btn.on { background: var(--sel); }
 .part-results { max-height: 240px; overflow: auto; margin-top: 6px; }
 .part-result { width: 100%; text-align: left; justify-content: flex-start; }
 .config-tag { font-size: 11.5px; }
-
-/* Export tab: the painted 3MF's palette */
-.paint-options { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 8px; }
-.paint-options .field-row { display: flex; gap: 10px; align-items: center; }
-.paint-options .field-row .field-block { flex: 1; }
-.paint-options input[type="range"] { flex: 1; }
-.paint-options .num-short { width: 64px; }
-.paint-options > small, .paint-options .field-block > small { display: block; }
-.paint-options .mat-row.paint-src { grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); margin-top: 4px; }
-.paint-options .slider-value { font-weight: 600; margin-left: 4px; }
-.paint-options .more-settings > .field-block { margin-top: 8px; }
-.paint-swatches { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
-.paint-swatch { position: relative; display: inline-flex; align-items: flex-end; width: 44px; height: 36px; border-radius: var(--radius-s); border: 1px solid #0004; box-shadow: inset 0 0 0 1px #fff5; cursor: pointer; overflow: hidden; }
-.paint-swatch > span { font-size: 11px; font-weight: 700; line-height: 1; padding: 2px 4px; margin: 0 0 3px 3px; border-radius: 3px; background: #fffc; color: #222; }
-.paint-swatch input[type="color"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
-.paint-done .paint-swatch { cursor: default; }
 
 /* the texture picker: find a game texture by name and use it for a material */
 #texture-picker { width: min(860px, 100%); }
