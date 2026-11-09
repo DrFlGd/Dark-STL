@@ -17,6 +17,7 @@ from darkstl.app.server import AppServer
 from darkstl.app.service import Service
 
 from test_pipeline import weapon_dir  # noqa: F401 - fixture
+from test_posing import game  # noqa: F401 - fixture
 from test_unpack import keypair, packed_ds3  # noqa: F401 - fixtures
 
 sync_api = pytest.importorskip("playwright.sync_api")
@@ -1501,3 +1502,91 @@ def test_the_list_view_sorts_by_its_columns(page, app, tmp_path):
     assert app.service.call("prefs_get", {})["ds-ui"]["sorts"] == want
     page.reload()
     page.wait_for_selector('#list-head [data-sort="size"][aria-pressed="true"]')
+
+
+def _triangles(page) -> int:
+    """The triangle count the stage's footer shows."""
+    return int("".join(ch for ch in page.inner_text("#stage-tris") if ch.isdigit()))
+
+
+def test_turn_a_bone_save_the_pose_and_attach_a_model(page, app, game):  # noqa: F811
+    """On the Pose tab: choose a bone, turn it with a slider's box, save the pose, open the model again and apply
+    it; then attach another model to a bone and see the triangle count rise."""
+    from test_app import wait
+
+    shots = os.environ.get("DARKSTL_SCREENSHOTS")
+    wait(app.service, app.service.call("folder_add", {"path": str(game)})["job"])
+    items = {i["stem"]: i for i in app.service.call("models_query", {"game": "Dark Souls III", "limit": 100})["items"]}
+    page.goto(app.url + f"#/model/{items['c2000']['id']}")
+    page.reload()  # the game was added behind the page's back
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    before = _triangles(page)
+    page.click("#rail-pose")
+    page.wait_for_selector('#bone-list .bone-row[data-bone="hand"]')
+    page.click('#bone-list .bone-row[data-bone="hand"]')
+    page.wait_for_selector('#bone-edit[data-bone="hand"]')
+    assert page.is_enabled("#bone-mirror") is False  # "hand" has no partner on the other side
+    page.fill("#bone-z-number", "45")
+    page.press("#bone-z-number", "Enter")
+    page.wait_for_function("document.querySelector('#stage-pose')?.textContent.includes('1 bone turned')")
+    page.wait_for_selector('#bone-list .bone-row[data-bone="hand"] .bone-turned')
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    # a drag of the gizmo's blue ring: another 45° about the bone's own Z axis, added to the turn there
+    page.evaluate("""() => { const v = window.__viewer;
+      v.gizmo.dispatchEvent({ type: "dragging-changed", value: true });
+      v.boneHandle.rotateZ(Math.PI / 4);
+      v.gizmo.dispatchEvent({ type: "dragging-changed", value: false }); }""")
+    page.wait_for_function("document.querySelector('#bone-z-number').value === '90'")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    if shots:
+        page.screenshot(path=os.path.join(shots, "pose-bones.png"))
+    page.fill("#pose-save-name", "Wave")
+    page.click("#pose-save")
+    page.wait_for_selector('#pose-saved-own .saved-pose[data-pose="Wave"]')
+    page.wait_for_function("document.querySelector('#stage-pose')?.textContent.includes('Wave')")
+    # open the model again, back in its bind pose, and apply the saved pose
+    page.goto(app.url + "#/browse/Dark%20Souls%20III")
+    page.reload()
+    page.goto(app.url + f"#/model/{items['c2000']['id']}")
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    assert page.locator("#stage-pose").count() == 0
+    if page.get_attribute("#rail-pose", "aria-pressed") != "true":  # the page opens on the tab it was left on
+        page.click("#rail-pose")
+    page.wait_for_selector('#pose-saved-own .saved-pose[data-pose="Wave"]')
+    page.click('#pose-saved-own .saved-pose[data-pose="Wave"] .pose-apply')
+    page.wait_for_function("document.querySelector('#stage-pose')?.textContent.includes('Wave, 1 bone turned')")
+    page.wait_for_selector('#bone-list .bone-row[data-bone="hand"] .bone-turned')
+    # attach the model without animations to the hand
+    page.click("#attach-add")
+    page.wait_for_selector("#attach-dialog")
+    page.fill("#attach-search", "c2001")
+    page.wait_for_selector('#attach-results [data-model="c2001"]')
+    page.click('#attach-results [data-model="c2001"] input')
+    page.select_option("#attach-dialog-holder", "bone:hand")
+    if shots:
+        page.screenshot(path=os.path.join(shots, "attach.png"))
+    page.click("#attach-dialog-ok")
+    page.wait_for_function("!document.querySelector('#attach-dialog')")
+    page.wait_for_selector("#attach-list .attach-row", timeout=30000)
+    page.wait_for_selector("#stage-canvas:not([data-loading])", timeout=30000)
+    page.wait_for_function(f"parseInt((document.querySelector('#stage-tris')?.textContent || '').replace(/\\D/g, '')) > {before}",
+                           timeout=30000)
+    assert _triangles(page) == 2 * before
+    assert "Wave" in page.inner_text("#stage-pose")  # the pose stays as the model opens again with it
+    # moved 50 mm out along the hand, kept with the model
+    page.wait_for_selector("#attach-edit")  # the one just attached, to place
+    page.fill("#attach-offset-x", "50")
+    page.press("#attach-offset-x", "Enter")
+    from darkstl import overlay
+
+    kept_in = app.service._overlay("Dark Souls III").path
+    deadline = time.time() + 15
+    kept = []
+    while time.time() < deadline:
+        kept = overlay.Overlay(kept_in, "Dark Souls III").attachments("chr/c2000.chrbnd.dcx")
+        if kept and kept[0]["place"].get("offset_mm", [0])[0] == 50:
+            break
+        time.sleep(0.2)
+    assert kept and kept[0]["place"]["bone"] == "hand" and kept[0]["place"]["offset_mm"][0] == 50
+    page.click("#rail-export")
+    assert page.get_attribute("#export-name", "placeholder").endswith("_Wave")

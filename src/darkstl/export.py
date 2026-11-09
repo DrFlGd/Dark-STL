@@ -41,6 +41,11 @@ class ExportOptions:
     paint_from: Any = None  # paint.SurfaceColours: paint a mesh without textures from the model it was made from
     palette_png: bool = True  # write `<name>_palette.png` beside a 3MF
     progress: Callable[[float, str], None] | None = None
+    # GLB: the model's skeleton in the pose the mesh is in, (bone names, parents, (B, 4, 4) world matrices in
+    # metres, Z up), written as the glTF's nodes; with ``skin`` ((V, k) joints and weights per mesh vertex)
+    # the mesh is bound to it, so the skeleton stands in the adjusted pose as its rest pose in Blender
+    skeleton: tuple | None = None
+    skin: tuple | None = None
 
 
 def export_mesh(mesh: TriMesh, path: str | Path, options: ExportOptions | None = None) -> Path:
@@ -256,17 +261,29 @@ def write_glb(mesh: TriMesh, path: Path, options: ExportOptions) -> None:
             attrs["TEXCOORD_0"] = uv_acc
         primitives.append({"attributes": attrs, "indices": idx_acc, "material": len(materials) - 1})
 
+    nodes = [{"mesh": 0, "name": path.stem}]
+    scene_nodes = [0]
+    if options.skeleton is not None and len(options.skeleton[0]):
+        skin = _glb_skin(options, mesh, src_vertex, scale, nodes, scene_nodes, add_accessor)
+        if skin is not None:
+            joints_acc, weights_acc, skin_json = skin
+            for prim in primitives:
+                prim["attributes"]["JOINTS_0"] = joints_acc
+                prim["attributes"]["WEIGHTS_0"] = weights_acc
+            nodes[0]["skin"] = 0
     gltf = {
         "asset": {"version": "2.0", "generator": "Dark STL"},
         "scene": 0,
-        "scenes": [{"nodes": [0]}],
-        "nodes": [{"mesh": 0, "name": path.stem}],
+        "scenes": [{"nodes": scene_nodes}],
+        "nodes": nodes,
         "meshes": [{"primitives": primitives, "name": path.stem}],
         "materials": materials,
         "accessors": accessors,
         "bufferViews": views,
         "buffers": [{"byteLength": len(blob)}],
     }
+    if options.skeleton is not None and nodes[0].get("skin") == 0:
+        gltf["skins"] = [skin_json]
     if images:
         gltf["images"] = images
         gltf["textures"] = textures
@@ -281,6 +298,68 @@ def write_glb(mesh: TriMesh, path: Path, options: ExportOptions) -> None:
         fh.write(js)
         fh.write(struct.pack("<I4s", len(blob), b"BIN\0"))
         fh.write(bytes(blob))
+
+
+def _glb_skin(options: ExportOptions, mesh: TriMesh, src_vertex: np.ndarray, scale: float, nodes: list, scene_nodes: list,
+              add_accessor) -> tuple | None:
+    """The skeleton's nodes (added to ``nodes`` and the scene), and, when the mesh's weights are given, its
+    joints and weights accessors and the skin (inverse bind matrices of the pose itself, so the mesh stays as
+    it is)."""
+    names, parents, world = options.skeleton
+    world = np.asarray(world, np.float64).reshape(-1, 4, 4)
+    conv = np.eye(4)
+    conv[:3, :3] = Z_UP_TO_Y_UP * scale
+    conv_i = np.linalg.inv(conv)
+    w = conv @ world @ conv_i  # the bones in the glTF's frame and units
+    parents = [int(p) if 0 <= int(p) < len(names) and int(p) != i else -1 for i, p in enumerate(parents)]
+    if _cycles(parents):
+        parents = [-1] * len(names)
+    first = len(nodes)
+    for i, name in enumerate(names):
+        local = w[i] if parents[i] < 0 else np.linalg.pinv(w[parents[i]]) @ w[i]
+        nodes.append({"name": str(name), "matrix": [float(x) for x in local.T.reshape(-1)]})
+    for i, p in enumerate(parents):
+        if p >= 0:
+            nodes[first + p].setdefault("children", []).append(first + i)
+        else:
+            scene_nodes.append(first + i)
+    skin = options.skin
+    if skin is None or len(skin[0]) != mesh.n_vertices:
+        return None
+    joints = np.asarray(skin[0], np.int64).reshape(mesh.n_vertices, -1)[src_vertex]
+    weights = np.asarray(skin[1], np.float64).reshape(mesh.n_vertices, -1)[src_vertex]
+    weights = np.where((joints >= 0) & (joints < len(names)), weights, 0.0)
+    order = np.argsort(-weights, axis=1, kind="stable")[:, :4]  # glTF's one set: the four heaviest
+    joints = np.take_along_axis(joints, order, axis=1)
+    weights = np.take_along_axis(weights, order, axis=1)
+    if joints.shape[1] < 4:
+        pad = 4 - joints.shape[1]
+        joints = np.pad(joints, ((0, 0), (0, pad)), constant_values=-1)
+        weights = np.pad(weights, ((0, 0), (0, pad)))
+    total = weights.sum(axis=1, keepdims=True)
+    root = next((i for i, p in enumerate(parents) if p < 0), 0)
+    none = total[:, 0] <= 0  # a vertex no bone holds goes with the skeleton's root
+    weights = np.where(total > 0, weights / np.where(total > 0, total, 1), 0.0)
+    joints = np.where(weights > 0, joints, 0)
+    joints[none, 0], weights[none, 0] = root, 1.0
+    component = 5123 if len(names) < 65535 else 5125
+    joints_acc = add_accessor(joints.astype(np.uint16 if component == 5123 else np.uint32), "VEC4", component, 34962)
+    weights_acc = add_accessor(weights.astype(np.float32), "VEC4", 5126, 34962)
+    ibm = np.linalg.pinv(w)
+    ibm_acc = add_accessor(np.ascontiguousarray(np.transpose(ibm, (0, 2, 1)).reshape(-1, 16)).astype(np.float32),
+                           "MAT4", 5126, None)
+    return joints_acc, weights_acc, {"joints": list(range(first, first + len(names))), "inverseBindMatrices": ibm_acc}
+
+
+def _cycles(parents: list[int]) -> bool:
+    for start in range(len(parents)):
+        seen, i = set(), start
+        while i >= 0:
+            if i in seen:
+                return True
+            seen.add(i)
+            i = parents[i]
+    return False
 
 
 # ---------------------------------------------------------------------------

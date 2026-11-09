@@ -913,6 +913,9 @@ class Cleaned:
     rows: list[dict] = field(default_factory=list)
     scale: float = 1.0
     game_size_mm: list[float] = field(default_factory=list)
+    # the transform's move, turn and scale as a 4x4 matrix (export frame, metres), when the list has one: what
+    # takes a point of the model as built (its bones, say) to where the cleaned-up model has it
+    affine: np.ndarray | None = None
 
 
 def _size_mm(mesh: TriMesh) -> list[float]:
@@ -962,12 +965,18 @@ def _transform(mesh: TriMesh, op: dict) -> tuple[TriMesh, dict]:
     m = _linear(op)
     s = transform_scale(mesh, op)
     if not mesh.n_vertices:
-        return mesh, {"scale": s}
+        return mesh, {"scale": s, "affine": np.eye(4)}
     lo, hi = mesh.bounds()
     centre = (lo + hi) / 2
-    v = (mesh.vertices - centre) @ m.T * s + centre + np.asarray(op.get("move") or [0, 0, 0], np.float64) / 1000
+    move = np.asarray(op.get("move") or [0, 0, 0], np.float64) / 1000
+    v = (mesh.vertices - centre) @ m.T * s + centre + move
+    affine = np.eye(4)
+    affine[:3, :3] = m * s
+    affine[:3, 3] = centre - (m * s) @ centre + move
     if op.get("floor"):
-        v[:, 2] -= v[:, 2].min()
+        drop = v[:, 2].min()
+        v[:, 2] -= drop
+        affine[2, 3] -= drop
     out = replace(mesh, vertices=v, metadata=dict(mesh.metadata))
     if mesh.corner_normals is not None:
         n = np.asarray(mesh.corner_normals, np.float64) @ np.linalg.inv(m)  # normals turn by the inverse transpose
@@ -979,7 +988,7 @@ def _transform(mesh: TriMesh, op: dict) -> tuple[TriMesh, dict]:
             out.corner_uvs = out.corner_uvs[:, [0, 2, 1]]
         if out.corner_normals is not None:
             out.corner_normals = out.corner_normals[:, [0, 2, 1]]
-    return out, {"scale": s}
+    return out, {"scale": s, "affine": affine}
 
 
 def _transform_text(op: dict, s: float, size: list[float]) -> str:
@@ -1215,10 +1224,10 @@ def apply(mesh: TriMesh, clean: CleanList | None, progress: ProgressFn | None = 
     if mesh.n_faces and len(np.unique(mesh.faces)) < mesh.n_vertices:
         mesh = mesh.subset(np.ones(mesh.n_faces, bool))  # vertices nothing uses any more dropped (faces and ids stay)
     game = _size_mm(mesh)
-    s = 1.0
+    s, affine = 1.0, None
     if transform is not None:
         mesh, got = _transform(mesh, transform)
-        s = got["scale"]
+        s, affine = got["scale"], got["affine"]
         i = len(clean.ops) - 1 - list(reversed(clean.ops)).index(transform)
         rows[i] = {"op": "transform", "label": _label(transform), "scale": s, "size_mm": _size_mm(mesh),
                    "text": _transform_text(transform, s, _size_mm(mesh))}
@@ -1227,7 +1236,7 @@ def apply(mesh: TriMesh, clean: CleanList | None, progress: ProgressFn | None = 
                 rows[j] = {"op": "transform", "label": _label(op), "text": "replaced by the transform after it"}
     if progress:
         progress(1.0, "Cleaned")
-    return Cleaned(mesh, ids, [r for r in rows if r is not None], s, game)
+    return Cleaned(mesh, ids, [r for r in rows if r is not None], s, game, affine)
 
 
 # ------------------------------------------------------------------ the command line

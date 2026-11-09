@@ -208,7 +208,7 @@ class FromSoftwareImporter(Importer):
                                  "Moves non-skinned meshes (blades, guards, armour plates) to where their bone "
                                  "holds them. Turn off if parts end up out of place.")],
             info=flver_summary(f), notes=notes, animations=animations,
-            rig=_rig(f, animations) if animations is not None else None,
+            rig=_rig(f, animations, asset.name) if f.bones else None,
         )
 
     def describe(self, path: Path) -> list[str] | None:
@@ -297,8 +297,9 @@ class FromSoftwareImporter(Importer):
         return {k: _texture(r) for k, r in refs.items()}
 
 
-def _rig(f, animations) -> Rig:
-    """The FLVER's bones in the export frame, posed by name from the model's animation set."""
+def _rig(f, animations, name: str = "The model") -> Rig:
+    """The FLVER's bones in the export frame, posed by name from the model's animation set (a model without
+    one keeps its bones, for bone adjustments on its bind pose)."""
     from .animation import qs_to_matrices
     from .mesh import GAME_TO_EXPORT
 
@@ -308,6 +309,8 @@ def _rig(f, animations) -> Rig:
     world = f.bone_world_matrices().reshape(-1, 4, 4)
 
     def pose_locals(anim: str, frame: int):
+        if animations is None:
+            raise FormatError(f"{name} has no animations to pose it with")
         names = list(animations.skeleton.names)
         m = qs_to_matrices(animations.local_pose(anim, animations.clamp(anim, frame)))
         return names, g @ m @ gi
@@ -319,7 +322,7 @@ def _rig(f, animations) -> Rig:
         return names, g @ m @ gi
 
     return Rig([b.name for b in f.bones], np.array([b.parent for b in f.bones], np.int64), g @ local @ gi,
-               g @ world @ gi, pose_locals, pose_all)
+               g @ world @ gi, pose_locals, pose_all if animations is not None else None)
 
 
 __all__ = ["FromSoftwareImporter", "flver_summary"]

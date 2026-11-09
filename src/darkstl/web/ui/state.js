@@ -52,7 +52,7 @@ let prefs = null;
 const KEY = "ds-ui";
 const KEPT = ["skin", "theme", "layout", "sort", "sorts", "recent", "lod", "cardSize", "open", "navCollapsed", "inspector", "inspectorTab",
   "inspectorWidth", "catPanel", "catPanelWidth", "catPanelModel", "tipsOpen", "enhance", "exportOpts", "view", "cutOpts", "cutPlans", "cleanPlans", "configChoices",
-  "paintOpts", "paintSources"];
+  "paintOpts", "paintSources", "showBones"];
 
 /** Load saved preferences (call once the platform store exists). */
 export function initState(store) {
