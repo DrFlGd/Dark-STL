@@ -102,4 +102,5 @@ export const Icon = {
   layers: (s) => svg(skinned(html`<path d="M3 8.5l9-4.5 9 4.5-9 4.5z" /><path d="M3 12.5l9 4.5 9-4.5" /><path d="M3 16.5l9 4.5 9-4.5" />`, OWN.layers), s),
   code: (s) => svg(html`<path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16" />`, s),
   play: (s) => svg(html`<path d="M7 4.5v15l12-7.5z" />`, s),
+  brush: (s) => svg(html`<path d="M14.5 4.5 19.5 9.5 11 18l-5-5z" /><path d="M6 13c-2 0-3 1.6-3 3.5V20h3.5c1.9 0 3.5-1 3.5-3" /><path d="M16.5 2.5l5 5" />`, s),
 };

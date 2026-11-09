@@ -30,6 +30,7 @@ from typing import Any, Callable
 import numpy as np
 
 from .. import __version__
+from .. import clean as cleanup
 from .. import collect
 from .. import configs
 from .. import overlay
@@ -191,19 +192,39 @@ class Session:
     cut_id: str = ""
     finished: Any = None  # finish.FinishResult: the model last made watertight (Finish tab)
     finished_id: str = ""
+    raw: TriMesh | None = None  # the last mesh built, before its clean-up
+    raw_key: tuple | None = None
+    cleaned_now: Any = None  # clean.Cleaned: the last mesh built with its clean-up done (``mesh`` is its mesh)
+    graph: tuple | None = None  # (mesh_key, clean.FaceGraph of that mesh): to grow selections clicked in the 3D view
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def build(self, options: MeshOptions) -> TriMesh:
+        return self.cleaned(options).mesh
+
+    def cleaned(self, options: MeshOptions):
+        """The model built with ``options`` and its clean-up done (a clean.Cleaned: the mesh, each face's stable
+        id, what each operation did). The mesh before the clean-up is kept too, so changing the list only cleans."""
         key = _options_key(options)
         with self.lock:
-            if self.mesh is None or self.mesh_key != key:
-                self.mesh, self.mesh_key = self.model.build_mesh(options), key
-            return self.mesh
+            if self.cleaned_now is None or self.mesh_key != key:
+                rkey = _options_key(dataclasses.replace(options, clean=None))
+                if self.raw is None or self.raw_key != rkey:
+                    self.raw, self.raw_key = self.model.build_raw(options), rkey
+                self.cleaned_now = cleanup.apply(self.raw, options.clean)
+                self.mesh, self.mesh_key = self.cleaned_now.mesh, key
+            return self.cleaned_now
+
+    def face_graph(self, options: MeshOptions):
+        c = self.cleaned(options)
+        with self.lock:
+            if self.graph is None or self.graph[0] != self.mesh_key or self.graph[1] is not c:
+                self.graph = (self.mesh_key, c, cleanup.FaceGraph(c.mesh))
+            return self.graph[2]
 
 
 def _options_key(options: MeshOptions) -> tuple:
     return (None if options.parts is None else tuple(sorted(options.parts)), tuple(sorted(options.flags.items())),
-            options.pose)
+            options.pose, options.clean.key if options.clean else None)
 
 
 def generated_key(session: Session, options: MeshOptions, settings: dict) -> tuple:
@@ -235,7 +256,39 @@ def mesh_options(args: dict) -> MeshOptions:
     parts = args.get("parts")
     flags = args.get("flags") or {}
     return MeshOptions(None if parts is None else {int(p) for p in parts}, {str(k): bool(v) for k, v in flags.items()},
-                       parse_pose(args.get("pose")))
+                       parse_pose(args.get("pose")), clean_list(args))
+
+
+_CLEAN_LISTS: OrderedDict[str, Any] = OrderedDict()  # clean-up lists the page sent, by the name it gives them
+_CLEAN_LOCK = threading.Lock()
+KEEP_CLEAN_LISTS = 64
+UNKNOWN_CLEAN = "The clean-up list isn't known here yet"
+
+
+def clean_list(args: dict):
+    """The clean-up list (Clean tab) ``args`` give, or None: the operations themselves (``clean``, a list, kept
+    under the page's name for them, ``clean_id``, for the addresses of meshes and pictures), or the name of a
+    list sent before (in an address)."""
+    value = args.get("clean")
+    if value is None or value == "" or value == []:
+        return None
+    if isinstance(value, (list, tuple)):
+        try:
+            found = cleanup.CleanList.of(list(value))
+        except ValueError as exc:
+            raise AppError(f"The clean-up list can't be used: {exc}") from None
+        name = str(args.get("clean_id") or found.key)
+        with _CLEAN_LOCK:
+            _CLEAN_LISTS[name] = found
+            _CLEAN_LISTS.move_to_end(name)
+            while len(_CLEAN_LISTS) > KEEP_CLEAN_LISTS:
+                _CLEAN_LISTS.popitem(last=False)
+        return found or None
+    with _CLEAN_LOCK:
+        found = _CLEAN_LISTS.get(str(value))
+    if found is None:
+        raise AppError(f"{UNKNOWN_CLEAN} (send it to clean_check first).")
+    return found or None
 
 
 def parse_pose(value) -> tuple[str, int] | None:
@@ -280,6 +333,20 @@ def model_json(m: SourceModel, mesh: TriMesh) -> dict:
         "info": m.info, "notes": m.notes, "stats": mesh_stats(mesh), "animated": m.animations is not None,
         "configuration": m.configuration,
     }
+
+
+def _clean_json(cleaned) -> dict:
+    """What a model's clean-up did, for the Clean tab: a row per operation, the scale its transform gave, and the
+    model's size before it (game millimetres)."""
+    return {"rows": cleaned.rows, "scale": cleaned.scale, "game_size_mm": cleaned.game_size_mm}
+
+
+def _shown_order(mesh: TriMesh) -> np.ndarray:
+    """For each face of ``mesh``, its triangle in the mesh as the 3D view gets it (meshpack sorts them by material)."""
+    order = np.argsort(mesh.face_material, kind="stable")
+    shown = np.empty(len(order), np.int64)
+    shown[order] = np.arange(len(order))
+    return shown
 
 
 def mesh_stats(mesh: TriMesh) -> dict:
@@ -2067,8 +2134,89 @@ class Service:
         return session
 
     def cmd_model_stats(self, args: dict) -> dict:
+        """The model's size and counts with these parts, options, pose and clean-up; with a clean-up, what each of its
+        operations did (``clean``)."""
         session = self._session(args)
-        return mesh_stats(session.build(mesh_options(args)))
+        options = mesh_options(args)
+        cleaned = session.cleaned(options)
+        out = mesh_stats(cleaned.mesh)
+        if options.clean:
+            out["clean"] = _clean_json(cleaned)
+        return out
+
+    def cmd_clean_check(self, args: dict) -> dict:
+        """The clean-up list sent (``clean``, named ``clean_id``) done on the model: what each operation did, and the
+        model's size after it. The list is kept under its name, for the addresses of the meshes shown."""
+        return self.cmd_model_stats(args)
+
+    # ------------------------------------------------------------ the Clean tab's finders
+
+    def cmd_clean_find(self, args: dict) -> dict:
+        """Find what to clean on the model as it is cleaned so far (a job): ``find`` is ``hidden_parts``,
+        ``hidden_faces`` (``depth_mm``) or ``sheets`` (``thickness_mm``). Faces are given as stable ids (to record
+        in an operation) and as the triangles of the mesh shown (``shown``, to highlight). Millimetres are those of
+        the model shown: print millimetres once a print height is set."""
+        session = self._session(args)
+        options = mesh_options(args)
+        what = str(args.get("find") or "")
+        if what not in ("hidden_parts", "hidden_faces", "sheets"):
+            raise AppError("Find hidden_parts, hidden_faces or sheets.")
+        depth = max(float(args.get("depth_mm") or 0.0), 0.0)
+        thickness = max(float(args.get("thickness_mm") or 0.5), 0.001)
+
+        def run(job: Job):
+            job.report(0.02, "Building the model")
+            cleaned = session.cleaned(options)
+            mesh = cleaned.mesh
+            shown = _shown_order(mesh)
+            progress = lambda f, m: (job.check(), job.report(0.05 + 0.9 * f, m))  # noqa: E731
+            if what == "hidden_parts":
+                found = cleanup.find_hidden_parts(mesh, progress)
+                faces = np.concatenate(found) if found else np.zeros(0, np.int64)
+                return {"find": what, "faces": cleanup.encode_ids(cleaned.ids[faces]), "count": int(len(faces)),
+                        "parts": len(found), "shown": shown[faces].tolist()}
+            if what == "hidden_faces":
+                faces = cleanup.find_hidden_faces(mesh, depth / 1000, progress)
+                return {"find": what, "faces": cleanup.encode_ids(cleaned.ids[faces]), "count": int(len(faces)),
+                        "depth_mm": depth, "shown": shown[faces].tolist()}
+            regions, more = cleanup.find_sheets(mesh, thickness / 1000, progress)
+            return {"find": what, "thickness_mm": thickness, "more": more, "regions": [
+                {**r.as_dict(), "index": i, "faces_ids": cleanup.encode_ids(cleaned.ids[r.faces]),
+                 "shown": np.sort(shown[r.faces]).tolist()} for i, r in enumerate(regions)]}
+
+        label = {"hidden_parts": "Looking for parts hidden inside others", "hidden_faces": "Looking for hidden faces",
+                 "sheets": "Looking for thin sheets"}[what]
+        return {"job": self.jobs.start(label, run, stoppable=True).id}
+
+    def cmd_clean_select(self, args: dict) -> dict:
+        """The faces a click on triangle ``face`` of the mesh shown selects: those reached across edges where the
+        surface bends less than ``angle`` degrees (as triangles of the mesh shown)."""
+        session = self._session(args)
+        options = mesh_options(args)
+        mesh = session.build(options)
+        try:
+            face = int(args.get("face"))
+        except (TypeError, ValueError):
+            raise AppError("Say which triangle was clicked.") from None
+        if not 0 <= face < mesh.n_faces:
+            raise AppError("That triangle isn't on the model shown.")
+        order = np.argsort(mesh.face_material, kind="stable")
+        faces = session.face_graph(options).flood(int(order[face]), float(args.get("angle", 30)))
+        shown = _shown_order(mesh)
+        return {"shown": np.sort(shown[faces]).tolist(), "count": int(len(faces))}
+
+    def cmd_clean_ids(self, args: dict) -> dict:
+        """Triangles of the mesh shown (``shown``) as the stable ids an operation records them by."""
+        session = self._session(args)
+        cleaned = session.cleaned(mesh_options(args))
+        try:
+            shown = np.asarray([int(i) for i in (args.get("shown") or [])], np.int64)
+        except (TypeError, ValueError):
+            raise AppError("Name the triangles by their numbers.") from None
+        shown = shown[(shown >= 0) & (shown < cleaned.mesh.n_faces)]
+        order = np.argsort(cleaned.mesh.face_material, kind="stable")
+        faces = order[shown]
+        return {"faces": cleanup.encode_ids(cleaned.ids[faces]), "count": int(len(np.unique(faces)))}
 
     def cmd_model_animations(self, args: dict) -> dict:
         """The animations that can pose the model: name, frames, duration and frame rate of each."""
@@ -2256,7 +2404,8 @@ class Service:
             job.check()  # stopped in its last step: not kept
             if getattr(result, "made_with", None) is None:  # what it was made with, kept with it as a variation
                 result.made_with = {"settings": dict(args.get("settings") or {}), "step": args.get("step") or "both",
-                                    "parts": args.get("parts"), "flags": args.get("flags") or {}, "pose": args.get("pose")}
+                                    "parts": args.get("parts"), "flags": args.get("flags") or {}, "pose": args.get("pose"),
+                                    "clean": args.get("clean") if isinstance(args.get("clean"), list) and options.clean else None}
             self._keep(key, result)
             session.result, session.result_id = result, _key_id(key)
             return {**self._result_json(session), "kept": kept is not None, "mesh_reused": mesh is not None}
@@ -2487,7 +2636,8 @@ class Service:
         made = getattr(result, "made_with", None) or {}
         info = {"variant": variant, "model": {"label": session.entry.label, "stem": session.entry.stem},
                 "settings": made.get("settings") or {}, "step": made.get("step") or "both",
-                "mesh": {"parts": made.get("parts"), "flags": made.get("flags") or {}, "pose": made.get("pose")},
+                "mesh": {"parts": made.get("parts"), "flags": made.get("flags") or {}, "pose": made.get("pose"),
+                         "clean": made.get("clean") or None},
                 "result": {k: shown[k] for k in ("stats", "size_mm", "fields", "warnings", "displaced")},
                 "from": getattr(result, "variation", None)}
 
@@ -2525,7 +2675,7 @@ class Service:
                                bool(made.get("displaced", True)))
         result.saved, result.variation = made, vid
         result.made_with = {"settings": row.get("settings") or {}, "step": row.get("step") or "both",
-                            **{k: (row.get("mesh") or {}).get(k) for k in ("parts", "flags", "pose")}}
+                            **{k: (row.get("mesh") or {}).get(k) for k in ("parts", "flags", "pose", "clean")}}
         session.result, session.result_id = result, f"var-{vid}"
         return {**self._result_json(session), "saved": row}
 

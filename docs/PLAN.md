@@ -163,9 +163,10 @@ the tests call directly.
 - **The model page.** The 3D view with the game's textures (or clay, or wireframe), and the
   inspector's tabs in the order the work happens, in three groups on the rail (each tab's icon
   with its short name upright under it; icons only when the page is crowded): **Model**
-  (Configure, Model: parts, importer options, size, file; Textures; Pose: an animation and a
-  frame, with a slider, stepping and playback, only for models with animations), **Edit** (Mesh,
-  Displace, Finish, Cut) and **Export**. Since 0.43.0:
+  (Configure, Model: parts (a read-only list since 0.45.0, with a link to Clean, where parts are left
+  out), importer options, size, file; Textures; Pose: an animation and a
+  frame, with a slider, stepping and playback, only for models with animations), **Edit** (Clean,
+  Mesh, Displace, Finish, Cut; see "Cleaning" below) and **Export**. Since 0.43.0:
   - *One place chooses the model worked on*: the Show buttons under the 3D view (Original,
     Enhanced, Finished, Pieces). Finish, Cut and Export say "Working on: Enhanced · change" (the
     link puts the keyboard on those buttons and makes them flash). Finish and Cut show a choice
@@ -693,6 +694,64 @@ used, so the side stays straight instead of swelling into a bulge. This is on by
   along their seams as well as possible, and what still differs is faded smoothly into each
   island over a few vertex spacings.
 
+### Cleaning (Clean tab, before step 1)
+
+Game models carry what shouldn't be printed: a body under the armour, a lining inside a cuirass, capes
+and cloth with no thickness (often inside a bigger part, not a part of their own), stray faces. The
+**Clean** tab (first in the Edit group, `clean.py`) takes them off before the Mesh step, and sets the
+model's print size. Since 0.45.0.
+
+- **A list of steps per model.** Each step is a JSON object (`op` and its settings) kept in the
+  page's prefs (`cleanPlans`, the last 20 models) and saved with each variation (`mesh.clean`). The
+  engine does the list again on the model as built and posed (`SourceModel.build_mesh`: after the
+  pose and the parts, before everything else), so a step can be taken away at any time, and the
+  list is part of every cache key (`MeshOptions.clean`, keyed by a hash of the list). The tab shows
+  each step as a row with what it did ("removed 2 parts, 1,204 faces") and a button that takes it
+  away. Steps run in order; the transform runs last.
+- **Faces by stable ids.** A step that removes faces records them as part index and the face's place
+  in that part (`part << 32 | index`, kept as runs per part), so it finds the same faces with other
+  parts left out, and finds nothing (saying so) when its part is off. Faces a step adds (filled
+  holes) get ids in a part of their own (`1 << 20` plus a hash of the step).
+- **Parts in or out**: the part checkboxes (moved here from the Model tab) and *Remove parts hidden
+  inside others*: a connected shell whose sample points are 99% inside another part's closed shape.
+  The inside test is a winding number from rays cast along a slightly turned axis over a binned grid
+  of the other part's triangles; open shells are closed first where their openings are small
+  (`_closed`), so an armour piece open at the neck still counts as a shape.
+- **Hidden faces** deeper than a depth (mm): each face's centre and corners are tested inside every
+  other part's shape, and the distance to that shape's surface (a KD-tree over triangle samples plus
+  the exact closest point, searched no further than the depth) must reach the depth. Faces close to
+  an opening (an arm entering a sleeve) stay.
+- **Thin sheets** (Jerred's cloth with little or no thickness): (a) *open* shells whose openings
+  would take more than 30% of their area to close (a cape); (b) *two-sided* cloth, two layers within
+  0.02 mm of each other back to back; (c) a *thin* layer, where the surface behind a face (the
+  closest opposing face, along its inward normal) is nearer than the thickness asked for. Thin faces
+  are joined across edges and with the faces facing them, and narrow rim slivers between the two
+  sides join too, so a flap of cloth in a bigger part comes out as one region. The tab lists regions
+  biggest first (at most 40, the smaller ones counted), each highlighted in the 3D view when pointed
+  at; the ones ticked (none to start with) are removed as one step.
+- **Pick and remove**: a click on the model picks the face under it and spreads across edges where
+  the surface bends less than an angle (`FaceGraph.flood`); Shift+click adds, Alt+click takes away;
+  the picked faces show in the 3D view and are removed as one step. The 3D view's triangles are
+  matched to the engine's faces through the order the mesh is sent in (sorted by material).
+- **Repair**: small holes filled (openings up to a size closed with a fan to their middle, taking the
+  material and texture coordinates around them), duplicate two-sided faces dropped (the same
+  triangle twice, either way round), vertices welded within a distance (faces that close up
+  dropped), flipped faces turned (each surface's faces made to agree, outwards on a closed one, by
+  2-colouring the doubled edge graph and choosing per shell by volume or by the shading normals).
+- **Transform** (one step, changed in place): print height (mm, after the turns) or scale, quarter
+  turns and free angles about X, Y, Z, mirror across X, Y, Z, move (mm), stand on the floor. From then
+  on the model is in print millimetres: the stage footer, Model › Size, the Textures and Displace
+  readouts and Export show print millimetres with the game's own muted beside them, and finders
+  (hidden faces, sheets) measure on the model as it is shown.
+- **Command line**: `--clean` steps on `export` and `enhance`: `hidden-parts`, `hidden-faces[:mm]`,
+  `sheets[:mm]`, `holes[:mm]`, `duplicates[:mm]`, `weld[:mm]`, `normals`, `scale:`, `height:`,
+  `rotate:x,y,z`, `mirror:xyz`, `floor`. Finders there work by rule (what they find now) rather than
+  by recorded faces.
+- **The app's side**: `model_stats` (also `clean_check`) does the list and returns each step's row;
+  `clean_find` (a job: hidden parts, hidden faces, sheets), `clean_select` (a click's flood) and
+  `clean_ids` (the 3D view's triangles as stable ids). Addresses of meshes name the list by the page's
+  hash of it, which the engine learns from the JSON sent first (the last 64 kept).
+
 ### Making it watertight (Finish tab, before cutting or export)
 
 Post-processing for printing lives on the **Finish** tab (`finish.py`). *Make watertight* wraps the
@@ -829,6 +888,7 @@ src/darkstl/
   variations.py saved variations: enhanced models kept beside the model's package
   thumbnails.py preview pictures for the library's cards, cached on disk
   pipeline.py   the three steps with their settings
+  clean.py      the Clean tab's steps: hidden parts and faces, thin sheets, picked faces, repairs, transform
   cut.py        the model made solid and cut into pieces with joints (manifold3d)
   export.py     STL, OBJ, PLY, GLB writers
   cli.py        command line
@@ -837,7 +897,7 @@ src/darkstl/
                 painter.py (where Model Painter is, and opening an export in it)
   web/          the page: Model Library's interface (styles.css, ui/ layout, inspector,
                 menus) with Dark STL's pages: home.js, browser.js, modelpage.js, configure.js,
-                settings.js
+                clean.js, settings.js
 tests/          synthetic game files built byte by byte (no game data in the repo)
 ```
 
@@ -887,6 +947,9 @@ differs:
       pieces are watertight since 0.9.0 (openings closed, open surfaces thickened, parts
       united); the same could be offered for the whole model
 - [x] Cut into pieces with joints (flat, pegs, dowels, magnets, key) and a clearance per cut
+- [x] Clean tab (0.45.0): parts in or out, parts and faces hidden inside others, thin sheets (open,
+      two-sided, thin) listed and removed, faces picked in the 3D view, holes, duplicates, weld,
+      flipped faces, print height and placement; a list of steps per model, done again on every build
 - [ ] Thin-part thickening for blades and capes
 - [x] Per-material strength and on/off in the material list
 - [x] Use detail normal maps as well as the main normal map (blend maps still to do)
@@ -1022,6 +1085,10 @@ The plan is in Reading id Tech 6/7/8 files above.
   `.motfsm2` setups (rather than in the motlists themselves) are not used.
 - Output is not guaranteed watertight (pieces cut on the Cut tab are); most slicers repair it,
   but Phase 2 adds a proper fix.
+- Clean tab steps record faces by part and place in the part: a model whose importer later builds it
+  differently (or a configurable model with other parts chosen) may find other faces there; each
+  step's row says what it removed, so such a step can be taken away and made again. Thin sheets
+  are measured on the model as it is: cloth thicker than the thickness asked for is a solid.
 - Without an anibnd beside the model, skinned meshes (characters, armor) are shown in their
   bind pose, which is a T or A pose. Armour pieces take the player's animations
   (`c0000.anibnd`) only when that archive is copied next to them.
