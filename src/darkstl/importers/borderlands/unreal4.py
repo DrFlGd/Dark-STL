@@ -125,7 +125,7 @@ def _named_materials(pkg: Package, mesh: Mesh4) -> dict[int, str]:
     return out
 
 
-def _materials(mesh: Mesh4, dirs, named: dict[int, str] | None = None
+def _materials(mesh: Mesh4, dirs, named: dict[int, str] | None = None, green: str = "directx"
                ) -> tuple[list[Material], dict[str, Texture], list[str], dict[int, tuple]]:
     """The mesh's materials (one per slot, then one per layer of a layered material the mesh shows), the
     textures they use, notes, and per slot of a layered material how its layers are picked: (a function giving
@@ -146,7 +146,7 @@ def _materials(mesh: Mesh4, dirs, named: dict[int, str] | None = None
 
     def material(name, keys, guessed, details) -> Material:
         return Material(name, keys.get(ue3_materials.ALBEDO), keys.get(ue3_materials.NORMAL),
-                        keys.get(ue3_materials.HEIGHT), guessed=guessed, details=details, normal_green="directx",
+                        keys.get(ue3_materials.HEIGHT), guessed=guessed, details=details, normal_green=green,
                         specular=keys.get(ue3_materials.SPECULAR))
 
     for i, ref in enumerate(mesh.materials):
@@ -310,7 +310,7 @@ def load(importer_key: str, path: Path, dirs: list[Path], game: str | None = Non
     game = game or (files.game if files is not None else None)
     m = read_skeletal_mesh(pkg, e) if e.class_name == "SkeletalMesh" else read_static_mesh(pkg, e)
     named = _named_materials(pkg, m)
-    mats, textures, notes, layers = _materials(m, dirs, named)
+    mats, textures, notes, layers = _materials(m, dirs, named, _normal_green(game))
     notes = list(m.notes) + notes
     tris = m.triangles()
     uv = m.uvs[0] if m.uvs else None
@@ -353,6 +353,14 @@ def load(importer_key: str, path: Path, dirs: list[Path], game: str | None = Non
     return SourceModel(name=m.name, path=path, importer=importer_key, build=build, game=game, parts=parts,
                        materials=mats, textures=textures, info=info, notes=notes, animations=anims, pose_note=why,
                        rig=_rig(anims) if anims is not None else None)
+
+
+def _normal_green(game: str | None) -> str:
+    """Which way the game's normal maps' green points, as its profile says (Unreal's own: down, DirectX)."""
+    from ..unreal.profile import get
+
+    prof = get(game)
+    return prof.normal_green if prof is not None else "directx"
 
 
 # Unreal's naming convention for textures; the paks' indexes give no classes, so textures are found by name

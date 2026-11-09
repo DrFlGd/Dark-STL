@@ -1,0 +1,62 @@
+{
+  "format": 1,
+  "name": "Borderlands 3",
+  "engine": "unreal4",
+  "importer": "borderlands",
+  "recognise": {
+    "files": ["OakGame/Binaries/Win64/Borderlands3.exe", "Borderlands3.exe"],
+    "folder_pattern": "borderlands ?3|\\bbl3\\b"
+  },
+  "unreal": {
+    "project": "OakGame",
+    "layout": "bl3",
+    "release": "",
+    "look_through_for_animations": false,
+    "aes_keys": ["0x115EE4F8C625C792F37A503308048E79726E512F0BF8D2AD7C4C87BC5947CBA7"],
+    "usmap": {"words": ["borderlands3", "borderlands 3", "bl3"], "type_prefix": "oak"}
+  },
+  "models": {
+    "skeletal": "^(sk|skm|skel)_",
+    "static": "^(sm|stm)_",
+    "skip": "(_physics|_phys|_phy|_collision|_col|_pa|_anim|_abp|_bp)$",
+    "label_prefix": "^(SK|SKM|SM)_",
+    "peek": {"names": "none"},
+    "top_skip": [],
+    "group_skip": [],
+    "tables": {
+      "weapon_kinds": {
+        "assaultrifles": "Assault rifles", "assault_rifles": "Assault rifles", "ar": "Assault rifles",
+        "pistols": "Pistols", "ps": "Pistols", "smgs": "SMGs", "sm": "SMGs", "shotguns": "Shotguns", "sg": "Shotguns",
+        "sniperrifles": "Sniper rifles", "sr": "Sniper rifles", "heavyweapons": "Heavy weapons", "hw": "Heavy weapons",
+        "shields": "Shields", "grenademods": "Grenades", "grenades": "Grenades", "melee": "Melee",
+        "artifacts": "Artifacts", "classmods": "Class mods", "spells": "Spells", "wards": "Wards", "rings": "Rings",
+        "amulets": "Amulets", "repkits": "Repair kits", "ordnance": "Ordnance", "enhancements": "Enhancements",
+        "smg": "SMGs", "sniper": "Sniper rifles", "heavy": "Heavy weapons", "repairkits": "Repair kits",
+        "grenadegadgets": "Grenades", "gadgets": "Gadgets", "firmware": "Firmware"
+      },
+      "makers": {
+        "atl": "Atlas", "cov": "COV", "dal": "Dahl", "hyp": "Hyperion", "jak": "Jakobs", "mal": "Maliwan",
+        "ted": "Tediore", "tor": "Torgue", "vla": "Vladof", "ord": "Order", "rip": "Ripper", "dad": "Daedalus",
+        "bor": "Ripper", "dpl": "Dahl"
+      }
+    },
+    "kinds": [
+      {"folders": ["weapons", "gear"], "kind": "Weapons", "group": ["{1:weapon_kinds|Gear}", "{2:makers}"]},
+      {"folders": ["playercharacters", "characters", "player"], "name_has": ["head", "hair", "face"],
+       "kind": "Faces & Hair", "group": ["{1}"]},
+      {"folders": ["playercharacters", "characters", "player"], "kind": "Characters", "group": ["{1}"]},
+      {"folders": ["enemies", "ai", "npcs", "creatures", "nonplayercharacters"], "kind": "Characters",
+       "group": ["{1|Enemies}"]},
+      {"folders": ["vehicles"], "kind": "Objects", "group": ["Vehicles", "{1}"]},
+      {"folders": ["maps", "levelart", "environments", "world", "geometrycollections"], "kind": "Map Pieces",
+       "group": ["{top}"]},
+      {"folders": ["interactiveobjects", "props", "pickups"], "kind": "Objects", "group": ["{top}"]}
+    ],
+    "otherwise": {
+      "StaticMesh": {"kind": "Objects", "group": ["{top}"]},
+      "SkeletalMesh": {"kind": "Characters", "group": ["{top}"]}
+    }
+  },
+  "textures": {"normal_green": "directx"},
+  "collect": {"engine_release": false, "usmap": true}
+}

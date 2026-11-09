@@ -13,6 +13,7 @@ from ..errors import FormatError
 from ..model import SourceModel
 from .base import Importer
 from .borderlands import BorderlandsImporter
+from .fbx import FbxImporter
 from .fromsoft import FromSoftwareImporter
 from .gltf import GltfImporter
 from .package import PackageImporter
@@ -20,11 +21,14 @@ from .psk import PskImporter
 from .redengine import RedEngineImporter
 from .reengine import REEngineImporter
 from .returnal import ReturnalImporter
+from .unreal import UnrealImporter
 from .wavefront import WavefrontImporter
 
+# Order matters: the first importer whose can_open takes a path opens it, and the first to recognise a folder
+# names its game. The Unreal importer comes after Returnal and Borderlands: it takes every other Unreal game.
 IMPORTERS: list[Importer] = [PackageImporter(), FromSoftwareImporter(), RedEngineImporter(), REEngineImporter(),
-                             ReturnalImporter(), BorderlandsImporter(), GltfImporter(), PskImporter(),
-                             WavefrontImporter()]
+                             ReturnalImporter(), BorderlandsImporter(), UnrealImporter(), GltfImporter(),
+                             FbxImporter(), PskImporter(), WavefrontImporter()]
 
 
 def register(importer: Importer) -> None:

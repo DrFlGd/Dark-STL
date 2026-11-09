@@ -106,9 +106,11 @@ class RedEngineImporter(Importer):
         return found
 
     def names(self, folder: Path, game: str, entries: list[CatalogEntry], fresh: bool = False) -> dict[str, str]:
-        """None yet: Cyberpunk names its items in TweakDB records joined to the localised text
-        (onscreens.json), which isn't read yet. The models keep their file names."""
-        return {}
+        """The weapons' names, from the game's on-screen text (see :mod:`.names`). Other models keep their file
+        names: the game joins items to their text in its TweakDB, which isn't read."""
+        from . import names
+
+        return names.names(Path(folder), entries, self.cache, fresh)
 
     def folder_notes(self, folder: Path, found: list[CatalogEntry]) -> list[str]:
         from . import configurations as weapons

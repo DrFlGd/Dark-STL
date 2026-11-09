@@ -285,7 +285,7 @@ class AnimIndex:
     def _may_widen(self) -> bool:
         """Whether to look through every package: for a game whose importer asks for it, or one none of whose
         packages named like animations is one."""
-        return self.gf.game in vfs.LOOK_THROUGH_FOR_ANIMATIONS or \
+        return vfs.looks_through_for_animations(self.gf.game) or \
             not any(is_animation_class(row[0]) for row in self._files.values())
 
     def survey(self, skeleton_package: str) -> Survey:

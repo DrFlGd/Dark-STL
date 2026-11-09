@@ -553,7 +553,68 @@ class Service(OrganiseCommands, QueueCommands):
                 "library_dir": str(lib), "library_files": files, "library_bytes": size,
                 "previews": str(self.thumbs.folder), "settings_file": str(self.config.path or ""),
                 "posed_previews": bool(self.config.posed_previews),
-                **self._painter_settings(), **self._unreal_settings()}
+                **self._painter_settings(), **self._unreal_settings(), "profiles": self._profiles_settings()}
+
+    def _profiles_settings(self) -> dict:
+        """The game profiles: the settings folder they're added or changed in, the shipped ones (and whether a file
+        there replaces each), the user's own, and files that couldn't be read."""
+        from ..importers import profiles
+
+        folder = profiles.settings_folder()
+        mine = [p for p in profiles.all_profiles() if not p.shipped]
+        shipped = profiles.shipped_profiles()
+        my_names = {p.name.lower() for p in mine}
+        my_files = {p.source.name.lower() for p in mine if p.source}
+        shipped_names = {p.name.lower() for p in shipped}
+        shipped_files = {p.source.name.lower() for p in shipped if p.source}
+
+        def row(p) -> dict:
+            return {"name": p.name, "engine": p.engine, "file": p.source.name if p.source else "",
+                    "path": str(p.source) if p.source else "", "defaults": p.defaults}
+
+        return {"dir": str(folder) if folder else "",
+                "shipped": [{**row(p), "replaced": p.name.lower() in my_names
+                             or bool(p.source and p.source.name.lower() in my_files)} for p in shipped],
+                "user": [{**row(p), "replaces": p.name.lower() in shipped_names
+                          or bool(p.source and p.source.name.lower() in shipped_files)} for p in mine],
+                "problems": profiles.problems()}
+
+    def cmd_profile_copy(self, args: dict) -> dict:
+        """Copy a shipped game profile into the settings folder to change it there (the copy replaces it), and
+        show it. A copy that's there already is shown as it is."""
+        import shutil
+
+        from ..importers import profiles
+
+        name = str(args.get("name") or "")
+        prof = next((p for p in profiles.all_profiles() if p.name == name), None)
+        if prof is None or (args.get("shipped") and not prof.shipped):
+            prof = next((p for p in profiles.shipped_profiles() if p.name == name), prof)
+        folder = profiles.settings_folder()
+        if prof is None or prof.source is None or folder is None:
+            raise AppError(f"There is no game profile called {name}.")
+        target = folder / prof.source.name
+        if prof.shipped:
+            folder.mkdir(parents=True, exist_ok=True)
+            if not target.exists():
+                shutil.copyfile(prof.source, target)
+            profiles.forget()
+        else:
+            target = prof.source
+        if args.get("show"):
+            self.host.open_path(str(target))
+        return {"path": str(target), "profiles": self._profiles_settings()}
+
+    def cmd_profiles_open(self, args: dict) -> dict:
+        """Show the settings folder's game profiles folder (made if it isn't there)."""
+        from ..importers import profiles
+
+        folder = profiles.settings_folder()
+        if folder is None:
+            raise AppError("Dark STL's settings folder isn't known.")
+        folder.mkdir(parents=True, exist_ok=True)
+        self.host.open_path(str(folder))
+        return {"path": str(folder)}
 
     def _painter_settings(self) -> dict:
         """Where Model Painter is: as set in Settings, and as found (the one set, else where it's installed)."""
@@ -836,7 +897,14 @@ class Service(OrganiseCommands, QueueCommands):
         found = collect.collections_in(path) if path.is_dir() else []
         own = next((data for p, data in found if p == path), None)  # a game's folder of collected files
         game = own["game"] if own else detect_game(path) if path.is_dir() and not found else None
-        return {"path": str(path), "exists": path.is_dir(), "game": game,
+        unreal = None
+        if path.is_dir() and not found and not game and not outer:  # an Unreal game no profile names
+            from ..importers.unreal.catalog import probe
+            try:
+                unreal = probe(path)
+            except OSError:
+                unreal = None
+        return {"path": str(path), "exists": path.is_dir(), "game": game, "unreal": unreal,
                 "games": known_games(), "added": path in roots, "inside": str(outer) if outer else None,
                 "inside_game": roots.get(outer) if outer else None, "contains": [str(p) for p in inner],
                 "collection": _collection_json(path, own) if own else None,
@@ -865,7 +933,23 @@ class Service(OrganiseCommands, QueueCommands):
                 raise AppError("Every game in that folder is in the library already.")
             return {"job": self._scan(todo, None, f"Reading collected files in {path.name}").id}
         game = str(args.get("game") or check["game"] or path.name).strip()
+        if check.get("unreal") and not check["game"]:
+            self._add_unreal_profile(game, check["unreal"])
         return {"job": self._scan([(path, game)], None, f"Scanning {path.name}").id}
+
+    def _add_unreal_profile(self, game: str, info: dict) -> None:
+        """A game profile in the settings folder for an Unreal game no profile named, added as ``game``, so its
+        folder is recognised from now on (and its sorting can be changed in the file). Nothing when a profile
+        names the game already (or another importer reads it)."""
+        from ..importers import profiles
+        from ..importers.unreal.catalog import new_profile
+
+        if game in known_games() or profiles.get(game) is not None:
+            return
+        try:
+            profiles.write_user_profile(new_profile(game, info))
+        except OSError:
+            logging.getLogger(__name__).warning("Couldn't write a game profile for %s", game, exc_info=True)
 
     def cmd_folder_rescan(self, args: dict) -> dict:
         path = Path(str(args.get("path") or ""))

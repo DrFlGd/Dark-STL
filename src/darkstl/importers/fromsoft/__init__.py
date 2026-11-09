@@ -127,7 +127,9 @@ class FromSoftwareImporter(Importer):
     name = "FromSoftware (FLVER)"
     record_reads = False  # related_files name all a model reads (and read each model already)
     file_filter = "FromSoftware models (*.partsbnd *.chrbnd *.objbnd *.geombnd *.mapbnd *.flver *.dcx)"
-    games = profiles.GAMES
+    @property
+    def games(self) -> tuple[str, ...]:  # with those the settings folder's game profiles add
+        return profiles.game_names()
 
     def detect_game(self, folder: Path) -> str | None:
         return profiles.detect_game(folder) or _game_from_archives(folder)

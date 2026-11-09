@@ -51,6 +51,7 @@ function GamePicker({ value, onChange, id }) {
   const games = useStore(ui, (s) => s.overview?.games?.map((g) => g.name) || []);
   const known = [...new Set([...(info().games || []), ...games])];
   const [other, setOther] = useState(value && !known.includes(value));
+  useEffect(() => { if (value && !known.includes(value)) setOther(true); }, [value]); // a name set from outside (a suggestion)
   return html`<div class="field-row">
     <select id=${id} value=${other ? OTHER : value || ""} onChange=${(e) => { const v = e.target.value; setOther(v === OTHER); onChange(v === OTHER ? "" : v); }}>
       ${!value && !other ? html`<option value="" disabled>Choose…</option>` : null}
@@ -77,6 +78,7 @@ function AddFolder({ game: forGame, collected = false }) {
       const c = await api("folder_check", { path: p });
       setCheck(c);
       if ((!touched || c.collection) && c.game) setGame(c.game);
+      else if (!touched && !c.game && c.unreal?.name) setGame(c.unreal.name); // an Unreal game Dark STL has no profile for
       if (c.collection || c.collections.length) setUseHere(!c.library_has_files); // the first collection added: collect into it
     } catch (e) { setError(String(e.message || e)); }
   };
@@ -129,7 +131,11 @@ function AddFolder({ game: forGame, collected = false }) {
     : html`<div class="field-block"><label class="field-label" for="folder-game">Game</label>
       <${GamePicker} id="folder-game" value=${game} onChange=${(g) => { setGame(g); setTouched(true); }} />
       <small class="muted" id="folder-recognised">${check?.collection ? `Files Dark STL collected for ${check.collection.game} (${plural(check.collection.models, "model")}).`
-        : check?.game ? `Recognised as ${check.game}.` : check?.exists ? "Not recognised: choose the game, or another name for a folder of other models." : "Dark STL recognises Dark Souls, Bloodborne, Dark Souls III, Sekiro, Elden Ring, Cyberpunk 2077, the Resident Evil games (2, 3, 4, 7, Village) Borderlands (1, 2, The Pre-Sequel, 3, Wonderlands, 4) and Returnal folders by their files."}</small>
+        : check?.game ? `Recognised as ${check.game}.`
+        : check?.unreal ? html`<span id="folder-unreal">An Unreal Engine game Dark STL has no profile for${check.unreal.project ? ` (its project is ${check.unreal.project})` : ""}. Give it its name:
+            its models are sorted by the folders the game keeps them in (Characters, Weapons, Props…), and a game profile is saved for it
+            (Settings › Game tools › Game profiles) so the folder is recognised from now on. Encrypted games need their AES key in Settings › Game tools › Unreal games.</span>`
+        : check?.exists ? "Not recognised: choose the game, or another name for a folder of other models." : "Dark STL recognises Dark Souls, Bloodborne, Dark Souls III, Sekiro, Elden Ring, Cyberpunk 2077, the Resident Evil games (2, 3, 4, 7, Village), Borderlands (1, 2, The Pre-Sequel, 3, Wonderlands, 4), Returnal and other Unreal Engine games by their files."}</small>
     </div>`}
     ${ours && where !== check.library_dir ? html`<label class="check-row" title=${`Now: ${check.library_dir}`}>
       <input type="checkbox" id="folder-use-library" checked=${!!useHere} disabled=${busy} onChange=${(e) => setUseHere(e.target.checked)} />
@@ -180,7 +186,7 @@ function OpenFile() {
     } catch (e) { setBusy(false); setError(String(e.message || e)); }
   };
   return html`<${Dialog} title="Open a model file" id="open-file-dialog" onSubmit=${submit} busy=${busy} error=${error} submitLabel=${busy ? "Opening…" : "Open"}>
-    <p class="muted">A .partsbnd, .chrbnd, .objbnd or .flver file (also inside .dcx), or a model another tool exported: .gltf, .glb, .psk, .pskx or .obj. It opens on its own page; its folder isn't added to the library.</p>
+    <p class="muted">A .partsbnd, .chrbnd, .objbnd or .flver file (also inside .dcx), or a model another tool exported: .gltf, .glb, .fbx, .psk, .pskx or .obj. It opens on its own page; its folder isn't added to the library.</p>
     <div class="field-block"><label class="field-label" for="file-path">File</label>
       <div class="field-row"><input type="text" id="file-path" placeholder=${dialogs ? "Choose with Browse…, or paste a path" : "Paste the file's path"}
         value=${path} onInput=${(e) => setPath(e.target.value)} disabled=${busy} />

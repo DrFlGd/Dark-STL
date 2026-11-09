@@ -1,0 +1,60 @@
+{
+  "format": 1,
+  "name": "Returnal",
+  "engine": "unreal4",
+  "importer": "returnal",
+  "recognise": {
+    "files": ["Returnal/Binaries/Win64/Returnal-Win64-Shipping.exe", "Returnal-Win64-Shipping.exe", "Returnal.exe"],
+    "folder_names": ["returnal"]
+  },
+  "unreal": {
+    "project": "Returnal",
+    "release": "auto",
+    "default_release": "4.25",
+    "aes_keys": [],
+    "usmap": {"words": ["returnal"]},
+    "look_through_for_animations": true
+  },
+  "models": {
+    "skeletal": "^(sk|skm|skel_mesh)_",
+    "static": "^(sm|stm)_",
+    "skip": "(_physics|_phys|_phy|_physicsasset|_collision|_col|_pa|_anim|_abp|_bp|_skeleton)$",
+    "label_prefix": "^(SK|SKM|SM)_",
+    "peek": {
+      "names": "unnamed",
+      "limit": 60000,
+      "not_a_mesh": "^(t|tx|tex|m|mi|mic|mf|mm|mat|mpc|pm|a|an|anim|am|as|abp|bs|bp|bpi|wbp|w|ui|ico|s|sc|sw|sfx|snd|cue|ak|mus|vo|dt|da|ct|cv|curve|e|enum|st|f|font|ns|ne|nps|p|ps|fx|vfx|pfx|cs|ls|l|lvl|seq|skel|sks|phys|pa|pp|ppm|lut|hlod|ndf|ds|dlg|gc|ga|ge|gd|tag|ai|bt|bb|eqs|env|rt|vt|cube|hdr|media|mp)_",
+      "skip_folders": ["audio", "sound", "sounds", "wwise", "wwiseaudio", "ui", "hud", "movies", "localization",
+                       "textures", "materials", "animations", "anims", "blueprints", "fx", "vfx", "effects",
+                       "particles", "niagara", "data", "datatables", "curves", "fonts", "cinematics", "sequences",
+                       "developers"]
+    },
+    "top_skip": [],
+    "group_skip": ["meshes", "mesh", "models", "model", "skeletalmeshes", "staticmeshes", "common", "shared"],
+    "kinds": [
+      {"folders": ["weapons", "weapon", "guns", "gun", "alt_fires", "altfires"], "kind": "Weapons",
+       "group": ["{1|Weapons}"]},
+      {"folders": ["enemies", "enemy", "creatures", "creature", "monsters", "monster", "bosses", "boss", "ai",
+                   "npc", "npcs", "mobs", "aliens"], "kind": "Characters", "group": ["Creatures", "{1}"]},
+      {"folders": ["characters", "character", "chars", "player", "players", "selene", "hero", "astronaut"],
+       "name_has": ["head", "hair", "face", "helmet"], "kind": "Faces & Hair", "group": ["{1}"]},
+      {"folders": ["characters", "character", "chars", "player", "players", "selene", "hero", "astronaut"],
+       "kind": "Characters", "group": ["{1}"]},
+      {"folders": ["environment", "environments", "env", "levels", "level", "maps", "map", "biomes", "biome",
+                   "levelart", "world", "architecture", "rooms", "tiles", "kits", "foliage", "vegetation", "terrain",
+                   "landscape"], "kind": "Map Pieces", "group": ["{1|top}"]},
+      {"folders": ["props", "prop", "pickups", "pickup", "items", "item", "interactables", "interactable",
+                   "consumables", "artifacts", "artefacts", "parasites", "ship", "helios", "house", "vehicles",
+                   "objects", "gameplay"], "kind": "Objects", "group": ["{top}", "{1}"]}
+    ],
+    "otherwise": {
+      "StaticMesh": {"kind": "Objects", "group": ["{top}"]},
+      "SkeletalMesh": {"kind": "Characters", "group": ["{top}"]}
+    }
+  },
+  "textures": {
+    "normal_green": "directx",
+    "roles": {"normal": ["_comp\\d*$"]}
+  },
+  "collect": {"engine_release": true, "usmap": true}
+}

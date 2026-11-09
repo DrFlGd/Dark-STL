@@ -220,18 +220,20 @@ def load(path: Path) -> Mappings:
     return _CACHE[key]
 
 
-# words in a .usmap's file name that say which game it was made for
-_GAME_WORDS = {
-    "Borderlands 4": ("borderlands4", "borderlands 4", "bl4", "oak2"),
-    "Borderlands 3": ("borderlands3", "borderlands 3", "bl3"),
-    "Tiny Tina's Wonderlands": ("wonderlands", "ttwl"),
-    "Returnal": ("returnal",),
-}
+def _game_words() -> dict[str, tuple[str, ...]]:
+    """Words in a .usmap's file name that say which game it was made for, from the games' profiles
+    (``unreal.usmap.words``; a game without any: its name)."""
+    try:
+        from ...unreal.profile import unreal_profiles
+    except ImportError:
+        return {}
+    return {p.name: tuple(p.usmap_words) or (p.name.lower(),) for p in unreal_profiles()}
 
 
-def _names_game(path: Path, game: str) -> bool:
+def _names_game(path: Path, game: str, words: dict | None = None) -> bool:
     low = path.stem.lower().replace("_", " ").replace("-", " ")
-    return any(w in low or w in low.replace(" ", "") for w in _GAME_WORDS.get(game, ()))
+    words = _game_words() if words is None else words
+    return any(w in low or w in low.replace(" ", "") for w in words.get(game, ()))
 
 
 def _for_game(candidates: list[Path], game: str, settings_dir: Path | None) -> list[Path]:
@@ -240,10 +242,12 @@ def _for_game(candidates: list[Path], game: str, settings_dir: Path | None) -> l
     def in_settings(p: Path) -> bool:
         return settings_dir is not None and p.parent == Path(settings_dir)
 
+    words = _game_words()
     own = [p for p in candidates if not in_settings(p)]
     shared = [p for p in candidates if in_settings(p)]
-    named = [p for p in shared if _names_game(p, game)]
-    others = [p for p in shared if p not in named and not any(_names_game(p, g) for g in _GAME_WORDS if g != game)]
+    named = [p for p in shared if _names_game(p, game, words)]
+    others = [p for p in shared if p not in named
+              and not any(_names_game(p, g, words) for g in words if g != game)]
     return own + named + others
 
 
@@ -284,9 +288,15 @@ def find_mappings_file(root: Path, game: str, settings_dir: Path | None = None) 
     return fallback
 
 
-# what the classes of a game's own code are called (the mappings of Borderlands 3, Wonderlands and 4 are full of
-# Oak* types): mappings with another game's types are for that game
-_GAME_TYPES = {"Borderlands 3": "oak", "Tiny Tina's Wonderlands": "oak", "Borderlands 4": "oak"}
+def _game_types() -> dict[str, str]:
+    """What the classes of a game's own code are called (the mappings of Borderlands 3, Wonderlands and 4 are full
+    of Oak* types), from the games' profiles (``unreal.usmap.type_prefix``): mappings with another game's types
+    are for that game."""
+    try:
+        from ...unreal.profile import unreal_profiles
+    except ImportError:
+        return {}
+    return {p.name: p.type_prefix for p in unreal_profiles() if p.type_prefix}
 
 
 def _fits(m: Mappings, game: str) -> bool | None:
@@ -294,10 +304,11 @@ def _fits(m: Mappings, game: str) -> bool | None:
     def has(prefix: str) -> bool:
         return sum(1 for n in m.structs if n.lower().startswith(prefix)) >= 20
 
-    mine = _GAME_TYPES.get(game)
+    types = _game_types()
+    mine = types.get(game)
     if mine and has(mine):
         return True
-    if any(has(p) for p in set(_GAME_TYPES.values()) if p != mine):
+    if any(has(p) for p in set(types.values()) if p != mine):
         return False
     return None if mine else True
 

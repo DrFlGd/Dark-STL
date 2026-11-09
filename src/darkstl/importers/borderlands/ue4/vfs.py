@@ -11,9 +11,11 @@ content, ``/<Plugin>/...`` for a plugin's, ``/Engine/...``); imports name the
 package they come from, so the table from names to files is what follows a
 material to its textures.
 
-Encrypted paks need the game's AES key. Borderlands 3's is public and comes
-with Dark STL; other keys can be put, one per line, in ``unreal-keys.txt`` in
-the app's settings folder or in the game folder, or in ``DARKSTL_AES_KEYS``.
+Encrypted paks need the game's AES key. Keys that are public come in the games' profiles
+(``aes_keys``: Borderlands 3's); other keys can be put, one per line, in ``unreal-keys.txt`` in
+the app's settings folder or in the game folder, or in ``DARKSTL_AES_KEYS``. The engine release of a
+game that cooks its packages unversioned, and Borderlands 3's own layouts, also come from the game's
+profile (see :mod:`darkstl.importers.unreal.profile`).
 """
 
 from __future__ import annotations
@@ -29,16 +31,36 @@ from ....errors import FormatError
 from . import asset, pak
 
 KEY_FILE = "unreal-keys.txt"
-# Public AES keys of games this importer reads (they are needed to read the paks the games ship).
-BUNDLED_KEYS = {
-    "Borderlands 3": ["0x115EE4F8C625C792F37A503308048E79726E512F0BF8D2AD7C4C87BC5947CBA7"],
-}
+# More AES keys by game, besides those in the games' profiles (``unreal.aes_keys``)
+BUNDLED_KEYS: dict[str, list[str]] = {}
 # game -> function(game folder) giving its Unreal Engine release (425 for 4.25), for games that cook their
-# packages unversioned; importers register theirs
+# packages unversioned; before a game's profile (``unreal.release``) is asked
 ENGINE_OF_GAME: dict = {}
 # games whose animations aren't all named like animations (A_, AS_, Anim_...): when a skeleton has none by
-# name, every package is looked through for them (see animset.AnimIndex); importers add theirs
+# name, every package is looked through for them (see animset.AnimIndex); besides the games whose profile says
+# so (``unreal.look_through_for_animations``)
 LOOK_THROUGH_FOR_ANIMATIONS: set = set()
+
+
+def _profile_keys() -> dict[str, list[str]]:
+    """The AES keys the Unreal games' profiles carry, by game."""
+    try:
+        from ...unreal.profile import unreal_profiles
+    except ImportError:
+        return {}
+    return {p.name: list(p.aes_keys) for p in unreal_profiles() if p.aes_keys}
+
+
+def looks_through_for_animations(game: str | None) -> bool:
+    """Whether every package of ``game`` is looked through for animations when none is named like one: as its
+    profile says, and for a game no profile names (what its animations are called isn't known)."""
+    if game in LOOK_THROUGH_FOR_ANIMATIONS:
+        return True
+    try:
+        from ...unreal.profile import for_game
+    except ImportError:
+        return False
+    return for_game(game).look_through
 ASSET_SUFFIXES = (".uasset", ".umap")
 PAYLOAD_SUFFIXES = (".uexp", ".ubulk", ".uptnl", ".m.ubulk")
 
@@ -54,11 +76,14 @@ def _config_key_file() -> Path | None:
 def known_keys(root: Path | None = None, game: str | None = None) -> list[bytes]:
     """AES keys to try: the bundled ones, then the user's (settings folder, game folder, environment)."""
     texts: list[str] = []
-    for g, keys in BUNDLED_KEYS.items():
+    bundled: dict[str, list[str]] = {}
+    for g, keys in [*_profile_keys().items(), *BUNDLED_KEYS.items()]:
+        bundled.setdefault(g, []).extend(keys)
+    for g, keys in bundled.items():
         if game is None or g == game:
             texts += keys
     if game is not None:  # the other bundled keys last: a folder may be labelled differently
-        texts += [k for g, keys in BUNDLED_KEYS.items() if g != game for k in keys]
+        texts += [k for g, keys in bundled.items() if g != game for k in keys]
     files = [_config_key_file()]
     if root is not None:
         files += [Path(root) / KEY_FILE]
@@ -266,7 +291,16 @@ class GameFiles:
         game's importer works it out (see :data:`ENGINE_OF_GAME`); asked once."""
         if self._engine is None:
             find = ENGINE_OF_GAME.get(self.game or "")
-            self._engine = (find(self.root) if find else None) or 0
+            if find is not None:
+                self._engine = find(self.root) or 0
+            else:
+                try:
+                    from ...unreal import catalog
+                    from ...unreal.profile import for_game
+
+                    self._engine = catalog.engine_version(self.root, for_game(self.game)) or 0
+                except ImportError:
+                    self._engine = 0
         return self._engine or None
 
     def open_named(self, name: str) -> asset.Package | None:
@@ -281,7 +315,13 @@ class GameFiles:
 
 
 def _layout_game(game: str | None) -> str:
-    return "bl3" if game == "Borderlands 3" else ""
+    """The package layout changes a game made to the engine's (Borderlands 3's: "bl3"), as its profile says."""
+    try:
+        from ...unreal.profile import get
+    except ImportError:
+        return ""
+    prof = get(game)
+    return prof.layout if prof is not None else ""
 
 
 def _pak_order(p: Path) -> tuple:

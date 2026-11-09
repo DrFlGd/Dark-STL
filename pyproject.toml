@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dark-stl"
-version = "0.48.0"
+version = "0.49.0"
 description = "Browse FromSoftware and RE Engine game models, add texture detail by displacement, and export print-ready meshes"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -37,7 +37,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 darkstl = ["web/**/*", "importers/fromsoft/filelists/*", "importers/reengine/filelists/*",
-           "importers/*/configurations/*.json"]
+           "importers/*/configurations/*.json", "importers/profiles/*.json", "importers/*/profiles/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -5,13 +5,18 @@ number each file's extension ends in) and in where their files sit (``natives/x6
 first games, ``natives/stm/`` from Resident Evil Village on). A game folder is recognised by its
 executable, then by its name in the path, then by the versions of the first model or texture
 files found in it.
+
+A game profile in the settings folder (``<settings>/profiles/*.json``, engine ``reengine``, see
+docs/profiles.md) overrides a game's entry here by its name, or adds a game: ``recognise.files`` are its
+executables, ``recognise.folder_pattern`` the pattern of its name in a path, and its ``reengine`` section
+names the bundled file ``lists`` its paks use.
 """
 
 from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .formats import mesh as meshfmt
@@ -27,7 +32,7 @@ class GameProfile:
     lists: tuple[str, ...] = ()  # the bundled file lists for the game's paks (filelists/<name>.list.gz)
 
 
-GAME_PROFILES: tuple[GameProfile, ...] = (
+BUILT_IN: tuple[GameProfile, ...] = (
     GameProfile("Resident Evil 2", ("re2.exe",),
                 re.compile(r"resident\s*evil\s*2\b|\bre2(r|rt)?\b|biohazard\s*re[:\s]*2", re.I),
                 lists=("RE2_RT_STM_Release", "RE2_STM_Release")),
@@ -47,14 +52,46 @@ GAME_PROFILES: tuple[GameProfile, ...] = (
                 lists=("DMC5_STM_Release",)),
 )
 
-GAMES = tuple(p.name for p in GAME_PROFILES)
+GAME_PROFILES = BUILT_IN  # the games as Dark STL knows them; game_profiles() adds the settings folder's
+GAMES = tuple(p.name for p in BUILT_IN)
+
+
+def _from_profile(p, base: GameProfile | None) -> GameProfile:
+    """A game's entry with what its profile says over it (or made from the profile alone)."""
+    rec = p.recognise
+    re_section = p.section("reengine")
+    if base is None:
+        base = GameProfile(p.name, (), re.compile(re.escape(p.name), re.I))
+    markers = tuple(str(m).lower() for m in rec.get("files") or [] if str(m).strip()) or base.markers
+    lists = tuple(str(x) for x in re_section.get("lists") or []) or base.lists
+    return replace(base, markers=markers, path_hint=p.folder_pattern or base.path_hint, lists=lists,
+                   notes=str(re_section.get("notes") or base.notes))
+
+
+def game_profiles() -> tuple[GameProfile, ...]:
+    """The games, with the settings folder's profiles over them (a game a profile adds comes first)."""
+    from ..profiles import profiles
+
+    user = {p.name.lower(): p for p in profiles("reengine") if not p.shipped}
+    if not user:
+        return BUILT_IN
+    known = []
+    for g in BUILT_IN:
+        p = user.pop(g.name.lower(), None)
+        known.append(_from_profile(p, g) if p is not None else g)
+    return tuple(_from_profile(p, None) for p in user.values()) + tuple(known)
+
+
+def game_names() -> tuple[str, ...]:
+    return tuple(p.name for p in game_profiles())
 
 LIST_FOLDER = Path(__file__).with_name("filelists")
 
 
 def bundled_lists(game: str | None) -> list[Path]:
     """The file lists that come with Dark STL for ``game``'s paks (every game's when it isn't one of them)."""
-    profiles = [p for p in GAME_PROFILES if p.name == game] or list(GAME_PROFILES)
+    known = game_profiles()
+    profiles = [p for p in known if p.name == game] or list(known)
     return [f for p in profiles for f in (LIST_FOLDER / f"{n}.list.gz" for n in p.lists) if f.is_file()]
 
 MESH_FILE = re.compile(r"\.mesh(\.\d+)?$", re.I)
@@ -79,16 +116,17 @@ def game_from_versions(mesh_version: int | None = None, tex_version: int | None 
 def detect_game(root: str | os.PathLike, max_files: int = 4000) -> str | None:
     """Which game a folder came from: by its executable, its name, then its files' format versions."""
     root = Path(root)
+    known = game_profiles()
     for candidate in [root, *list(root.parents)[:3]]:
         try:
             names = {p.name.lower() for p in candidate.iterdir()}
         except OSError:
             continue
-        for p in GAME_PROFILES:
+        for p in known:
             if any(m in names for m in p.markers):
                 return p.name
     text = str(root)
-    for p in GAME_PROFILES:
+    for p in known:
         if p.path_hint.search(text):
             return p.name
     seen = 0
@@ -108,5 +146,5 @@ def detect_game(root: str | os.PathLike, max_files: int = 4000) -> str | None:
     return game_from_versions(None, tex_version)
 
 
-__all__ = ["GAMES", "GAME_PROFILES", "MESH_FILE", "PAK_FILE", "TEX_FILE", "detect_game", "game_from_versions",
+__all__ = ["BUILT_IN", "GAMES", "GAME_PROFILES", "game_names", "game_profiles", "MESH_FILE", "PAK_FILE", "TEX_FILE", "detect_game", "game_from_versions",
            "version_of"]

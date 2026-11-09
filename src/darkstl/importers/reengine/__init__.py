@@ -56,7 +56,9 @@ class REEngineImporter(Importer):
     key = "reengine"
     name = "Capcom RE Engine (.mesh)"
     file_filter = "RE Engine models (*.mesh *.mesh.*)"
-    games = profiles.GAMES
+    @property
+    def games(self) -> tuple[str, ...]:  # with those the settings folder's game profiles add
+        return profiles.game_names()
 
     def detect_game(self, folder: Path) -> str | None:
         return profiles.detect_game(folder)
