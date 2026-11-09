@@ -1,4 +1,4 @@
-"""Importer for Grand Theft Auto V (PC: the original release and GTA V Enhanced).
+"""Importer for Grand Theft Auto V (PC: the original release and GTA V Enhanced) and Grand Theft Auto IV.
 
 The game keeps its files in RPF7 archives (nested, encrypted with keys that are in the game's
 executable: they are found there when the folder is added and kept in the app's settings, never
@@ -6,7 +6,12 @@ shipped). Models are drawables (``.ydr``), drawable dictionaries (``.ydd``: a pe
 fragments (``.yft``: vehicles, and anything that breaks), with textures in ``.ytd`` dictionaries and
 animations in ``.ycd`` clip dictionaries. ``vehicles.meta``, ``peds.meta`` and ``weapons*.meta`` say what
 each model is, and the ``.gxt2`` text names them. Files exported with OpenIV or CodeWalker (``RSC7``
-resources) open too. Formats in :mod:`.formats`, the game profile in :mod:`.games`.
+resources) open too.
+
+GTA IV is the same engine a generation earlier: ``.img`` archives (tables encrypted with an AES key that
+is found in ``GTAIV.exe`` the same way), RSC5 resources (``.wdr``, ``.wdd``, ``.wft``, ``.wtd``) with
+4-byte pointers, read into the same objects, and ``.ide`` files and ``.gxt`` text for kinds and names.
+Formats in :mod:`.formats`, the game profiles in :mod:`.games`.
 """
 
 from __future__ import annotations
@@ -21,14 +26,13 @@ from ..base import Importer, ScanProgress
 from . import catalog, files, games
 from . import model as ragemodel
 from .formats import keys as keysmod
-from .formats import rsc
-from .formats import texture as tfmt
+from .formats import rsc, rsc5
 
 
 class RageImporter(Importer):
     key = "rage"
-    name = "RAGE (Grand Theft Auto V)"
-    file_filter = "GTA V models (*.ydr *.ydd *.yft)"
+    name = "RAGE (Grand Theft Auto IV and V)"
+    file_filter = "GTA IV and V models (*.ydr *.ydd *.yft *.wdr *.wdd *.wft)"
     parallel = True
     package_version = 1
 
@@ -55,14 +59,18 @@ class RageImporter(Importer):
             profile, root = None, folder
         from ...listing import files_under
 
+        def keys_progress(f: float) -> None:
+            if progress is not None:
+                progress(-1, f"Looking for the archive keys in the game ({int(f * 100)}%)")
+
         keys = keysmod.cached()
+        iv_key = None
         why = None
-        if keys is None and any(p.suffix.lower() == ".rpf" for p in files_under(root)):
-            def keys_progress(f: float) -> None:
-                if progress is not None:
-                    progress(-1, f"Looking for the archive keys in the game ({int(f * 100)}%)")
+        if profile is not None and profile.generation == 4:
+            iv_key, why = files.iv_key_for(root, keys_progress)
+        elif keys is None and any(p.suffix.lower() == ".rpf" for p in files_under(root)):
             keys, why = keysmod.for_game(root, keys_progress)
-        gf = files.for_root(root, profile, keys, rebuild=True, progress=progress)
+        gf = files.for_root(root, profile, keys, rebuild=True, progress=progress, iv_key=iv_key)
         if why and gf.notes:
             gf.notes.insert(0, why)
         return gf
@@ -105,7 +113,7 @@ class RageImporter(Importer):
         gf = self._ours(folder)
         streamed: dict[str, list[CatalogEntry]] = defaultdict(list)
         for e in entries:
-            if e.importer != self.key or e.category != "Characters" or e.path.suffix.lower() != ".ydd":
+            if e.importer != self.key or e.category != "Characters" or e.path.suffix.lower() not in (".ydd", ".wdd"):
                 continue
             if e.group.endswith(" components"):
                 streamed[e.group[:-len(" components")]].append(e)
@@ -137,7 +145,8 @@ class RageImporter(Importer):
             return True
         try:
             with open(path, "rb") as f:
-                return rsc.is_resource_file(f.read(4))
+                head = f.read(4)
+                return rsc.is_resource_file(head) or rsc5.is_resource_file(head)
         except OSError:
             return False
 
@@ -146,7 +155,7 @@ class RageImporter(Importer):
 
     def variants(self, path: Path) -> list[str]:
         path = Path(path)
-        if path.suffix.lower() != ".ydd":
+        if path.suffix.lower() not in (".ydd", ".wdd"):
             return []
         gf = files.for_path(path)
         try:
@@ -168,11 +177,16 @@ class RageImporter(Importer):
                     kinds[ext] = kinds.get(ext, 0) + 1
                 top = ", ".join(f"{c:,} .{k}" for k, c in sorted(kinds.items(), key=lambda kv: -kv[1])[:6])
                 return [f"GTA V archive (RPF7), {len(arc.entries):,} files: {top}"]
-            if low.endswith(".ytd"):
+            if low.endswith(".img"):
+                from .formats import img
+
+                arc = img.read_img(path, files.keys4.cached())
+                return [f"GTA IV archive (IMG3), {len(arc.entries):,} files"]
+            if low.endswith((".ytd", ".wtd")):
                 gf = files.for_path(path)
-                res = gf.resource(path)
-                d = tfmt.read_dictionary(res.reader(rsc.is_enhanced(".ytd", res.version)), 0x50000000)
-                return [f"GTA V texture dictionary, {len(d)} textures"] + \
+                d = ragemodel.read_texture_file(gf, path)
+                game = "GTA IV" if low.endswith(".wtd") else "GTA V"
+                return [f"{game} texture dictionary, {len(d)} textures"] + \
                        [f"{t.name}: {t.width} x {t.height}, {t.codec}" for t in list(d.values())[:40]]
         except (FormatError, OSError) as exc:
             return [f"{path.name} couldn't be read: {exc}"]
@@ -187,15 +201,14 @@ class RageImporter(Importer):
             return []
         out = []
         for name, places in sorted(gf.names.items()):
-            if not name.endswith(".ytd"):
+            if not name.endswith((".ytd", ".wtd")):
                 continue
             rel = places[0]
             if not deep and rel not in gf.loose:
                 continue
             p = gf.path(rel)
             try:
-                res = gf.resource(p)
-                d = tfmt.read_dictionary(res.reader(rsc.is_enhanced(".ytd", res.version)), 0x50000000)
+                d = ragemodel.read_texture_file(gf, p)
             except (FormatError, OSError):
                 continue
             for t in d.values():
@@ -205,8 +218,7 @@ class RageImporter(Importer):
     def open_texture(self, folder: Path, ref: str) -> Texture:
         where, _, name = ref.rpartition("|")
         gf = files.for_path(Path(where))
-        res = gf.resource(Path(where))
-        d = tfmt.read_dictionary(res.reader(rsc.is_enhanced(".ytd", res.version)), 0x50000000)
+        d = ragemodel.read_texture_file(gf, Path(where))
         t = d.get(name.lower())
         if t is None:
             raise FormatError(f"{Path(where).name} holds no texture named {name}")
@@ -223,11 +235,12 @@ class RageImporter(Importer):
         wanted: list[tuple[Path, str]] = [(path, "model")]
         rel = gf.rel(path) or ""
         stem = path.stem.lower()
-        vehicle = path.suffix.lower() == ".yft" and ("vehicles" in rel or stem.removesuffix("_hi") in gf.vehicles)
+        frag = ragemodel.frag_ext(path)
+        vehicle = path.suffix.lower() == frag and ("vehicles" in rel or stem.removesuffix("_hi") in gf.vehicles)
         if textures:
             wanted += [(p, "texture") for p in ragemodel.texture_chain(gf, path, vehicle)]
-        if path.suffix.lower() == ".ydd" or "peds" in rel:
-            skel = gf.find(ragemodel.ped_name(gf, path) + ".yft")
+        if path.suffix.lower() in (".ydd", ".wdd") or "peds" in rel:
+            skel = gf.find(ragemodel.ped_name(gf, path) + frag)
             if skel is not None and skel != path:
                 wanted.append((skel, "other"))
         if animations:
@@ -252,7 +265,7 @@ class RageImporter(Importer):
         gf = files.root_of(found[1]) or files.for_root(found[1], found[0], keysmod.cached())
         out = [self._related(gf, gf.path(rel), "other") for rel in dict.fromkeys(gf.data_files)]
         for n in [*gf.profile.vehicle_textures, *gf.profile.shared_textures]:
-            p = gf.find(n + ".ytd")
+            p = gf.find(n + gf.txd_ext)
             if p is not None:
                 out.append(self._related(gf, p, "texture"))
         return out
@@ -288,7 +301,8 @@ def _outfit(ped: str, label: str, game: str, group: str, options: list[tuple[str
         slots.append(Slot(f"{s}2" if s == base_slot else s,
                           ragemodel.SLOT_LABELS.get(s, s) + (" (other)" if s == base_slot else ""),
                           opts, False, default))
-    return Configuration(f"gta5-{ped}", label, game, ModelRef(base_file, base_variant), slots, {},
+    prefix = "gta4" if base_file.lower().endswith(".wdd") else "gta5"
+    return Configuration(f"{prefix}-{ped}", label, game, ModelRef(base_file, base_variant), slots, {},
                          "Characters", group, "game data")
 
 
